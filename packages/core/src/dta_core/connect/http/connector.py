@@ -11,6 +11,7 @@ connector, not per request.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -183,14 +184,14 @@ class HttpConnector(BaseConnector):
             params[spec.since.param] = self._since_value(spec, request.since)
         return params
 
-    def _since_value(self, spec: HttpDataset, since: Any) -> str | int | float:
+    def _since_value(self, spec: HttpDataset, since: Any) -> str | int:
         """`since` as the source expects it; rounded down, so no newer row is skipped."""
         assert spec.since is not None
         kind = spec.since.format
         numeric = isinstance(since, int | float) and not isinstance(since, bool)
         if numeric and kind != "iso":
             # Already a count since the epoch, in the unit the source expects.
-            return since
+            return math.floor(since)
         try:
             moment = as_utc_datetime(since)
         except ValueError as exc:

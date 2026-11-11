@@ -114,12 +114,15 @@ class TestSince:
         dataset = {
             "path": "/r",
             "since": {"param": "after", "format": "epoch_ms"},
-            "columns": {"id": "int64", "at_ms": "int64"},
+            "columns": {"id": "int64", "at_ms": "double"},
         }
         with connect(api, {"r": dataset}) as connector:
             found = table_rows(connector, "r", cursor_column="at_ms", since=1_700_000_000_002)
-        assert api.calls_to("/r")[0].arg("after") == "1700000000002"
+            # A fraction is rounded down, so that no newer row is skipped at the source.
+            fraction = table_rows(connector, "r", cursor_column="at_ms", since=1_700_000_000_002.5)
+        assert [call.arg("after") for call in api.calls_to("/r")] == ["1700000000002"] * 2
         assert [row["id"] for row in found] == [3, 4]
+        assert [row["id"] for row in fraction] == [3, 4]
 
     def test_since_that_is_no_time_is_refused_before_any_request(self, api: Api) -> None:
         api.route("/r", cursor_route(ROWS, 10))
