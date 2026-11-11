@@ -284,8 +284,6 @@ class Window:
     # it has been written, so an event that belongs there goes into the run's
     # last version.
     reached_us: int = 0
-    # Static rows and deletions go into the run's last version, not its first.
-    static_last: bool = False
 
     @property
     def limit(self) -> datetime | None:
@@ -930,14 +928,19 @@ class _Mapper:
         return " AND ".join(same)
 
     def static(self, mapping: MappingPlan) -> None:
-        """Rows of a static mapping that are new or differ from what is stored."""
+        """Rows of a static mapping that are new or differ from what is stored.
+
+        `fresh` marks the objects the store does not hold yet.
+        """
         index = mapping.index
         values = [f"v{j}" for j in range(len(mapping.properties))]
         self._unique(mapping, ", ".join([UID_FIELD, *values]))
         self.tallies[index].candidates = self.session.scalar(f"SELECT count(*) FROM __dta_g{index}")
         stored = self.stored[mapping.object_type.name]
         self.session.run(
-            f"CREATE TEMP TABLE __dta_n{index} AS SELECT g.* FROM __dta_g{index} g "
+            f"CREATE TEMP TABLE __dta_n{index} AS SELECT g.*, "
+            f"NOT EXISTS (SELECT 1 FROM {stored} s WHERE s.uid = g.uid) AS fresh "
+            f"FROM __dta_g{index} g "
             f"WHERE NOT EXISTS (SELECT 1 FROM {stored} s WHERE {self._same(mapping)})"
         )
 
@@ -1120,6 +1123,7 @@ class _Mapper:
         type_name: str,
         object_type: ObjectType,
         static_key: int,
+        new_key: int,
         timed: bool,
         last_key: int | None,
     ) -> TypeBatch:
@@ -1132,7 +1136,13 @@ class _Mapper:
                 # An event keeps the time it happened at, whichever version it is written in.
                 key, valid = self._event_key(timed, last_key), "vt"
             else:
-                key, valid = f"CAST({static_key} AS BIGINT)", "CAST(NULL AS TIMESTAMPTZ)"
+                # An object new to the twin is there before the readings and
+                # events of the same run that refer to it.
+                key = (
+                    f"CASE WHEN fresh THEN CAST({new_key} AS BIGINT) "
+                    f"ELSE CAST({static_key} AS BIGINT) END"
+                )
+                valid = "CAST(NULL AS TIMESTAMPTZ)"
             columns = [f"{key} AS tk", UID_FIELD, f"CAST({mapping.index} AS INTEGER) AS m"]
             for j, prop in enumerate(mapping.properties):
                 k = self._slot(mapping, prop).index
@@ -1265,14 +1275,19 @@ def _prepare(
     mapper.settle()
 
     latest = max(mapper.latest.values(), default=None)
+    first_key = None
+    if reduced:
+        first_key = session.scalar("SELECT min(tk) FROM (" + " UNION ALL ".join(reduced) + ")")
     if window.limit_us is not None:
-        # A run that repeats ends at the last interval that has ended, whatever it read.
+        # A run that repeats ends at the last interval that has ended, whatever
+        # it read. What changes an object the twin holds is written there: when
+        # it changed is not known, only that it has by now.
         timed, last_key = True, window.limit_us
         static_key = last_key
+        _, first_event = mapper.event_keys(timed, last_key)
+        found = [int(key) for key in (first_key, first_event) if key is not None]
+        new_key = min([*found, last_key])
     else:
-        first_key = None
-        if reduced:
-            first_key = session.scalar("SELECT min(tk) FROM (" + " UNION ALL ".join(reduced) + ")")
         events, _ = mapper.event_keys(False, None)
         timed = plan.interval_us is not None and (first_key is not None or events > 0)
         last_key = None
@@ -1284,12 +1299,12 @@ def _prepare(
         found = [int(key) for key in (first_key, first_event) if key is not None]
         # Existing history hangs on its first interval: what has no time of its
         # own is there before anything refers to it.
-        static_key = min(found) if timed and found else 0
+        static_key = new_key = min(found) if timed and found else 0
     batches: dict[str, TypeBatch] = {}
     keys: set[int] = set()
     types = {m.object_type.name: m.object_type for m in mapper.active}
     for type_name, object_type in types.items():
-        batch = mapper.batch(type_name, object_type, static_key, timed, last_key)
+        batch = mapper.batch(type_name, object_type, static_key, new_key, timed, last_key)
         for mapping in mapper.active:
             if mapping.snapshot and mapping.object_type.name == type_name:
                 batch.deletes = mapper.deletes(mapping)

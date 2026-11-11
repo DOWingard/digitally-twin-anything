@@ -274,7 +274,7 @@ class _Run:
         assert interval_us is not None
         now_us = _micros(self.now)
         limit_us = now_us - now_us % interval_us
-        self.window = Window(limit_us=limit_us, reached_us=reached_us, static_last=True)
+        self.window = Window(limit_us=limit_us, reached_us=reached_us)
         if limit_us < reached_us:
             # After a load of history, whose last version is the end of an
             # interval that may still be open; or the clock went back.
