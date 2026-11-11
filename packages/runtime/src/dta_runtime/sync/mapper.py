@@ -113,8 +113,9 @@ class Session:
         return self._con.execute(sql, params or []).fetchall()
 
     def scalar(self, sql: str, params: Sequence[Any] | None = None) -> Any:
-        found = self._con.execute(sql, params or []).fetchone()
-        return found[0] if found else None
+        # Everything is fetched: a result left half read blocks the connection.
+        found = self._con.execute(sql, params or []).fetchall()
+        return found[0][0] if found else None
 
     def arrow(self, sql: str, params: Sequence[Any] | None = None) -> pa.Table:
         return self._con.sql(sql, params=list(params or [])).to_arrow_table()

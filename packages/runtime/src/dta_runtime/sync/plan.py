@@ -147,7 +147,7 @@ class SqlInspector:
             raise SqlProblem(f"holds {len(statements)} statements; exactly one is allowed")
         if statements[0].type != duckdb.StatementType.SELECT:
             raise SqlProblem("is not a SELECT statement")
-        raw = self._con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0]
+        raw = self._con.execute("SELECT json_serialize_sql(?)", [sql]).fetchall()[0][0]
         document = json.loads(raw)
         if document.get("error"):
             raise SqlProblem(str(document.get("error_message") or "cannot be parsed"))
