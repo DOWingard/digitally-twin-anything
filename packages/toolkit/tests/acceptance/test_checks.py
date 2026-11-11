@@ -16,7 +16,13 @@ from dta_toolkit.acceptance import (
     ui_reachable,
 )
 from dta_toolkit.acceptance.data import covered_properties
-from dta_toolkit.acceptance.readiness import domain_edge_types, mapped_types, timed_properties
+from dta_toolkit.acceptance.readiness import (
+    SLICE_VERSIONS,
+    domain_edge_types,
+    mapped_types,
+    slice_request,
+    timed_properties,
+)
 from dta_toolkit.acceptance.result import CheckResult, described, problem_of
 
 
@@ -41,6 +47,22 @@ def test_domain_edge_types_keep_the_schema_order_and_holders() -> None:
     }
     assert domain_edge_types(schema, ["Site", "Sensor"]) == ["Sensor.site", "Site.parent"]
     assert domain_edge_types({}, ["Site"]) == []
+
+
+def test_the_history_slice_is_of_one_object_over_a_bounded_range() -> None:
+    # A slice grows with objects times versions; the API refuses a large one.
+    young = slice_request(2, 40, "Sensor", "level", "sensor:S1")
+    assert young == {
+        "range": "#2..head",
+        "mode": "state",
+        "layout": "long",
+        "uids": "sensor:S1",
+        "properties": "level",
+        "limit": SLICE_VERSIONS,
+    }
+    old = slice_request(2, 1_000_000, "Sensor", "level", "sensor:S1")
+    assert old["range"] == f"#{1_000_000 - SLICE_VERSIONS + 1}..head"
+    assert old["uids"] == "sensor:S1"
 
 
 def test_service_url_names_the_variable_never_its_value() -> None:

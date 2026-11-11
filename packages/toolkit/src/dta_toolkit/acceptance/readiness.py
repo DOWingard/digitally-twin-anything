@@ -29,6 +29,12 @@ log = Log("acceptance.readiness")
 API = "/api/v1"
 JSON_PAGE = 10_000
 _HISTORY_CANDIDATES = 10
+# Points of history that show a property changed over time.
+_HISTORY_POINTS = 2
+# Versions, ending at the head, of the slice R4 asks for. A slice grows with objects times
+# versions and the API refuses a large one, so the check asks for one object over a bounded
+# range, whatever the twin's size and age.
+SLICE_VERSIONS = 200
 
 
 @dataclass
@@ -301,7 +307,7 @@ def _history_points(ctx: Context, evidence: dict[str, Any]) -> bool:
         if listing.status_code != 200:
             continue
         for row in listing.json().get("data") or []:
-            params = {"range": "#0..head", "properties": prop, "limit": JSON_PAGE}
+            params = {"range": "#0..head", "properties": prop, "limit": _HISTORY_POINTS}
             path = f"{API}/objects/{_path(type_name, row['uid'])}/history"
             response = ctx.api.get(path, params=params)
             if response.status_code != 200:
@@ -311,15 +317,29 @@ def _history_points(ctx: Context, evidence: dict[str, Any]) -> bool:
                     response,
                 )
             points = len(response.json().get("data") or [])
-            if points >= 2:
+            if points >= _HISTORY_POINTS:
                 evidence["history"] = {
                     "property": f"{type_name}.{prop}",
                     "uid": row["uid"],
-                    "points": points,
+                    "points_at_least": points,
                 }
                 return True
     evidence["reason"] = "no object has two points of history in any timed property"
     return False
+
+
+def slice_request(first_seq: int, head_seq: int, type_name: str, prop: str, uid: str) -> dict:
+    """The slice R4 asks for: one property of one object over the last versions up to the
+    head, never from before the first version that holds data."""
+    start = max(first_seq, head_seq - SLICE_VERSIONS + 1)
+    return {
+        "range": f"#{start}..head",
+        "mode": "state",
+        "layout": "long",
+        "uids": uid,
+        "properties": prop,
+        "limit": SLICE_VERSIONS,
+    }
 
 
 def readiness_r4(ctx: Context) -> CheckResult:
@@ -351,13 +371,15 @@ def readiness_r4(ctx: Context) -> CheckResult:
                 described("GET", f"{API}/history/diff", params),
                 why="nothing changed between the first data version and head",
             )
-        type_name = timed[0][0]
-        params = {
-            "range": f"#{first['seq']}..head",
-            "mode": "state",
-            "layout": "long",
-            "limit": 100,
-        }
+        health = ctx.api.get(f"{API}/meta/health")
+        if health.status_code != 200:
+            return _fail(evidence, described("GET", f"{API}/meta/health", None), health)
+        head_seq = int(health.json()["head"]["seq"])
+        # The object whose history was just read: it exists at the head and has changed.
+        type_name, prop = evidence["history"]["property"].split(".", 1)
+        uid = evidence["history"]["uid"]
+        params = slice_request(int(first["seq"]), head_seq, type_name, prop, uid)
+        evidence["slice"] = {"type": type_name, **params}
         response = ctx.api.get(f"{API}/block/slice/{_path(type_name)}", params=params)
         if response.status_code != 200:
             return _fail(
@@ -375,7 +397,8 @@ def readiness_r4(ctx: Context) -> CheckResult:
 
     return _check(
         "readiness.R4",
-        "property history, a diff since the first data version and a slice over the range",
+        "property history, a diff since the first data version and a slice of one object over "
+        "the latest versions",
         "Check that the timed mappings read their valid-time column and that the source holds "
         "more than one point in time, then dta build --from load.",
         body,
