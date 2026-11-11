@@ -1,7 +1,10 @@
 """Reading, writing and hashing manifests.
 
-The hash is taken over a canonical JSON form, so it does not depend on key
-order, YAML formatting or comments.
+A hash is taken over a canonical JSON form of what the manifest states, so it
+does not depend on key order, YAML formatting or comments, nor on whether a
+value this software would fill in anyway is written out. A later release that
+adds an optional field therefore leaves the hashes of existing manifests, and
+the contracts signed under them, as they were.
 """
 
 from __future__ import annotations
@@ -70,6 +73,11 @@ def dump_manifest(manifest: Manifest) -> str:
     return yaml.safe_dump(to_plain(manifest), sort_keys=False, allow_unicode=True)
 
 
+def _stated(manifest: Manifest) -> dict[str, Any]:
+    """What the manifest says, without the values that are only defaults."""
+    return manifest.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+
+
 def _digest(value: Any) -> str:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -77,7 +85,7 @@ def _digest(value: Any) -> str:
 
 def manifest_hash(manifest: Manifest) -> str:
     """Identifies the whole manifest, statuses included."""
-    return _digest(to_plain(manifest))
+    return _digest(_stated(manifest))
 
 
 def contract_hash(manifest: Manifest) -> str:
@@ -86,14 +94,14 @@ def contract_hash(manifest: Manifest) -> str:
     A revision that leaves this hash unchanged stays inside the contract and
     needs no new approval.
     """
-    plain = to_plain(manifest)
+    plain = _stated(manifest)
     signature = (plain.get("ontology") or {}).get("type_signature")
     return _digest({"contract": plain.get("contract"), "type_signature": signature})
 
 
 def access_hash(manifest: Manifest) -> str:
     """Identifies how the sources are reached: a probe holds only while this is unchanged."""
-    plain = to_plain(manifest)
+    plain = _stated(manifest)
     sources = {
         source_id: {
             key: (entry or {}).get(key) for key in ("connector", "location", "env", "options")
@@ -109,7 +117,7 @@ def subtree_hash(manifest: Manifest, paths: list[str]) -> str:
 
     Used to pin a delegated task to exactly the parts of the manifest it reads.
     """
-    plain = to_plain(manifest)
+    plain = _stated(manifest)
     picked = {}
     for path in sorted(set(paths)):
         node: Any = plain
