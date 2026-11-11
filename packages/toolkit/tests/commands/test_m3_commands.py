@@ -89,6 +89,16 @@ def test_probe_and_profile_refuse_to_start_without_every_variable(make_twin) -> 
     assert not (twin.root / "compose.yaml").exists()  # nothing was started
 
 
+def test_stack_commands_name_the_missing_variables(make_twin) -> None:
+    twin = make_twin()
+    twin.write()
+    twin.ok("env", "template")
+    for command in (("up",), ("down", "--destroy-data"), ("logs", "api")):
+        error = twin.failed("env.missing", *command)
+        assert sorted(error["detail"]["missing"]) == ["DTA_API_PORT", kit.DATA_ENV]
+    assert not (twin.root / "compose.yaml").exists()
+
+
 # -- ontology check ----------------------------------------------------------------
 
 
