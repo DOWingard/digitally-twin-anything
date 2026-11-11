@@ -23,6 +23,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 # One layer holds everything. The sources are mounted for the build, not
 # copied; the installer is removed again; no download or build cache is kept.
+# The packages are compiled once here: a container cannot write bytecode next
+# to them, and compiling at every start costs each process seconds.
 RUN --mount=type=bind,source=.,target=/src,rw \
     pip install --no-cache-dir --root-user-action=ignore uv==0.9.18 \
     && cd /src \
@@ -34,6 +36,7 @@ RUN --mount=type=bind,source=.,target=/src,rw \
          find /opt/venv/lib/python3.12/site-packages/$package -type d -name tests -prune \
            -exec rm -rf {} + ; \
        done \
+    && python -m compileall -q -j 0 /opt/venv/lib/python3.12/site-packages \
     && rm -rf /root/.cache /tmp/* \
     && useradd --no-create-home --shell /usr/sbin/nologin --uid 10001 twin \
     && mkdir -p /var/lib/dta/artifacts /var/log/dta \
