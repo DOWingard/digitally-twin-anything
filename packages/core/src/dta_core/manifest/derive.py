@@ -117,4 +117,15 @@ def derive_interval(manifest: Manifest) -> IntervalDerivation:
                 f"{fmt_duration(max(bound.value, _ZERO))} for the interval, and it cannot be "
                 f"shorter than {fmt_duration(interval)} ({binding})"
             )
+    sync = manifest.sync
+    if sync is not None and sync.minimum_interval is not None and interval < sync.minimum_interval:
+        problems.append(
+            f"the rule gives {fmt_duration(interval)}, below minimum_interval "
+            f"{fmt_duration(sync.minimum_interval)}"
+        )
+    if sync is not None and sync.maximum_interval is not None and interval > sync.maximum_interval:
+        problems.append(
+            f"the rule gives {fmt_duration(interval)}, above maximum_interval "
+            f"{fmt_duration(sync.maximum_interval)}"
+        )
     return IntervalDerivation(interval, inputs, binding, tuple(problems))

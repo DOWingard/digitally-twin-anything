@@ -17,6 +17,7 @@ from . import (
     skill,
     source,
     status,
+    sync,
 )
 
 
@@ -45,6 +46,10 @@ def register(app: typer.Typer) -> None:
     app.add_typer(source_app, name="source", help="Reach the twin's sources from its stack.")
 
     app.command("profile")(profile.profile)
+
+    sync_app = typer.Typer(add_completion=False, no_args_is_help=True)
+    sync_app.command("derive")(sync.derive)
+    app.add_typer(sync_app, name="sync", help="How often the twin reads its sources.")
 
     ontology_app = typer.Typer(add_completion=False, no_args_is_help=True)
     ontology_app.command("check")(ontology.check)
