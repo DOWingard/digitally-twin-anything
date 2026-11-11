@@ -20,7 +20,7 @@ from functools import cached_property
 from typing import Any, Protocol
 
 from ...log import Log
-from ..io import contract_hash, manifest_hash
+from ..io import access_hash, contract_hash, manifest_hash
 from ..models import Manifest, Owner
 from ..status import OPEN, FieldState, gaps, required_fields
 from .findings import Finding, errors_of, run_checks
@@ -214,7 +214,8 @@ def _contract(inputs: GateInputs) -> GateOutcome:
     return _outcome(1, [f"{path} is not confirmed" for path in open_paths])
 
 
-recorded_gate(2)
+# A probe of the sources holds until the way they are reached changes.
+recorded_gate(2, subject=access_hash)
 
 
 @computed_gate(3)
@@ -256,8 +257,9 @@ def _gaps(inputs: GateInputs) -> GateOutcome:
     return _outcome(5, reasons, **detail)
 
 
+# What was built, accepted and handed over is one exact manifest.
 for _stage in (6, 7, 8):
-    recorded_gate(_stage)
+    recorded_gate(_stage, subject=manifest_hash)
 
 
 def subject_of(stage: int, manifest: Manifest) -> str | None:

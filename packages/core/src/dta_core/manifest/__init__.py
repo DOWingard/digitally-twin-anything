@@ -1,6 +1,7 @@
 """The manifest: schema, field statuses, reading, writing and hashing."""
 
 from .io import (
+    access_hash,
     contract_hash,
     dump_manifest,
     load_manifest,
@@ -17,6 +18,7 @@ __all__ = [
     "Manifest",
     "Owner",
     "Status",
+    "access_hash",
     "contract_hash",
     "dump_manifest",
     "gaps",

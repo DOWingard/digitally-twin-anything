@@ -91,6 +91,19 @@ def contract_hash(manifest: Manifest) -> str:
     return _digest({"contract": plain.get("contract"), "type_signature": signature})
 
 
+def access_hash(manifest: Manifest) -> str:
+    """Identifies how the sources are reached: a probe holds only while this is unchanged."""
+    plain = to_plain(manifest)
+    sources = {
+        source_id: {
+            key: (entry or {}).get(key) for key in ("connector", "location", "env", "options")
+        }
+        for source_id, entry in sorted((plain.get("sources") or {}).items())
+    }
+    networks = (plain.get("runtime") or {}).get("networks")
+    return _digest({"sources": sources, "networks": networks})
+
+
 def subtree_hash(manifest: Manifest, paths: list[str]) -> str:
     """Hash of the values at the given dotted paths; absent paths hash as null.
 

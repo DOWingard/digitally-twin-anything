@@ -1,7 +1,8 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from dta_core.manifest import contract_hash, manifest_hash, parse_manifest
+import pytest
+from dta_core.manifest import access_hash, contract_hash, manifest_hash, parse_manifest, to_plain
 from dta_core.manifest.checks import (
     GATES,
     STAGE_NAMES,
@@ -95,10 +96,34 @@ def test_recorded_gate_counts_only_while_its_subject_matches():
     changed = _draft(twin={"id": "demo", "name": "Renamed"})
     assert _outcomes(changed, current)["design"].verdict == Verdict.stale
 
-    # A recorded gate without a defined subject counts as recorded.
-    access = {"access": SimpleNamespace(passed=True, subject_hash=None)}
-    assert subject_of(2, manifest) is None
-    assert _outcomes(manifest, access)["access"].verdict == Verdict.passed
+
+def test_access_holds_until_the_way_a_source_is_reached_changes():
+    manifest = _draft()
+    probed = {"access": SimpleNamespace(passed=True, subject_hash=access_hash(manifest))}
+    assert subject_of(2, manifest) == access_hash(manifest)
+    assert _outcomes(manifest, probed)["access"].verdict == Verdict.passed
+
+    # Anything but the sources' addresses and the networks leaves the probe valid.
+    renamed = _draft(twin={"id": "demo", "name": "Renamed"})
+    assert _outcomes(renamed, probed)["access"].verdict == Verdict.passed
+
+    sources = to_plain(manifest)["sources"]
+    first = sorted(sources)[0]
+    moved = {**sources, first: {**sources[first], "location": "postgresql://${OTHER}/db"}}
+    assert _outcomes(_draft(sources=moved), probed)["access"].verdict == Verdict.stale
+    joined = _draft(runtime={"networks": ["plant-net"]})
+    assert _outcomes(joined, probed)["access"].verdict == Verdict.stale
+
+
+@pytest.mark.parametrize("stage", [6, 7, 8])
+def test_build_acceptance_and_handover_hold_for_one_exact_manifest(stage):
+    manifest = _draft()
+    name = STAGE_NAMES[stage]
+    recorded = {name: SimpleNamespace(passed=True, subject_hash=manifest_hash(manifest))}
+    assert subject_of(stage, manifest) == manifest_hash(manifest)
+    assert _outcomes(manifest, recorded)[name].verdict == Verdict.passed
+    changed = _draft(twin={"id": "demo", "name": "Renamed"})
+    assert _outcomes(changed, recorded)[name].verdict == Verdict.stale
 
 
 def test_profiling_needs_a_profile_on_every_source():
