@@ -1,9 +1,7 @@
 """A type's objects over a run of versions, as tables for analysis and learning.
 
-The state at every version of a range is never read version by version. The
-table at the first version (one read) and every change over the range (one
-read) are taken as events per object; an as-of join in DuckDB then gives, for
-each object and each version of the range, the last event at or before it.
+What was in force at each version is worked out by `dta_runtime.inforce`: two
+reads of the store and an as-of join, whatever the number of versions.
 """
 
 from __future__ import annotations
@@ -12,7 +10,6 @@ import json
 import time
 from collections.abc import Sequence
 
-import duckdb
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -20,6 +17,7 @@ from dta_core.log import Log
 from dta_core.schema import Kind, ObjectType, Ontology
 from dta_core.store import Store, VersionRef
 
+from .. import inforce
 from .problems import ApiError
 from .tables import version_json
 
@@ -27,15 +25,6 @@ log = Log("api.slice")
 
 # Objects times versions of the state grid, at most.
 MAX_SLICE_CELLS = 5_000_000
-_TIME = pa.timestamp("us", tz="UTC")
-
-_AS_OF = """
-SELECT g.vi AS vi, e.row AS row
-FROM (SELECT o.uid, a.vi, a.seq FROM objects o CROSS JOIN axis a) AS g
-ASOF JOIN events AS e ON g.uid = e.uid AND g.seq >= e.seq
-WHERE NOT e.removed
-ORDER BY g.uid, g.seq
-"""
 
 
 def numeric_properties(object_type: ObjectType) -> list[str]:
@@ -44,27 +33,6 @@ def numeric_properties(object_type: ObjectType) -> list[str]:
         for field in object_type.fields
         if field.kind in (Kind.integer, Kind.float) and not field.multivalued
     ]
-
-
-def _connect() -> duckdb.DuckDBPyConnection:
-    """An in-memory DuckDB that can read nothing but the tables registered with it."""
-    connection = duckdb.connect(
-        ":memory:",
-        config={
-            "enable_external_access": False,
-            "autoinstall_known_extensions": False,
-            "autoload_known_extensions": False,
-            "threads": 2,
-        },
-    )
-    # Session time zone of the host otherwise, which would change any time read back.
-    connection.execute("SET TimeZone = 'UTC'")
-    connection.execute("SET lock_configuration = true")
-    return connection
-
-
-def _uid_filter(uids: Sequence[str] | None) -> list[tuple[str, str, object]] | None:
-    return [("uid", "in", list(uids))] if uids else None
 
 
 def state_slice(
@@ -78,84 +46,22 @@ def state_slice(
     """One row per object and version of `versions` at which the object exists:
     `_version`, `_seq`, `_t`, `uid`, then its properties as of that version."""
     started = time.perf_counter()
-    first, last = versions[0], versions[-1]
-    columns = None if properties is None else list(properties)
-    initial = store.table(
-        type_name, columns=columns, filter=_uid_filter(uids), at=first, ontology=ontology
+    events = inforce.events(
+        store, ontology, type_name, versions[0], versions[-1], properties=properties, uids=uids
     )
-    names = [name for name in initial.column_names if name != "uid"]
-    value_columns = ["uid", *names]
-    if last.seq > first.seq:
-        changes = store.changes(
-            type_name,
-            f"{first.id}..{last.id}",
-            branch=first.branch,
-            columns=columns,
-            ontology=ontology,
-        )
-        changes = changes.filter(pc.greater(changes.column("_seq"), first.seq))
-        if uids:
-            changes = changes.filter(
-                pc.is_in(changes.column("uid"), value_set=pa.array(list(uids), pa.string()))
-            )
-    else:
-        changes = None
-    parts = [initial.select(value_columns)]
-    seqs = [pa.array(np.full(initial.num_rows, first.seq, dtype=np.int64))]
-    removed = [pa.array(np.zeros(initial.num_rows, dtype=bool))]
-    if changes is not None and changes.num_rows:
-        parts.append(changes.select(value_columns))
-        seqs.append(changes.column("_seq").combine_chunks())
-        removed.append(pc.equal(changes.column("_change"), "removed").combine_chunks())
-    events = pa.concat_tables(parts, promote_options="permissive").combine_chunks()
-    objects = pc.unique(events.column("uid")).sort()
-    cells = len(objects) * len(versions)
-    if cells > MAX_SLICE_CELLS:
+    objects = len(inforce.objects(events))
+    if objects * len(versions) > MAX_SLICE_CELLS:
         raise ApiError(
-            f"the slice would hold {len(objects)} objects at {len(versions)} versions, more "
+            f"the slice would hold {objects} objects at {len(versions)} versions, more "
             f"than {MAX_SLICE_CELLS} cells; narrow it with uids, a shorter range or a step",
             code="api.slice_too_large",
         )
-    keys = pa.table(
-        {
-            "row": pa.array(np.arange(events.num_rows, dtype=np.int64)),
-            "uid": events.column("uid"),
-            "seq": pa.concat_arrays(seqs),
-            "removed": pa.concat_arrays(removed),
-        }
-    )
-    axis = pa.table(
-        {
-            "vi": pa.array(np.arange(len(versions), dtype=np.int64)),
-            "seq": pa.array([version.seq for version in versions], pa.int64()),
-        }
-    )
-    connection = _connect()
-    try:
-        connection.register("events", keys)
-        connection.register("axis", axis)
-        connection.register("objects", pa.table({"uid": objects}))
-        found = connection.sql(_AS_OF).to_arrow_table()
-    finally:
-        connection.close()
-    at_version = found.column("vi").combine_chunks()
-    values = events.take(found.column("row").combine_chunks())
-    result = pa.table(
-        {
-            "_version": pa.array([version.id for version in versions], pa.string()).take(
-                at_version
-            ),
-            "_seq": pa.array([version.seq for version in versions], pa.int64()).take(at_version),
-            "_t": pa.array([version.t for version in versions], _TIME).take(at_version),
-        }
-    )
-    for name in value_columns:
-        result = result.append_column(values.schema.field(name), values.column(name))
+    result = inforce.at_versions(events, versions)
     log.debug(
         "state slice computed",
         type=type_name,
         versions=len(versions),
-        objects=len(objects),
+        objects=objects,
         events=events.num_rows,
         rows=result.num_rows,
         elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
