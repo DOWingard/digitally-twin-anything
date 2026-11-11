@@ -325,10 +325,18 @@ def api(
         import uvicorn
 
         from .api import create_app
+        from .connections import SERVER_KEEP_ALIVE_S
 
         settings = RuntimeSettings.from_env()
-        log.info("API starting", host=host, port=port)
-        uvicorn.run(create_app(settings), host=host, port=port, log_config=None, access_log=False)
+        log.info("API starting", host=host, port=port, keep_alive_s=SERVER_KEEP_ALIVE_S)
+        uvicorn.run(
+            create_app(settings),
+            host=host,
+            port=port,
+            log_config=None,
+            access_log=False,
+            timeout_keep_alive=SERVER_KEEP_ALIVE_S,
+        )
 
     _run("api", work)
 

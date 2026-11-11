@@ -18,6 +18,8 @@ from urllib.parse import quote
 import httpx
 from dta_core.log import Log, current_trace_id, new_trace_id
 
+from ..connections import client_limits
+
 log = Log("ui.client")
 
 API_PREFIX = "/api/v1"
@@ -108,6 +110,9 @@ class ApiClient:
             base_url=self.api_url + API_PREFIX,
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
             timeout=timeout,
+            # The page polls every few seconds: the connection is kept between polls, and
+            # given up before the API would close it.
+            limits=client_limits(),
         )
 
     def close(self) -> None:

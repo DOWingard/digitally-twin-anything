@@ -25,6 +25,7 @@ import httpx
 from dta_core.log import Log
 from pydantic import TypeAdapter, ValidationError
 
+from .connections import client_limits
 from .settings import SchedulerSettings
 
 log = Log("runtime.scheduler")
@@ -58,6 +59,7 @@ class Scheduler:
             base_url=settings.api_url,
             headers={"Authorization": f"Bearer {settings.api_token}"},
             timeout=TIMEOUT,
+            limits=client_limits(),
         )
         self._manifest_hash: str | None = None
         self._interval: timedelta | None = None
