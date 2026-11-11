@@ -13,10 +13,10 @@ from dta_core.store import LIVE_BRANCH, StoredObject, UnknownProperty, UnknownTy
 from fastapi import APIRouter, Query, Request
 from starlette.responses import Response
 
+from ...filters import edge_where_identity, parse_edge_where, parse_where
 from ...graph import links as object_links
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, TOTAL_HEADER, tabular, versioned
-from ..filters import edge_where_identity, parse_edge_where, parse_where
 from ..formats import Format, json_response, negotiate, table_response
 from ..models import CountedPage, FoundPage, ObjectOne, Page
 from ..objects import count_objects, get_object, is_a, read_objects, shape_of

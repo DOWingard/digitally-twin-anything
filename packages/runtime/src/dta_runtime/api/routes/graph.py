@@ -11,6 +11,7 @@ from dta_core.store import LIVE_BRANCH, Store, UnknownProperty, UnknownType, Ver
 from fastapi import APIRouter, Query, Request
 from starlette.responses import Response
 
+from ...filters import edge_where_identity, parse_edge_where
 from ...graph import (
     LOCAL_DEPTH,
     EdgeFilter,
@@ -30,7 +31,6 @@ from ...graph.local import IN_CHUNK
 from ...graph.result import ordered_edges
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, tabular, versioned
-from ..filters import edge_where_identity, parse_edge_where
 from ..formats import json_response, negotiate, rows, table_response
 from ..models import GraphOut, Page, PathsOut, SubgraphRequest
 from ..paging import paged_response, start

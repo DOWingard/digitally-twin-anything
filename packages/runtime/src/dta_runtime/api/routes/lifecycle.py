@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Path, Query
 from starlette.responses import Response
 
+from ...filters import repair_plus
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, errors
 from ..formats import json_response
@@ -16,7 +17,6 @@ from ..logfiles import LogQuery, read_logs
 from ..models import JobList, JobOne, JobState, LogsOut
 from ..params import split_list
 from ..problems import ApiError
-from ..services import repair_plus
 
 router = APIRouter(prefix=f"{API_PREFIX}/lifecycle", tags=["lifecycle"])
 

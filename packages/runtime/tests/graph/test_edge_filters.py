@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from dta_runtime.api.filters import parse_edge_where
+from dta_runtime.filters import parse_edge_where
 from dta_runtime.graph import (
     MASKS_PER_VERSION,
     WEIGHTS_PER_VERSION,
