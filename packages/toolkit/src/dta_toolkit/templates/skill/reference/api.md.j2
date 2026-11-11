@@ -21,7 +21,7 @@ Responses that read data name the version they read: `"version": {"id", "seq", "
 
 | Endpoint | Returns |
 |---|---|
-| `GET /meta/health` | twin id and name, tier, head version, number of versions, fidelity state, manifest revision and hash; `clock` (`kind`, `available`, `now`: the twin's time); `sync` (`interval`, `staleness`, `freshness_s`, `fresh`, `sources`, `last_run`, `job`), null for a static twin |
+| `GET /meta/health` | twin id and name, tier, head version, number of versions, fidelity state, manifest revision and hash; `clock` (`kind`, `available`, `now`: the twin's time); `sync` (`interval`, `staleness`, `freshness_s`, `fresh`, `questions`, `sources`, `last_run`, `job`), null for a static twin |
 | `GET /meta/schema?at=` | object and link types with ancestors, link ends and properties (kind, unit, required, role, description); abstract classes with their concrete kinds; enums |
 | `GET /meta/schema/linkml?at=` | the same schema as LinkML text |
 | `GET /meta/manifest?at=` | the twin's manifest: contract, sources (without secrets), mappings |
@@ -73,7 +73,7 @@ As JSON these are paged like every other table; as Arrow or Parquet they come wh
 | `GET /sync/sources` | per source: `status` (`ok`, `failing`, `disabled`), `last_error`, `watermark` (the time of its newest data), `last_success_at`, `freshness_s`, its `datasets` with how far each has been read, its `mappings`; and the twin's `clock` |
 | `GET /sync/runs?status=&kind=` | the runs that loaded or synced the twin, newest first: `status` (`running`, `succeeded`, `partial`, `failed`), `kind` (`backfill`, `incremental`, `replay`), when it started and finished, versions and rows written, rows set aside and late, `error` |
 | `GET /sync/runs/{uid}` | one run |
-| `GET /sync/runs/{uid}/rejects?rule=&mapping=` | the rows the run set aside, each with the rule it broke; `total` counts the rows that pass the filters |
+| `GET /sync/runs/{uid}/rejects?rule=&mapping=` | the rows the run set aside (which row, which rule it broke and why; never the row's values); `total` counts the rows that pass the filters; a cursor is refused once the file has changed: start again |
 {% if live %}
 | `POST /sync/runs`, body `{}`, `{"sources": [...]}` or `{"replay": {"source": ..., "dataset": ...}}`, optional header `Idempotency-Key` | starts a run now and answers `{"job": {...}}`: 202 for a new job, 200 when the same run is already queued or running |
 {% endif %}
@@ -83,7 +83,7 @@ As JSON these are paged like every other table; as Arrow or Parquet they come wh
 | Endpoint | Returns |
 |---|---|
 | `GET /lifecycle/jobs?kind=&state=` | work the API does in the background, newest first: `id`, `kind`, `state` (`queued`, `running`, `succeeded`, `failed`), `result`, `error`, `trace_id`, `duration_ms` |
-| `GET /lifecycle/jobs/{id}` | one job |
+| `GET /lifecycle/jobs/{id}` | one job, as `{"data": {...}}` |
 | `GET /lifecycle/logs?level=&since=&context=&trace_id=&service=&limit=` | the twin's own structured log lines, newest first |
 
 ## What this API does not do

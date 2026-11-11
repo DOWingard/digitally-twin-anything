@@ -73,11 +73,11 @@ Every read returns the twin as of one version. A version's time is the time of t
 `/meta/health` has two sections that matter here:
 
 - `clock`: the twin's time (`now`) and where it is read from (`kind`). This is "now" for every question about the present, about how old something is, or about "the last hour". Use it, never your own clock: the twin's time is that of its sources. `available: false` means the twin cannot tell the time at the moment: say so, and do not answer questions about the present.
-- `sync`: `interval` (how often the sources are read), `freshness_s` (the age in seconds, on the twin's clock, of the newest data of the source that is furthest behind), `staleness` (the oldest the contract allows; null when no question sets a limit), `fresh` (whether the first is within the second), the state of each source, the last run, and the run in progress if there is one.
+- `sync`: `interval` (how often the sources are read); `questions`, one entry per question that sets a limit on the age of its data: `staleness` (that limit), `freshness_s` (the age in seconds, on the twin's clock, of the newest data of the source the question waits for longest; only the sources the question is answered from count), `fresh` (whether the age is within the limit) and `source` (which source that is); `fresh`, `freshness_s` and `staleness` for the twin as a whole, which are those of the question nearest its limit; the state of each source; the last run; and the run in progress if there is one.
 
 Before a contract answer about the present:
 
-1. Read `/meta/health`. If `sync.fresh` is false the data is older than was agreed: give the answer with its age and say that it is outside the agreed limit. `GET /sync/sources` shows which source is behind or failing, and why.
+1. Read `/meta/health` and find the question in `sync.questions`. If its `fresh` is false, its data is older than was agreed: give the answer with its age and say that it is outside the agreed limit. Its `source` names the source that is behind; `GET /sync/sources` says why. A question that is not listed has no limit. `fresh: null` means the age cannot be measured now (the clock is unavailable, or nothing was read yet): say that.
 2. Pin the head you read (`at=<head id>`). The next version can arrive while you work.
 
 What the twin did, and why data is missing:

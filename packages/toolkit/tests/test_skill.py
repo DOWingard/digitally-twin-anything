@@ -166,13 +166,21 @@ def test_a_live_twin_is_told_how_to_judge_and_refresh_its_data():
     skill = render(live_manifest(sync={"interval": "PT15M"}))
     body = skill.files[SKILL_FILE]
     assert "## A live twin" in body and "every 15 minutes" in body
-    for needed in ("`clock`", "`freshness_s`", "`fresh`", "/sync/sources", "POST /sync/runs"):
+    for needed in (
+        "`clock`",
+        "`questions`",
+        "`freshness_s`",
+        "`fresh`",
+        "/sync/sources",
+        "POST /sync/runs",
+    ):
         assert needed in body, needed
     assert "This API only reads" not in body
     recipes, api, errors = (
         skill.files[f"reference/{name}.md"] for name in ("recipes", "api", "errors")
     )
     assert "## 8. Work with a live twin" in recipes and "Idempotency-Key" in recipes
+    assert '.json()["data"]' in recipes and 'sync["questions"]' in recipes
     assert "| `POST /sync/runs`" in api
     assert "`sync.busy`" in errors and "`twin.not_live`" in errors
     assert "make it read its sources now" in front_matter(body)["description"]

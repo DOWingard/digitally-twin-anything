@@ -218,7 +218,11 @@ health = get("/meta/health").json()
 clock, sync = health["clock"], health["sync"]
 now = clock["now"]                    # the twin's time; None when clock["available"] is false
 version = health["head"]["id"]        # pin it: the head moves
-# fresh is None when no question sets a limit; freshness_s is None when the clock is unavailable
+# per question that sets a limit: how old its data is, and the source it waits for
+for q in sync["questions"]:
+    print(q["id"], q["fresh"], q["freshness_s"], q["staleness"], q["source"])
+# the twin as a whole: the question nearest its limit. fresh is None when nothing can be
+# measured (no question sets a limit, the clock is unavailable, nothing was read yet)
 print(now, sync["fresh"], sync["freshness_s"], sync["staleness"], sync["last_run"])
 
 for source in get("/sync/sources").json()["data"]:
@@ -247,12 +251,13 @@ if response.status_code >= 400:
 job = response.json()["job"]          # 202: started for you; 200: the same run was already in progress
 while job["state"] in ("queued", "running"):
     time.sleep(1)
-    job = get(f"/lifecycle/jobs/{job['id']}").json()
+    job = get(f"/lifecycle/jobs/{job['id']}").json()["data"]
 report = job["result"]                # the run's report; None when the job failed before it had one
 print(job["state"], job["error"], report and (report["status"], report["versions_written"], report["rows_written"]))
 ```
 
-- Body `{}` reads every source. `{"sources": ["<id>"]}` reads only those.
+- Body `{}` reads every source. `{"sources": ["<id>"]}` reads only those; an empty list is refused.
+- A job is kept in the API's memory only. If `/lifecycle/jobs/{id}` answers 404 `job.not_found` (the API restarted), look for the run in `/sync/runs` instead.
 - A job in state `succeeded` whose report has status `partial` synced some sources and not others: `report["sources"]` says which, each with its error.
 - A run writes at least one version, so the head has moved when the job ends: read `/meta/health` again and pin the new head.
 - A run takes the data up to the last interval that has ended on the twin's clock. Data newer than that arrives with the next run; starting another run at once brings nothing.
