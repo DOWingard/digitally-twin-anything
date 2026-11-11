@@ -18,7 +18,7 @@ from dta_core.log import trace  # noqa: E402
 from dta_runtime.settings import RuntimeSettings  # noqa: E402
 from dta_runtime.sync import LoadReport, load  # noqa: E402
 from dta_runtime.twin import Bundle, Twin  # noqa: E402
-from sync_testkit import T0, Sources  # noqa: E402
+from sync_testkit import T0, TRACE, Sources  # noqa: E402
 
 
 def _runtime_conftest() -> Any:
@@ -33,8 +33,6 @@ def _runtime_conftest() -> Any:
 
 
 water_manifest = _runtime_conftest().water_manifest
-
-TRACE = "0123456789abcdef0123456789abcdef"
 
 
 @pytest.fixture

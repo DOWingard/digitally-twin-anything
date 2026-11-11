@@ -20,6 +20,8 @@ from dta_core.store import Store
 T0 = datetime(2026, 1, 5, tzinfo=UTC)
 MINUTE = timedelta(minutes=1)
 TIME = pa.timestamp("us", tz="UTC")
+# The trace every test run is made under, so that the names of runs repeat.
+TRACE = "0123456789abcdef0123456789abcdef"
 
 
 class MemoryConnector:
