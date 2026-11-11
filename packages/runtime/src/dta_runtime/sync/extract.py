@@ -14,7 +14,7 @@ from dta_core.manifest.models import Source
 from dta_core.sources import Connector, placeholders
 
 from .plan import DatasetPlan, Plan, RelationKey
-from .records import Cursor
+from .records import Cursor, cursor_text
 
 log = Log("sync.extract")
 
@@ -123,12 +123,17 @@ def extract(
     sources: Mapping[str, Source],
     env: Mapping[str, str],
     connect: Connect,
-    cursors: Mapping[RelationKey, Cursor],
+    since: Mapping[RelationKey, Cursor],
     *,
     wanted: Collection[RelationKey] | None = None,
     alone: bool = False,
+    whole: Mapping[RelationKey, str] | None = None,
 ) -> Extraction:
     """The datasets of the plan, each read once; `wanted` keeps only those named.
+
+    `since` gives, for a dataset that is read on, the value of its cursor
+    column after which its rows are asked for; a dataset without one is read
+    whole. `whole` says why, for a dataset that could have been read on.
 
     A source that cannot be read raises `SourceFailure`. With `alone` it is
     instead left out, with everything read from it, and listed in the result:
@@ -152,23 +157,27 @@ def extract(
             continue
         try:
             for dataset in mine:
-                since = cursors.get(dataset.key) if dataset.cursor_column else None
+                after = since.get(dataset.key) if dataset.cursor_column else None
                 read_started = time.perf_counter()
                 try:
-                    table = _read(connector, dataset, since)
+                    table = _read(connector, dataset, after)
                 except Exception as exc:
                     failure = _failure(source_id, dataset.name, source, env, exc, alone)
                     if not alone:
                         raise failure from None
                     break
-                read[dataset.key] = DatasetRead(dataset, table, since)
+                read[dataset.key] = DatasetRead(dataset, table, after)
                 log.info(
                     "dataset read",
                     source=source_id,
                     dataset=dataset.name,
                     rows=table.num_rows,
                     columns=table.num_columns,
-                    incremental=since is not None,
+                    # Whole, or on from where an earlier run stopped.
+                    read="on" if after is not None else "whole",
+                    since=cursor_text(after) if after is not None else None,
+                    by=dataset.cursor_column if after is not None else None,
+                    whole_because=(whole or {}).get(dataset.key) if after is None else None,
                     elapsed_ms=round((time.perf_counter() - read_started) * 1000.0, 1),
                 )
         finally:
