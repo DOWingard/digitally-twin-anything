@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 from dta_core.log import Log
 from dta_core.manifest import Manifest
+from dta_core.manifest.models import Tier
 
 from .readiness import API, Context
 from .result import CheckResult, described, problem_of
@@ -14,9 +15,63 @@ from .result import CheckResult, described, problem_of
 log = Log("acceptance.data")
 
 RUN_TYPE = "TwinSyncRun"
+RUNS = f"{API}/sync/runs"
+BACKFILL = "backfill"
+_RUN_FIELDS = (
+    "uid",
+    "kind",
+    "status",
+    "rows_read",
+    "rows_written",
+    "rows_rejected",
+    "rejects_location",
+)
+
+
+def _latest_run(ctx: Context, evidence: dict[str, Any], key: str, kind: str | None) -> Any:
+    """The newest run record (of one kind), into `evidence[key]`; False when unreadable."""
+    params: dict[str, Any] = {"limit": 1}
+    if kind is not None:
+        params["kind"] = kind
+    request = described("GET", RUNS, params)
+    response = ctx.api.get(RUNS, params=params)
+    if response.status_code != 200:
+        evidence[key] = {"failing_request": request, "response": problem_of(response)}
+        return False
+    rows = response.json().get("data") or []
+    if not rows:
+        evidence[key] = {"request": request, "reason": "no such run is recorded in the twin"}
+        return None
+    run = rows[0]
+    evidence[key] = {"request": request, **{name: run.get(name) for name in _RUN_FIELDS}}
+    return run
+
+
+def _live_constraints(ctx: Context) -> CheckResult:
+    """A live twin: the load of history and the latest run must both have kept every row."""
+    evidence: dict[str, Any] = {}
+    load = _latest_run(ctx, evidence, "load", BACKFILL)
+    latest = _latest_run(ctx, evidence, "latest_run", None)
+    passed = bool(load) and bool(latest)
+    if passed:
+        passed = not load.get("rows_rejected") and not latest.get("rows_rejected")
+    if not passed:
+        log.warn("constraint check failed", evidence=evidence)
+    return CheckResult(
+        id="data.constraints",
+        examined="the load of history and the latest sync run recorded in the twin set no row "
+        "aside",
+        passed=passed,
+        evidence=evidence,
+        remedy="Read the rows set aside (GET /api/v1/sync/runs/{uid}/rejects), correct the "
+        "source or the mapping, then dta build --from load for the load, or dta sync run for a "
+        "later run.",
+    )
 
 
 def data_constraints(ctx: Context) -> CheckResult:
+    if ctx.manifest.contract is not None and ctx.manifest.contract.tier == Tier.live:
+        return _live_constraints(ctx)
     evidence: dict[str, Any] = {}
     params = {"sort": "-started_at", "limit": 1}
     request = described("GET", f"{API}/objects/{RUN_TYPE}", params)
