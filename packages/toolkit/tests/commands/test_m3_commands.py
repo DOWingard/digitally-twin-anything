@@ -202,18 +202,24 @@ def test_install_skill_installs_records_the_handover_and_replaces_a_copy(
     twin.ok("generate", "skill")
     target = tmp_path / "skills"
 
-    result = twin.ok("install-skill", "--target", str(target))
+    # Handover follows acceptance: nothing is installed for a twin that was not accepted.
+    refused = twin.failed("handover.not_accepted", "install-skill", "--target", str(target))
+    assert "acceptance" in [gate["name"] for gate in refused["detail"]["gates"]]
+    assert not target.exists() and twin.gates()["handover"] == "not_evaluated"
+
+    result = twin.ok("install-skill", "--target", str(target), "--provisional")
     destination = target / f"twin-{twin.id}"
     assert result["installed"] == str(destination)
+    assert "acceptance" in result["provisional"]
     assert (destination / "SKILL.md").is_file()
     assert twin.dta.state()["installed_skill"] == str(destination)
-    assert twin.gates()["handover"] == "passed"
+    assert twin.gates()["handover"] == "failed"  # installed, but not a handover
     handover = (twin.root / "reports" / "handover.md").read_text(encoding="utf-8")
     assert "q_level" in handover and "DTA_API_TOKEN" in handover
     assert "Gate 2 (access) has not passed" in handover  # nothing was probed in this test
 
     (destination / "stale.md").write_text("from an earlier install\n", encoding="utf-8")
-    twin.ok("install-skill", "--target", str(target))
+    twin.ok("install-skill", "--target", str(target), "--provisional")
     assert not (destination / "stale.md").exists()
     assert sorted(p.name for p in target.iterdir()) == [destination.name]  # no staging left
     assert not any(home.iterdir())
@@ -223,7 +229,7 @@ def test_install_skill_personal_scope_installs_under_home(make_twin, home: Path)
     twin = make_twin()
     twin.write()
     twin.ok("generate", "skill")
-    result = twin.ok("install-skill", "--scope", "personal")
+    result = twin.ok("install-skill", "--scope", "personal", "--provisional")
     assert result["installed"] == str(home / ".claude" / "skills" / f"twin-{twin.id}")
 
 

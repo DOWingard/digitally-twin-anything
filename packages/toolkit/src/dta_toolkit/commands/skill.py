@@ -2,14 +2,15 @@
 
 The skill is rendered into the workspace, then copied to where the agent reads
 skills from. A copy is only ever installed from a render of the current
-manifest, and it replaces an earlier copy in one rename, so the agent never
-reads a half-written or outdated skill.
+manifest, and the new copy appears in one rename, so the agent never reads a
+half-written or outdated skill. Handover follows acceptance: a twin that has
+not been accepted is handed over only when that is asked for explicitly, and
+is then recorded as not handed over.
 """
 
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import json
 import os
 import secrets
@@ -34,8 +35,6 @@ log = Log("commands.skill")
 HANDOVER_STAGE = 8
 SKILL_DIR = "skill"
 HANDOVER_REPORT = "reports/handover.md"
-_AT_FDCWD = -100
-_RENAME_EXCHANGE = 2
 
 
 class Scope(StrEnum):
@@ -120,31 +119,13 @@ def generate_skill(ctx: typer.Context) -> None:
     emit(ctx, result, text)
 
 
-def _exchange(first: Path, second: Path) -> bool:
-    """Swap two directories in one step (Linux renameat2); False when that is not available."""
-    try:
-        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
-    except (OSError, AttributeError):
-        return False
-    renameat2.argtypes = [
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    ]
-    renameat2.restype = ctypes.c_int
-    done = renameat2(
-        _AT_FDCWD, os.fsencode(first), _AT_FDCWD, os.fsencode(second), _RENAME_EXCHANGE
-    )
-    if done != 0:
-        log.warn("directories cannot be exchanged in one step", errno=ctypes.get_errno())
-        return False
-    return True
-
-
 def install_directory(source: Path, destination: Path) -> None:
-    """Copy `source` to `destination`, replacing an earlier copy in one rename."""
+    """Copy `source` to `destination`; the new copy appears whole, in one rename.
+
+    An earlier copy is moved aside first and removed afterwards, so a reader
+    sees the earlier copy, no copy for an instant, or the new one, and never a
+    mixture of the two.
+    """
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.parent / f".{destination.name}.{secrets.token_hex(4)}.tmp"
     shutil.copytree(source, staging)
@@ -152,15 +133,13 @@ def install_directory(source: Path, destination: Path) -> None:
         if not destination.exists():
             os.rename(staging, destination)
             return
-        if _exchange(staging, destination):
-            shutil.rmtree(staging)  # now holds the earlier copy
-            return
-        # Without an atomic exchange the earlier copy is moved aside first; the new
-        # one still appears in one rename.
-        log.warn("falling back to two renames to replace the installed skill")
         aside = destination.parent / f".{destination.name}.{secrets.token_hex(4)}.old"
         os.rename(destination, aside)
-        os.rename(staging, destination)
+        try:
+            os.rename(staging, destination)
+        except OSError:
+            os.rename(aside, destination)  # put the earlier copy back
+            raise
         shutil.rmtree(aside)
     except BaseException as exc:
         log.error("skill could not be put in place", exc=exc, destination=str(destination))
@@ -237,6 +216,13 @@ def install_skill(
             help="personal: ~/.claude/skills (the default); project: ./.claude/skills.",
         ),
     ] = None,
+    provisional: Annotated[
+        bool,
+        typer.Option(
+            "--provisional",
+            help="Install although an earlier gate has not passed; the handover gate then fails.",
+        ),
+    ] = False,
 ) -> None:
     """Copy the generated skill to where the agent reads it. Records the handover gate."""
     workspace = session(ctx).workspace
@@ -259,7 +245,18 @@ def install_skill(
             code="skill.stale",
             detail={"skill_manifest_hash": found, "manifest_hash": digest},
         )
-    destination = _target_base(target, scope) / source.name
+    base = _target_base(target, scope)
+    outcomes = evaluate_gates(gate_inputs(workspace, manifest))
+    unpassed = [o for o in outcomes if o.stage < HANDOVER_STAGE and not o.passed]
+    if unpassed and not provisional:
+        log.warn("install refused: earlier gates not passed", gates=[o.name for o in unpassed])
+        raise CheckFailed(
+            f"gate(s) {', '.join(str(o.stage) for o in unpassed)} have not passed; "
+            "handover follows acceptance (--provisional installs the skill anyway)",
+            code="handover.not_accepted",
+            detail={"gates": [o.as_dict() for o in unpassed]},
+        )
+    destination = base / source.name
     with timed(log, "skill install", destination=str(destination)):
         install_directory(source, destination)
     report = workspace.root / HANDOVER_REPORT
@@ -269,9 +266,13 @@ def install_skill(
         workspace.save_state(state)
         workspace.record_gate(
             HANDOVER_STAGE,
-            passed=True,
+            passed=not unpassed,
             subject_hash=subject_of(HANDOVER_STAGE, manifest),
-            detail={"skill": source.name, "installed": str(destination)},
+            detail={
+                "skill": source.name,
+                "installed": str(destination),
+                "not_passed": [o.name for o in unpassed],
+            },
         )
         workspace.atomic_write(
             report, handover_text(workspace, manifest, destination, source.name, digest)
@@ -281,5 +282,9 @@ def install_skill(
         "installed": str(destination),
         "manifest_hash": digest,
         "handover": str(report),
+        "provisional": [o.name for o in unpassed],
     }
-    emit(ctx, result, f"Skill {source.name} installed at {destination}. Handover: {report}")
+    text = f"Skill {source.name} installed at {destination}. Handover: {report}"
+    if unpassed:
+        text += f"\nProvisional: gate(s) {', '.join(o.name for o in unpassed)} have not passed."
+    emit(ctx, result, text)
