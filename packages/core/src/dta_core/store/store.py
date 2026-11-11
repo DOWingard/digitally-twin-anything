@@ -60,7 +60,7 @@ from .errors import (
     invalid,
 )
 from .index import Chain, VersionIndex, commit_message
-from .merge import check_merged
+from .merge import check_merged, restore_absent_values
 from .migrate import plan_migration
 from .model import (
     EPOCH,
@@ -823,6 +823,9 @@ class Store(Reads):
                     conn.scalar(f"SELECT `descriptor` FROM `{ddl.ONTOLOGY_TABLE}`")
                 )
                 self._ontologies[stored_hash] = ontology
+            restored = restore_absent_values(conn, ontology)
+            if restored:
+                log.debug("absent values put back after the merge", cells=restored)
             violations = check_merged(conn, ontology, into)
             if violations:
                 conn.rollback()

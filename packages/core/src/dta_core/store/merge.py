@@ -49,6 +49,41 @@ def _types_of(conn: Conn, uids: Sequence[str]) -> dict[str, str]:
     return found
 
 
+def restore_absent_values(conn: Conn, ontology: Ontology) -> int:
+    """Put back the absent values an uncommitted merge turned into JSON nulls.
+
+    A row changed on both sides is merged cell by cell, and a JSON column
+    holding no value on either side comes out of that holding a JSON `null`.
+    Nothing ever writes one, and left alone it would count as a change made
+    by the merge and slip past a filter on absent values. Returns how many
+    cells were put back.
+    """
+    restored = 0
+    for object_type in ontology.types:
+        columns = [f.name for f in object_type.fields if ddl.column_type(ontology, f) == "JSON"]
+        if not columns:
+            continue
+        turned = " OR ".join(f"JSON_TYPE(`to_{name}`) = 'NULL'" for name in columns)
+        uids = [
+            row[0]
+            for row in conn.query(
+                f"SELECT `to_{UID_FIELD}` FROM DOLT_DIFF('HEAD', 'WORKING', %s) "
+                f"WHERE `diff_type` = 'modified' AND ({turned})",
+                (object_type.table,),
+            )
+        ]
+        for start in range(0, len(uids), _CHUNK):
+            chunk = uids[start : start + _CHUNK]
+            marks = ", ".join(["%s"] * len(chunk))
+            for name in columns:
+                restored += conn.execute(
+                    f"UPDATE `{object_type.table}` SET `{name}` = NULL "
+                    f"WHERE `{UID_FIELD}` IN ({marks}) AND JSON_TYPE(`{name}`) = 'NULL'",
+                    chunk,
+                )
+    return restored
+
+
 def check_merged(conn: Conn, ontology: Ontology, into: str) -> list[Violation]:
     """Violations among the rows an uncommitted merge has changed on `into`."""
     violations: list[Violation] = []
