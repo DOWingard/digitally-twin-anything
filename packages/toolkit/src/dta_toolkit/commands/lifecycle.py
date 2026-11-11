@@ -1,0 +1,82 @@
+"""`dta up`, `dta down`, `dta logs`: the twin's stack on this machine."""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+import typer
+from dta_core.log import Log
+
+from ..output import command, emit, session
+from ..stack import Stack
+from .common import timed
+
+log = Log("commands.lifecycle")
+
+DEFAULT_TAIL = 200
+
+
+def _services_text(services: list[dict]) -> str:
+    if not services:
+        return "No container of the stack exists."
+    return "\n".join(
+        f"{row['service']:<8} {row['state'] or '-':<10} {row['health'] or '-'}" for row in services
+    )
+
+
+@command
+def up(
+    ctx: typer.Context,
+    services: Annotated[
+        list[str] | None, typer.Argument(help="Services to start; all of them when none is named.")
+    ] = None,
+) -> None:
+    """Start the stack's services and wait until they are healthy."""
+    workspace = session(ctx).workspace
+    stack = Stack(workspace, workspace.load_manifest())
+    with timed(log, "stack up", services=services or "all"):
+        stack.up(*(services or []))
+    state = stack.services()
+    emit(ctx, {"project": stack.plan.project, "services": state}, _services_text(state))
+
+
+@command
+def down(
+    ctx: typer.Context,
+    destroy_data: Annotated[
+        bool,
+        typer.Option("--destroy-data", help="Also remove the volumes: the twin's data is lost."),
+    ] = False,
+) -> None:
+    """Remove the stack's containers; its volumes are kept unless --destroy-data."""
+    workspace = session(ctx).workspace
+    stack = Stack(workspace, workspace.load_manifest())
+    with timed(log, "stack down", volumes=destroy_data):
+        stack.down(volumes=destroy_data)
+    result = {
+        "project": stack.plan.project,
+        "containers_removed": True,
+        "volumes_removed": destroy_data,
+    }
+    text = (
+        f"Stack {stack.plan.project} removed with its data."
+        if destroy_data
+        else f"Stack {stack.plan.project} removed; its volumes are kept."
+    )
+    emit(ctx, result, text)
+
+
+@command
+def logs(
+    ctx: typer.Context,
+    service: Annotated[
+        str | None, typer.Argument(help="Service whose logs to show; all when none is named.")
+    ] = None,
+    tail: Annotated[int, typer.Option("--tail", min=1, help="Lines per container.")] = DEFAULT_TAIL,
+) -> None:
+    """The last lines the stack's containers wrote, with the values of `.env` masked."""
+    workspace = session(ctx).workspace
+    stack = Stack(workspace, workspace.load_manifest())
+    text = stack.logs(service, tail=tail)
+    log.debug("stack logs read", service=service, tail=tail, characters=len(text))
+    emit(ctx, {"project": stack.plan.project, "service": service, "tail": tail, "logs": text}, text)
