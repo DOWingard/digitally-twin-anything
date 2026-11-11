@@ -1,0 +1,223 @@
+{
+  "run_id": "5020e603b8ca",
+  "engine": "dolt",
+  "fixture": {
+    "name": "wide",
+    "sites": 50,
+    "assets": 20000,
+    "sensors": 20000,
+    "feeds": 60000,
+    "commits": 200,
+    "changed_per_commit": 200,
+    "edge_churn": 20,
+    "seed": 7,
+    "tracked": 5,
+    "samples": 6
+  },
+  "versions": 200,
+  "notes": {
+    "unenforced_constraints": [],
+    "initial_load_s": 3.8,
+    "initial_objects": 100050,
+    "load_total_s": 13.2,
+    "disk_bytes": 223174656,
+    "rejections": {
+      "bad_enum": true,
+      "missing_required": true,
+      "dangling_ref": true,
+      "wrong_type": true,
+      "below_minimum": true
+    }
+  },
+  "checks": {
+    "node_table": true,
+    "edge_table": true,
+    "point_read": true,
+    "neighbors": true,
+    "property_history": true,
+    "diff": true,
+    "branch_isolation": true,
+    "pinned_reader_stable": true
+  },
+  "ops": {
+    "commit": {
+      "n": 199,
+      "p50_ms": 39.912,
+      "p95_ms": 51.562,
+      "max_ms": 77.819
+    },
+    "point_read_asof": {
+      "n": 200,
+      "p50_ms": 0.371,
+      "p95_ms": 0.847,
+      "max_ms": 3.144,
+      "oldest_over_newest": 1.33
+    },
+    "point_read_head": {
+      "n": 100,
+      "p50_ms": 0.299,
+      "p95_ms": 0.387,
+      "max_ms": 0.819
+    },
+    "node_table_asof": {
+      "n": 6,
+      "p50_ms": 93.473,
+      "p95_ms": 153.282,
+      "max_ms": 153.282,
+      "rows": 20000
+    },
+    "edge_table_asof": {
+      "n": 6,
+      "p50_ms": 219.429,
+      "p95_ms": 227.042,
+      "max_ms": 227.042,
+      "rows": 60000
+    },
+    "property_history": {
+      "n": 10,
+      "p50_ms": 10.812,
+      "p95_ms": 14.636,
+      "max_ms": 14.636,
+      "change_points": 68
+    },
+    "diff_adjacent": {
+      "n": 10,
+      "p50_ms": 3.192,
+      "p95_ms": 18.46,
+      "max_ms": 18.46
+    },
+    "diff_first_to_head": {
+      "n": 2,
+      "p50_ms": 29.046,
+      "p95_ms": 29.186,
+      "max_ms": 29.186
+    },
+    "neighbors_k1": {
+      "n": 20,
+      "p50_ms": 1.064,
+      "p95_ms": 1.836,
+      "max_ms": 3.452,
+      "median_result_size": 3.0
+    },
+    "neighbors_k2": {
+      "n": 20,
+      "p50_ms": 1.423,
+      "p95_ms": 7.038,
+      "max_ms": 7.103,
+      "median_result_size": 9.0
+    },
+    "neighbors_k3": {
+      "n": 20,
+      "p50_ms": 2.321,
+      "p95_ms": 4.53,
+      "max_ms": 13.527,
+      "median_result_size": 21.0
+    },
+    "projection_traverse": {
+      "n": 3,
+      "p50_ms": 288.041,
+      "p95_ms": 292.27,
+      "max_ms": 292.27
+    },
+    "branch_create": {
+      "n": 5,
+      "p50_ms": 4.582,
+      "p95_ms": 5.482,
+      "max_ms": 5.482
+    },
+    "branch_commit": {
+      "n": 5,
+      "p50_ms": 16.931,
+      "p95_ms": 17.524,
+      "max_ms": 17.524
+    },
+    "branch_delete": {
+      "n": 5,
+      "p50_ms": 4.723,
+      "p95_ms": 5.43,
+      "max_ms": 5.43
+    },
+    "read_during_write": {
+      "n": 140,
+      "p50_ms": 0.494,
+      "p95_ms": 3.648,
+      "max_ms": 6.139
+    },
+    "write_during_read": {
+      "n": 15,
+      "p50_ms": 9.447,
+      "p95_ms": 11.085,
+      "max_ms": 13.697
+    }
+  },
+  "gates": {
+    "correctness": {
+      "value": {
+        "node_table": true,
+        "edge_table": true,
+        "point_read": true,
+        "neighbors": true,
+        "property_history": true,
+        "diff": true,
+        "branch_isolation": true,
+        "pinned_reader_stable": true
+      },
+      "pass": true
+    },
+    "point_read_asof": {
+      "value": 0.847,
+      "limit": 50.0,
+      "pass": true
+    },
+    "history_scaling": {
+      "value": 1.33,
+      "limit": 3.0,
+      "pass": true
+    },
+    "node_table_asof": {
+      "value": 153.282,
+      "limit": 2000.0,
+      "pass": true
+    },
+    "property_history": {
+      "value": 14.636,
+      "limit": 1000.0,
+      "pass": true
+    },
+    "traversal": {
+      "native": {
+        "value": 7.038,
+        "limit": 200.0,
+        "pass": true
+      },
+      "projection": {
+        "value": 292.27,
+        "limit": 2000.0,
+        "pass": true
+      },
+      "pass": true
+    },
+    "branch_create": {
+      "value": 5.482,
+      "limit": 1000.0,
+      "pass": true
+    },
+    "native_constraints": {
+      "value": {
+        "bad_enum": true,
+        "missing_required": true,
+        "dangling_ref": true,
+        "wrong_type": true,
+        "below_minimum": true
+      },
+      "pass": true
+    },
+    "commit_soft": {
+      "value": 51.562,
+      "limit": 2000.0,
+      "pass": true
+    }
+  },
+  "hard_gates_passed": true,
+  "elapsed_s": 23.4
+}
