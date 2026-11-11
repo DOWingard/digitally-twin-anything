@@ -1,0 +1,31 @@
+[project]
+name = "dta-runtime"
+version = "0.1.0"
+description = "The running twin: API, sync pipeline, graph queries and browser UI"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "dta-core",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "httpx>=0.27",
+    "typer>=0.15",
+    "rustworkx>=0.15",
+    "duckdb>=1.1",
+    "pint>=0.24",
+    "dash>=3.0",
+    "dash-ag-grid>=31",
+    "dash-cytoscape>=1.0",
+]
+
+[project.scripts]
+dta-runtime = "dta_runtime.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dta_runtime"]
+
+[tool.uv.sources]
+dta-core = { workspace = true }

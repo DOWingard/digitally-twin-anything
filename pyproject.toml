@@ -17,11 +17,14 @@ dev = [
     "ruff>=0.8",
     "dta-core",
     "dta-toolkit",
+    "dta-runtime",
+    "schemathesis>=4.0",
 ]
 
 [tool.uv.sources]
 dta-core = { workspace = true }
 dta-toolkit = { workspace = true }
+dta-runtime = { workspace = true }
 
 [tool.pytest.ini_options]
 testpaths = ["packages"]
