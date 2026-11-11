@@ -22,6 +22,7 @@ from sync_testkit import (
     MINUTE,
     T0,
     TRACE,
+    Flaky,
     Sources,
     changes_of,
     columns,
@@ -442,28 +443,6 @@ def test_two_mappings_that_write_one_property_of_one_object_are_refused(
     assert "registry.junctions, survey.heights" in problem["message"]
     assert "node:J2" in problem["message"]
     assert objects(twin.store, "Junction") == {}
-
-
-class Flaky:
-    """Stands between the pipeline and `store.commit`, failing chosen calls."""
-
-    def __init__(self, twin: Twin, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.real = twin.store.commit
-        self.calls = 0
-        # call number -> ("before" | "after", the error to raise)
-        self.plan: dict[int, tuple[str, BaseException]] = {}
-        monkeypatch.setattr(twin.store, "commit", self)
-        monkeypatch.setattr(loader_module, "_BACKOFF_S", 0.0)
-
-    def __call__(self, changes: Any, meta: Any) -> Any:
-        self.calls += 1
-        when, error = self.plan.get(self.calls, ("", None))
-        if when == "before" and error is not None:
-            raise error
-        version = self.real(changes, meta)
-        if when == "after" and error is not None:
-            raise error
-        return version
 
 
 def test_a_version_that_was_written_although_the_call_failed_is_not_written_twice(

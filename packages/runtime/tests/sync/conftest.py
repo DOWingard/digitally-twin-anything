@@ -15,8 +15,8 @@ import pytest
 sys.path.append(str(Path(__file__).parent))
 
 from dta_core.log import trace  # noqa: E402
-from dta_runtime.settings import RuntimeSettings  # noqa: E402
 from dta_runtime.clock import Clock  # noqa: E402
+from dta_runtime.settings import RuntimeSettings  # noqa: E402
 from dta_runtime.sync import LoadReport, RunReport, load  # noqa: E402
 from dta_runtime.sync import run as run_once  # noqa: E402
 from dta_runtime.twin import Bundle, Twin  # noqa: E402
@@ -66,8 +66,14 @@ def run(settings_of: Callable[[Twin], RuntimeSettings]) -> Callable[..., LoadRep
 def tick(settings_of: Callable[[Twin], RuntimeSettings]) -> Callable[..., RunReport]:
     """One run of a live twin at the time its clock tells, under a fixed trace."""
 
-    def go(twin: Twin, clock: Clock, trace_id: str = TRACE, **options: Any) -> RunReport:
+    def go(
+        twin: Twin,
+        clock: Clock,
+        trace_id: str = TRACE,
+        env: Mapping[str, str] | None = None,
+        **options: Any,
+    ) -> RunReport:
         with trace(trace_id):
-            return run_once(twin, settings_of(twin), {}, clock, **options)
+            return run_once(twin, settings_of(twin), env or {}, clock, **options)
 
     return go
