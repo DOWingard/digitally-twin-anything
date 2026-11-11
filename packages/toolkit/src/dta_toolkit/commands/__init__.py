@@ -12,6 +12,7 @@ from . import (
     ontology,
     profile,
     sign,
+    skill,
     source,
     status,
 )
@@ -50,3 +51,8 @@ def register(app: typer.Typer) -> None:
     app.command("up")(lifecycle.up)
     app.command("down")(lifecycle.down)
     app.command("logs")(lifecycle.logs)
+
+    generate_app = typer.Typer(add_completion=False, no_args_is_help=True)
+    generate_app.command("skill")(skill.generate_skill)
+    app.add_typer(generate_app, name="generate", help="Render what the twin hands over.")
+    app.command("install-skill")(skill.install_skill)
