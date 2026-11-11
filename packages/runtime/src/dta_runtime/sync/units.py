@@ -81,12 +81,27 @@ def conversion(source: str, target: str) -> Affine:
         quantity = registry.Quantity(value * given.magnitude, given.units)
         return float(quantity.to(wanted.units).magnitude) / float(wanted.magnitude)
 
+    def scales() -> float | None:
+        # The ratio of the two units' scales as pint defines them, offsets left out.
+        try:
+            given_scale, _ = registry.get_base_units(given.units)
+            wanted_scale, _ = registry.get_base_units(wanted.units)
+            return float(given_scale * given.magnitude) / float(wanted_scale * wanted.magnitude)
+        except Exception as exc:
+            log.debug("unit scales unavailable", source=source, error=type(exc).__name__)
+            return None
+
     try:
         offset = image(0.0)
         if offset == 0.0:
             factor = image(1.0)
         else:
             factor = (image(_SLOPE_PROBE) - offset) / _SLOPE_PROBE
+            # The subtraction can cost the last digit; the scales give the same
+            # slope without it, and are used when the two agree.
+            defined = scales()
+            if defined is not None and math.isclose(defined, factor, rel_tol=1e-12):
+                factor = defined
         probe = image(_LINEARITY_PROBE)
     except Exception as exc:
         log.debug(
