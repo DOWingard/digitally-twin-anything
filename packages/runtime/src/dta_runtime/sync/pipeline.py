@@ -737,11 +737,9 @@ class _Run:
             return
         try:
             head = self.loader.head if self.loader is not None else self.state.head
+            # At the time reached, not at the end the run was heading for: the
+            # next run can then still write each interval left over at its own end.
             moment = head.t
-            if self.window.limit is not None:
-                # A run that repeats is recorded at the last interval that has
-                # ended, or at the head when that is later.
-                moment = max(moment, self.window.limit)
             if not self.uid:
                 self._name(moment)
             meta = CommitMeta(cause="sync", actor=ACTOR, t=moment, run=self.uid)
