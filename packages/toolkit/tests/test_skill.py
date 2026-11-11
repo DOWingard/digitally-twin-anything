@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -188,6 +189,34 @@ def test_a_static_twin_is_not_offered_what_only_a_live_twin_does():
     assert "Work with a live twin" not in skill.files["reference/recipes.md"]
     # What its load did is still there to read.
     assert "/sync/runs" in body and "/sync/runs" in skill.files["reference/recipes.md"]
+
+
+_SPAN = re.compile(r"`([^`\n]+)`")
+_GROUPS = ("meta", "objects", "object", "graph", "history", "block", "lifecycle", "sync")
+
+
+def _endpoint_path(span: str) -> str | None:
+    """The API path a code span names, parameters levelled; None when it names none."""
+    text = span.split(" ", 1)[1] if span.startswith(("GET ", "POST ")) else span
+    path = re.split(r"[?\s]", text, maxsplit=1)[0]
+    parts = path.strip("/").split("/")
+    if not path.startswith("/") or parts[0] not in _GROUPS or "*" in path:
+        return None
+    return "/" + "/".join("{}" if part.startswith(("{", "<")) else part for part in parts)
+
+
+@pytest.mark.parametrize("document", [manifest, live_manifest], ids=["static", "live"])
+def test_every_endpoint_the_skill_mentions_is_in_its_own_reference(document: Any):
+    skill = render(document())
+    listed = {
+        _endpoint_path(_SPAN.match(line[2:]).group(1))
+        for line in skill.files["reference/api.md"].splitlines()
+        if line.startswith(("| `GET /", "| `POST /"))
+    }
+    assert len(listed) > 20
+    for name in (SKILL_FILE, "reference/recipes.md", "reference/errors.md"):
+        mentioned = {_endpoint_path(span) for span in _SPAN.findall(skill.files[name])} - {None}
+        assert mentioned and mentioned <= listed, (name, sorted(mentioned - listed))
 
 
 def test_text_from_the_manifest_cannot_break_the_front_matter():
