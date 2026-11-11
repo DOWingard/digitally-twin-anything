@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from dta_core.sources import SourceUnavailable
 from dta_runtime.ui import ids, sync
@@ -14,19 +13,22 @@ from live_testkit import Folder, at, speeds_source
 from selenium.webdriver.common.by import By
 from ui_page import (
     choose_dropdown,
-    click_tab,
+    click_run,
     grid_cells,
     grid_scroll_top,
     keep_grid,
-    open_page,
+    open_history,
+    run_now,
+    run_outcome,
     same_grid,
     scroll_grid,
     select_version,
     set_input,
+    source_cells,
     text_of,
     wait_for,
 )
-from ui_testkit import RUN_NOW_LIMIT_S, RUN_NOW_S
+from ui_testkit import RUN_NOW_LIMIT_S
 
 DOWN = "the source did not answer in time"
 SYNC_READS = ("/api/v1/sync/", "/api/v1/lifecycle/jobs/")
@@ -34,26 +36,6 @@ SYNC_READS = ("/api/v1/sync/", "/api/v1/lifecycle/jobs/")
 # tank level above the tank's highest.
 SPEEDS = [("PU1", at(minute), 5.0 + minute) for minute in range(1, 13)] + [("PU1", at(13), 1.0)]
 HIGH_LEVELS = [("T1", at(5), 9.5), ("T2", at(7), 2.5)]
-
-
-def open_history(browser, url: str) -> None:
-    open_page(browser, url)
-    click_tab(browser, "History")
-
-
-def source_cells(browser, source_id: str) -> dict[str, Any]:
-    rows = browser.find_elements(By.CSS_SELECTOR, f"#{ids.SOURCES} tr[data-source='{source_id}']")
-    if not rows:
-        return {}
-    cells = [cell.text for cell in rows[0].find_elements(By.TAG_NAME, "td")]
-    return {
-        "connector": cells[1],
-        "status": cells[2],
-        "watermark": cells[3],
-        "datasets": cells[5],
-        "error": cells[6],
-        "marked": "marked" in (rows[0].get_attribute("class") or ""),
-    }
 
 
 def advance(live, minutes: int) -> None:
@@ -175,16 +157,6 @@ def test_the_runs_grid_pages_through_the_api_keeps_its_place_and_filters(
     assert any(r.value("status") == "succeeded" and r.value("kind") == "replay" for r in asked)
 
 
-def click_run(browser, uid: str) -> None:
-    wait_for(
-        browser,
-        lambda: browser.find_elements(
-            By.CSS_SELECTOR, f"#{ids.RUNS} .ag-row[row-id='{uid}'] .ag-cell[col-id='status']"
-        ),
-        f"run {uid}",
-    )[0].click()
-
-
 def test_the_rows_a_run_set_aside_are_paged_filtered_and_counted(
     make_live, browser, monkeypatch, tmp_path
 ):
@@ -253,32 +225,6 @@ def test_the_rows_a_run_set_aside_are_paged_filtered_and_counted(
     )
 
 
-def run_now(browser) -> float:
-    """Click "Run now"; how long until the button is disabled and says a run is in progress."""
-    button = browser.find_element(By.ID, ids.RUN_NOW)
-    wait_for(browser, lambda: button.is_enabled(), "the button to be enabled")
-    started = time.monotonic()
-    button.click()
-    wait_for(
-        browser,
-        lambda: not button.is_enabled() and text_of(browser, ids.RUN_STATUS) == "run in progress",
-        "the run in progress",
-        timeout=10.0,
-    )
-    elapsed = time.monotonic() - started
-    RUN_NOW_S.append(elapsed)
-    return elapsed
-
-
-def outcome(browser) -> str:
-    return wait_for(
-        browser,
-        lambda: (text := text_of(browser, ids.RUN_STATUS)).startswith("The run") and text,
-        "the outcome of the run",
-        timeout=20.0,
-    )
-
-
 def test_run_now_starts_one_run_however_often_it_is_clicked_and_tells_how_it_ended(
     make_live, browser
 ):
@@ -298,7 +244,7 @@ def test_run_now_starts_one_run_however_often_it_is_clicked_and_tells_how_it_end
     assert gate.reached.wait(30)
     assert not button.is_enabled()
     gate.open()
-    text = outcome(browser)
+    text = run_outcome(browser)
     newest = live.runs()[0]
     assert text == (
         f"The run succeeded: 1 version and {newest['rows_written']} "
@@ -315,7 +261,7 @@ def test_run_now_starts_one_run_however_often_it_is_clicked_and_tells_how_it_end
     live.plant.break_("lab", SourceUnavailable(DOWN))
     advance(live, 46)
     assert run_now(browser) <= RUN_NOW_LIMIT_S
-    text = outcome(browser)
+    text = run_outcome(browser)
     assert text.startswith("The run was partial: 1 version and ")
     assert text.endswith(f"Failing: lab (source.unavailable: {DOWN})")
 
@@ -323,7 +269,7 @@ def test_run_now_starts_one_run_however_often_it_is_clicked_and_tells_how_it_end
         live.plant.break_(source, SourceUnavailable(DOWN))
     live.clock.set(at(61))
     assert run_now(browser) <= RUN_NOW_LIMIT_S
-    text = outcome(browser)
+    text = run_outcome(browser)
     assert text.startswith("The run failed: sync.source_failed: ")
     assert len(live.runs()) == before + 3
     assert text_of(browser, ids.RUN_FEEDBACK) == ""

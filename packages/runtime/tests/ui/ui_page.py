@@ -18,6 +18,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.remote.webelement import WebElement
+from ui_testkit import RUN_NOW_S
 
 WAIT_S = 15.0
 
@@ -203,8 +204,19 @@ def set_input(driver: WebDriver, element_id: str, value: str) -> None:
 # -- grids -----------------------------------------------------------------------
 
 
+def bring_into_view(driver: WebDriver, element_id: str) -> None:
+    """Scroll the page to an element. AG Grid leaves the rows of a grid that is off screen
+    hidden until it is scrolled to, so their texts read as empty until then."""
+    driver.execute_script(
+        "const found = document.getElementById(arguments[0]);"
+        "if (found) found.scrollIntoView({block: 'nearest'});",
+        element_id,
+    )
+
+
 def grid_cells(driver: WebDriver, container_id: str, column: str) -> list[str]:
     """Texts of one column of the rows a grid has drawn, in row order."""
+    bring_into_view(driver, container_id)
     rows = driver.find_elements(
         By.CSS_SELECTOR, f"#{container_id} .ag-center-cols-container .ag-row"
     )
@@ -228,6 +240,7 @@ def grid_cells(driver: WebDriver, container_id: str, column: str) -> list[str]:
 
 def selected_cells(driver: WebDriver, container_id: str, column: str) -> list[str]:
     """Texts of one column of the rows a grid shows as selected."""
+    bring_into_view(driver, container_id)
     return [
         cell.text
         for cell in driver.find_elements(
@@ -298,6 +311,72 @@ def sort_by(driver: WebDriver, container_id: str, column: str) -> None:
     driver.find_element(
         By.CSS_SELECTOR, f"#{container_id} .ag-header-cell[col-id='{column}'] .ag-header-cell-label"
     ).click()
+
+
+# -- sync section ------------------------------------------------------------------
+
+
+def open_history(driver: WebDriver, url: str) -> None:
+    open_page(driver, url)
+    click_tab(driver, "History")
+
+
+def source_cells(driver: WebDriver, source_id: str) -> dict[str, Any]:
+    """What the sources table shows of one source; empty while it is not drawn."""
+    rows = driver.find_elements(By.CSS_SELECTOR, f"#{ids.SOURCES} tr[data-source='{source_id}']")
+    if not rows:
+        return {}
+    cells = [cell.text for cell in rows[0].find_elements(By.TAG_NAME, "td")]
+    return {
+        "connector": cells[1],
+        "status": cells[2],
+        "watermark": cells[3],
+        "datasets": cells[5],
+        "error": cells[6],
+        "marked": "marked" in (rows[0].get_attribute("class") or ""),
+    }
+
+
+def click_run(driver: WebDriver, uid: str) -> None:
+    """A click on a row of the runs grid, once the row is drawn where it can be clicked."""
+    selector = f"#{ids.RUNS} .ag-row[row-id='{uid}'] .ag-cell[col-id='status']"
+
+    def click() -> bool:
+        bring_into_view(driver, ids.RUNS)
+        found = driver.find_elements(By.CSS_SELECTOR, selector)
+        if not found or not found[0].is_displayed():
+            return False
+        found[0].click()
+        return True
+
+    wait_for(driver, click, f"run {uid} to be clicked")
+
+
+def run_now(driver: WebDriver) -> float:
+    """Click "Run now"; how long until the button is disabled and says a run is in progress."""
+    button = driver.find_element(By.ID, ids.RUN_NOW)
+    wait_for(driver, lambda: button.is_enabled(), "the button to be enabled")
+    started = time.monotonic()
+    button.click()
+    wait_for(
+        driver,
+        lambda: not button.is_enabled() and text_of(driver, ids.RUN_STATUS) == "run in progress",
+        "the run in progress",
+        timeout=10.0,
+    )
+    elapsed = time.monotonic() - started
+    RUN_NOW_S.append(elapsed)
+    return elapsed
+
+
+def run_outcome(driver: WebDriver) -> str:
+    """The words that tell how the run asked for from the page ended."""
+    return wait_for(
+        driver,
+        lambda: (text := text_of(driver, ids.RUN_STATUS)).startswith("The run") and text,
+        "the outcome of the run",
+        timeout=20.0,
+    )
 
 
 # -- network ---------------------------------------------------------------------
