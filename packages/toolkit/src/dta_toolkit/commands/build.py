@@ -241,12 +241,18 @@ class Build:
     def _quiet_writers(self) -> dict[str, Any]:
         """Stop what writes to a live twin so the load is its only writer.
 
-        The scheduler is stopped; if the API answers, the load waits until no
-        sync job is queued or running. On a first build neither exists yet.
+        The scheduler is stopped; if the API runs and answers, the load waits
+        until no sync job is queued or running. On a first build neither runs yet.
         """
         started = time.perf_counter()
         self.stack.stop(SCHEDULER_SERVICE)
         found: dict[str, Any] = {"scheduler": "stopped", "api": None, "waited_for_job": None}
+        row = next((r for r in self.stack.services() if r["service"] == API_SERVICE), None)
+        if row is None or row["state"] != RUNNING:
+            found["api"] = "not running"
+            found["waited_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+            log.info("the API is not running; no sync job can be in progress", **found)
+            return found
         with TwinApi(self.manifest, self.env) as client:
             pause = POLL_FIRST_S
             while True:

@@ -222,12 +222,11 @@ def _api_stack(workspace: Workspace) -> tuple[Manifest, Stack, dict[str, str], d
     return manifest, stack, values, stack.secret_values()
 
 
-def _scrubbed(error: DtaError, secrets: dict[str, str]) -> DtaError:
-    """The error with every value of the stack's secrets masked in what it says."""
+def _scrub_error(error: DtaError, secrets: dict[str, str]) -> None:
+    """Mask every value of the stack's secrets in what an error says, before it is printed."""
     error.message = scrub_values(error.message, secrets)
     error.detail = scrub_values(error.detail, secrets)
     error.args = (error.message,)
-    return error
 
 
 def _count(value: Any) -> str:
@@ -301,7 +300,8 @@ def run_sync(
                 return
             job = wait_job(api, str(started.job.get("id")))
     except DtaError as exc:
-        raise _scrubbed(exc, secrets) from exc
+        _scrub_error(exc, secrets)
+        raise
     elapsed = round((time.perf_counter() - begun) * 1000.0, 1)
     found = verdict(job)
     report = job.get("result")
@@ -382,7 +382,8 @@ def sync_status(ctx: typer.Context) -> None:
             health = read_json(api, HEALTH_PATH)
             listing = read_json(api, SOURCES_PATH)
     except DtaError as exc:
-        raise _scrubbed(exc, secrets) from exc
+        _scrub_error(exc, secrets)
+        raise
     result = scrub_values(
         {
             "twin_id": health.get("twin_id"),
