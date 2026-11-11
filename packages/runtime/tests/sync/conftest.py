@@ -19,7 +19,7 @@ from dta_runtime.clock import Clock  # noqa: E402
 from dta_runtime.settings import RuntimeSettings  # noqa: E402
 from dta_runtime.sync import LoadReport, RunReport, load  # noqa: E402
 from dta_runtime.sync import run as run_once  # noqa: E402
-from dta_runtime.twin import Bundle, Twin  # noqa: E402
+from dta_runtime.twin import Bundle, Twin, install_twin  # noqa: E402
 from sync_testkit import T0, TRACE, Sources, runtime_settings, water_manifest  # noqa: E402
 
 
@@ -41,6 +41,25 @@ def sync_twin(make_twin: Callable[..., Twin], water_ontology_text: str) -> Calla
         return make_twin(bundle, t=t)
 
     return make
+
+
+@pytest.fixture
+def revise(water_ontology_text: str) -> Callable[..., None]:
+    """Give a twin that is running a new revision of its manifest: other sources, other sync."""
+
+    def go(twin: Twin, sources: Mapping[str, Any], sync: Mapping[str, Any] | None = None) -> None:
+        sections: dict[str, Any] = {"sources": dict(sources)}
+        if sync is not None:
+            sections["sync"] = dict(sync)
+        manifest = water_manifest(water_ontology_text, **sections)
+        installed = install_twin(
+            twin.store.settings, Bundle(manifest=manifest, ontology_text=water_ontology_text)
+        )
+        assert installed.actions == ("registered",)
+        # The twin of the test goes on with its own connection to the same store.
+        installed.twin.close()
+
+    return go
 
 
 @pytest.fixture
