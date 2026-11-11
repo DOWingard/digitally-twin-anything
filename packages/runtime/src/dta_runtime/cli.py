@@ -105,6 +105,143 @@ def install(
     _run("install", work)
 
 
+def _manifest_from(option: str) -> Any:
+    """The manifest given as YAML text in a file, or on standard input for `-`."""
+    import yaml
+    from dta_core.manifest import parse_manifest
+
+    from .twin import TwinError
+
+    origin = "standard input" if option == "-" else option
+    try:
+        text = sys.stdin.read() if option == "-" else Path(option).read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
+    except (OSError, yaml.YAMLError) as exc:
+        raise TwinError(
+            f"the manifest cannot be read from {origin}: {type(exc).__name__}",
+            code="runtime.manifest_unreadable",
+        ) from exc
+    return parse_manifest(data, origin=origin)
+
+
+def _chosen_sources(manifest: Any, only: list[str] | None) -> dict[str, Any]:
+    from .twin import TwinError
+
+    declared = manifest.sources or {}
+    unknown = sorted(set(only or ()) - set(declared))
+    if unknown:
+        raise TwinError(
+            f"the manifest declares no source {', '.join(unknown)}",
+            code="runtime.unknown_source",
+            detail={"unknown": unknown, "sources": sorted(declared)},
+        )
+    return {sid: declared[sid] for sid in sorted(declared) if not only or sid in only}
+
+
+@app.command()
+def probe(
+    manifest: Annotated[
+        str, typer.Option(help="File holding the manifest, or - for standard input")
+    ] = "-",
+    source: Annotated[
+        list[str] | None, typer.Option(help="Probe only this source; may be repeated")
+    ] = None,
+) -> None:
+    """Read a few rows of every dataset of every source, from where the twin will read them.
+
+    The twin need not be installed. A source that fails does not stop the
+    others; the document says which did, and the exit status stays 0.
+    """
+
+    def work() -> dict[str, Any]:
+        from dta_core.connect import open_connector
+        from dta_core.connect import probe as probe_source
+
+        reports: list[dict[str, Any]] = []
+        for source_id, entry in _chosen_sources(_manifest_from(manifest), source).items():
+            try:
+                with open_connector(source_id, entry, os.environ) as connector:
+                    reports.append(probe_source(connector).as_dict())
+            except DtaError as exc:
+                log.warn("source cannot be opened", source=source_id, code=exc.code)
+                reports.append(
+                    {
+                        "source_id": source_id,
+                        "ok": False,
+                        "error_code": exc.code,
+                        "error": exc.message,
+                        "datasets": [],
+                    }
+                )
+        ok = bool(reports) and all(report["ok"] for report in reports)
+        log.info(
+            "probe finished",
+            sources=len(reports),
+            failed=[report["source_id"] for report in reports if not report["ok"]],
+        )
+        return {"ok": ok, "sources": reports}
+
+    _run("probe", work)
+
+
+@app.command()
+def profile(
+    at: Annotated[
+        str, typer.Option(help="Time recorded as the profile's time, ISO 8601 with offset")
+    ],
+    manifest: Annotated[
+        str, typer.Option(help="File holding the manifest, or - for standard input")
+    ] = "-",
+    source: Annotated[
+        list[str] | None, typer.Option(help="Profile only this source; may be repeated")
+    ] = None,
+    row_cap: Annotated[
+        int | None, typer.Option(help="Rows of a dataset the statistics are computed on")
+    ] = None,
+) -> None:
+    """Measure what every source holds and how fast it changes; nothing is written.
+
+    The twin need not be installed. A source that fails does not stop the
+    others; the document lists it under `failed`, and the exit status stays 0.
+    """
+
+    def work() -> dict[str, Any]:
+        import time
+
+        from dta_core.connect import open_connector, profile_source
+
+        from .twin import TwinError
+
+        try:
+            profiled_at = datetime.fromisoformat(at)
+        except ValueError as exc:
+            raise TwinError(f"--at is not an ISO 8601 time: {at!r}", code="twin.bad_time") from exc
+        if profiled_at.tzinfo is None:
+            raise TwinError("--at needs a UTC offset", code="twin.bad_time")
+        options = {} if row_cap is None else {"row_cap": row_cap}
+        profiles: dict[str, Any] = {}
+        failed: dict[str, Any] = {}
+        for source_id, entry in _chosen_sources(_manifest_from(manifest), source).items():
+            started = time.perf_counter()
+            try:
+                with open_connector(source_id, entry, os.environ) as connector:
+                    result = profile_source(connector, profiled_at=profiled_at, **options)
+            except DtaError as exc:
+                log.warn("source cannot be profiled", source=source_id, code=exc.code)
+                failed[source_id] = {"code": exc.code, "message": exc.message}
+                continue
+            profiles[source_id] = result.model_dump(mode="json", exclude_none=True)
+            log.info(
+                "source profiled",
+                source=source_id,
+                datasets=len(result.datasets),
+                elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
+            )
+        return {"ok": bool(profiles) and not failed, "profiles": profiles, "failed": failed}
+
+    _run("profile", work)
+
+
 @app.command()
 def load() -> None:
     """Read every source once and write what is new into the twin."""
