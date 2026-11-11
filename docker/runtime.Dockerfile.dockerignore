@@ -1,0 +1,11 @@
+# Only the workspace's package sources and its lock file are needed.
+*
+!pyproject.toml
+!uv.lock
+!packages
+packages/*/tests
+**/__pycache__
+**/*.pyc
+**/.venv
+**/.env
+**/.env.*
