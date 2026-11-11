@@ -22,7 +22,7 @@ Status: under construction. The parts present so far are listed below.
 | Path | What it is |
 |---|---|
 | `packages/core` | Shared library: structured logging, environment configuration, the manifest schema and its checks, ontology loading (LinkML), the versioned store, the connector protocol |
-| `packages/toolkit` | The `dta` command line tool; each build stage ends in a gate it evaluates. Also derives a twin's container stack from its manifest |
+| `packages/toolkit` | The `dta` command line tool: manifest checks, the gate each build stage ends in, delegated tasks, and the twin's container stack derived from its manifest |
 | `packages/runtime` | What runs inside a twin's stack: installing and opening a twin, and (as they are added) sync, the HTTP API and the browser UI |
 | `docker/runtime.Dockerfile` | Image of the twin's services: one image, one command per service |
 | `testbed` | A simulated water utility used as the standing test target, with a reference twin definition in `testbed/twin` |
@@ -57,6 +57,34 @@ required field has a status:
 | confirmed | accepted by the field's owner (the user or the building agent) |
 
 The build may start only when no required field is unknown or proposed.
+
+`dta manifest validate` reports what is inconsistent in the manifest as
+written; `dta manifest gaps` lists every required field still unknown or
+waiting for confirmation; `dta status` shows the stage the build stands at
+and the result of each stage's gate.
+
+## Delegated tasks
+
+Parts of a build (profiling a source, designing a mapping, training a model
+candidate) can be handed to other agents working at the same time. The
+toolkit, not the agents, keeps them from interfering:
+
+- a task declares the manifest paths it reads and the manifest keys it owns;
+  its only other write zone is `tasks/<id>/output/`;
+- tasks share a batch only when none writes what another reads or writes;
+- one holder per task, by a lease that expires unless renewed;
+- a task never changes shared state: it returns a patch for its own keys and
+  proposals for anything else, and the patches are applied one at a time;
+- a result is refused, with every reason listed, if it touches anything
+  outside its zone or if what it read has changed since the batch opened.
+
+```sh
+dta tasks plan --open              # open the next batch of the current stage
+dta tasks claim <id> --holder <name>
+dta tasks submit <id> --token <token>
+dta tasks merge --all
+dta tasks status --verify
+```
 
 ## Development
 
