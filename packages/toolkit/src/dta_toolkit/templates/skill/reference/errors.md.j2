@@ -11,7 +11,7 @@ Branch on `code`, not on the text. Quote `trace_id` when you report a failure to
 
 | Status | Code | Meaning | What to do |
 |---|---|---|---|
-| 400 | `api.bad_request` | a parameter is missing, malformed or out of range | read `detail`, fix the request; for JSON the largest `limit` is 10,000 |
+| 400 | `api.bad_request` | a parameter is missing, malformed or out of range | read `detail` and `errors` (each names the parameter), fix the request; for JSON the largest `limit` is 10,000 |
 | 400 | `api.bad_cursor` | the cursor is not from this query | start the listing again without `cursor` |
 | 400 | `api.sort_too_large` | sorting by a property was asked on too many rows | filter first, or fetch the table as Arrow and sort it yourself |
 | 400 | `api.slice_too_large` | the slice would be too large | narrow the range, add a step (`a..b/<step>`), or name fewer objects or properties |

@@ -89,8 +89,8 @@ Edges are of two sorts, and both have an edge type: a link type's name, or `<Typ
 curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>/links?at=$VERSION&direction=both"
 # everything within 2 hops
 curl -sS -H "$AUTH" "$API/graph/neighbors?seed=<uid>&depth=2&at=$VERSION"
-# up to 3 shortest paths between two objects, at most 8 hops
-curl -sS -H "$AUTH" "$API/graph/paths?source=<uid>&target=<uid>&max_depth=8&k=3&at=$VERSION"
+# up to 3 shortest paths between two objects, at most 30 hops, over chosen kinds of edge
+curl -sS -H "$AUTH" "$API/graph/paths?source=<uid>&target=<uid>&max_depth=30&k=3&edge_types=<LinkType>,<LinkType>&at=$VERSION"
 ```
 
 ```python
@@ -106,7 +106,8 @@ all_edges = table("/graph/edges", at=version)
 ```
 
 - `direction`: `out` follows an edge from its source to its target, `in` backwards, `both` either way.
-- `edge_types` (repeated or comma-separated) restricts what is followed.
+- `edge_types` (repeated or comma-separated) restricts what is followed. Use it whenever the question is about one kind of connection. Every reference is an edge too, so without it a traversal also runs through shared membership (two objects that belong to the same group are two hops apart), which is rarely what a question about physical or logical connection means.
+- `max_depth` on `/graph/paths` is 6 unless given, and at most 64. An empty `paths` list means "no path within that many hops", not "not connected": raise `max_depth` before concluding anything.
 - `weight=<numeric link property>` on `/graph/paths` ranks paths by the sum of that property instead of by hops.
 - If a traversal is refused as too broad (`graph.too_broad`), lower `depth` or `limit`, or name `edge_types`.
 
@@ -161,13 +162,13 @@ with open("nodes.parquet", "wb") as out:
 curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>?include=provenance"
 ```
 
-Per property: `source` (which data source), `kind` (`observed`, `inferred`, `assumed` or `simulated`), `confidence`, and `t_valid` (when the value was true in the real system, which can be earlier than the version's time).
+`provenance` maps property names to entries; the entry named `*` covers every property that has no entry of its own. Each entry: `source` (which data source), `kind` (`observed`, `inferred`, `assumed` or `simulated`), `confidence`, and `t_valid` (when the value was true in the real system, which can be earlier than the version's time).
 
 ## 7. When something looks wrong
 
 ```sh
 curl -sS -H "$AUTH" "$API/meta/health"                              # is the twin up, what is its head
-curl -sS -H "$AUTH" "$API/lifecycle/logs?level=warning&limit=50"    # what the twin itself reported
+curl -sS -H "$AUTH" "$API/lifecycle/logs?level=warn&limit=50"       # what the twin itself reported (debug, info, warn, error)
 curl -sS -H "$AUTH" "$API/objects/TwinSyncRun?sort=-started_at&limit=5"   # the last loads from the sources
 ```
 
