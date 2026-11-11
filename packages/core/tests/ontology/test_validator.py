@@ -321,6 +321,19 @@ def test_cache_inside_the_package_is_refused(water, tmp_path, monkeypatch):
     assert list(tmp_path.glob("dta-ontology-models-*/models_*.py"))
 
 
+def test_build_and_cache_use_are_logged(water, tmp_path, monkeypatch, log_lines):
+    monkeypatch.setattr(validator_module, "_MODULES", {})
+    build_validator(water, cache_dir=tmp_path / "models")
+    monkeypatch.setattr(validator_module, "_MODULES", {})
+    build_validator(water, cache_dir=tmp_path / "models")
+    lines = log_lines()
+    generated = [line for line in lines if line["message"] == "validation models generated"]
+    built = [line for line in lines if line["message"] == "validator built"]
+    assert len(generated) == 1 and generated[0]["data"]["duration_ms"] >= 0
+    assert [line["data"]["source"] for line in built] == ["generated", "cache"]
+    assert all(line["context"] == "ontology.validator" for line in built)
+
+
 def test_ontology_without_loadable_source_cannot_build(monkeypatch):
     monkeypatch.setattr(validator_module, "_MODULES", {})
     with pytest.raises(OntologyError):

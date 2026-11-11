@@ -37,6 +37,8 @@ classes:
     mixins:
       - Located
     description: A point where water enters, leaves or joins the network.
+    annotations:
+      dta_check_elevation_plausible: "elevation > -500 AND elevation < 9000"
     slots:
       - name
     attributes:

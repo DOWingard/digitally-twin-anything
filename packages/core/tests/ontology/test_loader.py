@@ -1,10 +1,26 @@
 from pathlib import Path
 
-from dta_core.ontology import load_ontology, parse_ontology
+import pytest
+from dta_core.ontology import OntologyError, load_ontology, parse_ontology
 from dta_core.schema import Field, Kind, Ontology, Role
 
 FIXTURES = Path(__file__).parent / "fixtures"
 META_TYPES = ["TwinArtifact", "TwinSource", "TwinSyncRun"]
+
+
+def test_load_and_failure_are_logged(log_lines, water_path, tmp_path):
+    load_ontology(water_path)
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("id: https://x.org/b\nname: b\nclasses:\n  bad_name: {}\n")
+    with pytest.raises(OntologyError):
+        load_ontology(broken)
+    lines = log_lines()
+    loaded = next(line for line in lines if line["message"] == "ontology loaded")
+    assert loaded["level"] == "info" and loaded["context"] == "ontology.loader"
+    assert loaded["data"]["duration_ms"] >= 0 and loaded["data"]["domain_types"] == 8
+    failed = next(line for line in lines if line["message"] == "ontology breaks the conventions")
+    assert failed["level"] == "error"
+    assert {p["rule"] for p in failed["data"]["problems"]} >= {"name.class", "identifier.missing"}
 
 
 def test_types_are_concrete_meta_first_then_by_name(water):
@@ -115,11 +131,15 @@ def test_links_events_and_checks(water):
     assert water.type("Reading").event and not water.type("Sensor").event
     assert water.type("TwinSyncRun").event
 
+    # Checks declared on an abstract class apply to every concrete descendant.
+    plausible = ("elevation_plausible", "elevation > -500 AND elevation < 9000")
     assert water.type("Tank").checks == (
         ("bounds_ordered", "min_level <= max_level"),
+        plausible,
         ("level_within_bounds", "level IS NULL OR (level >= min_level AND level <= max_level)"),
     )
-    assert water.type("Junction").checks == ()
+    assert water.type("Junction").checks == (plausible,)
+    assert water.type("Sensor").checks == ()
 
 
 def test_enums_and_source(water, water_path):
