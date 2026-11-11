@@ -1,0 +1,12 @@
+[project]
+name = "storage-spike"
+version = "0.1.0"
+description = "Benchmark of versioned stores for a typed graph with full history"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "terminusdb==12.0.5",
+    "pymysql>=1.1",
+    "pyarrow>=17",
+    "linkml>=1.9",
+    "rustworkx>=0.15",
+]
