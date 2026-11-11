@@ -319,7 +319,9 @@ def test_a_pipe_in_place_of_the_manifest_is_refused_without_being_read(ws):
     ws.spawn("claim", "profile-sensors", "--holder", "bob").refused("tasks.foreign.removed")
     ws.spawn("plan", "--stage", "3").could_not_run("tasks.manifest.not_plain")
     assert ws.spawn("status", "--verify").result["verified"]["clean"] is False
-    assert ws.spawn("abort", "--batch").result["batch_closed"] is True
+    aborted = ws.spawn("abort", "--batch").result
+    assert aborted["batch_closed"] is True
+    assert _codes(aborted["findings"]) == ["tasks.foreign.removed", "tasks.manifest.unreadable"]
     ws.spawn("plan", "--stage", "3", "--open").could_not_run("tasks.manifest.not_plain")
     assert not ws.workspace.ledger_path.exists()
 

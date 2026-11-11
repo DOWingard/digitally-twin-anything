@@ -830,7 +830,8 @@ def abort(
                 "state_file_changed": False,
             }
 
-        manifest, _ = read_manifest(workspace)
+        # Without a readable manifest it cannot be told whether a patch is in it.
+        manifest, unread = read_manifest(workspace)
         if task_id is not None:
             _, record = _locate(state, task_id)
             if record.status == "merged":
@@ -866,6 +867,7 @@ def abort(
                 task=task_id,
             )
         state_file_changed = touches_state(workspace, findings)
+        findings += unread
         findings += zone_reasons(inspect_zone(workspace, batch, skip=frozenset()))
         if findings:
             log.warn("batch is being aborted with shared state disturbed", findings=findings)
