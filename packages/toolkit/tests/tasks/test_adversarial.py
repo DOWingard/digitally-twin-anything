@@ -359,3 +359,28 @@ def test_every_step_and_every_refusal_is_logged_without_the_token(ws):
     assert refused["data"]["task"] == "profile-erp" and refused["data"]["holder"] == "alice"
     assert all(line["trace_id"] for line in lines)
     assert token not in (ws.root / ".dta" / "logs" / "toolkit.log").read_text()
+
+
+# -- no workspace --------------------------------------------------------------
+
+
+def test_every_command_needs_a_workspace_and_creates_none(tmp_path):
+    from dta_toolkit.cli import app
+    from typer.testing import CliRunner
+
+    nowhere = tmp_path / "nowhere"
+    for command in (
+        ("plan", "--stage", "3"),
+        ("plan", "--stage", "3", "--open"),
+        ("claim", "profile-erp", "--holder", "alice"),
+        ("claim", "profile-erp", "--holder", "alice", "--renew", "--token", "t"),
+        ("submit", "profile-erp", "--token", "t"),
+        ("merge", "--all"),
+        ("abort", "--batch"),
+        ("status",),
+        ("status", "--verify"),
+    ):
+        done = CliRunner().invoke(app, ["--workspace", str(nowhere), "--json", "tasks", *command])
+        assert done.exit_code == 2, command
+        assert json.loads(done.stdout)["error"]["code"] == "workspace.missing"
+    assert not nowhere.exists()

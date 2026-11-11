@@ -121,7 +121,7 @@ def submit(
 def merge(
     ctx: typer.Context,
     task_id: Annotated[
-        str | None, typer.Argument(metavar="[ID]", help="Submitted task to merge.")
+        str | None, typer.Argument(metavar="ID", help="Submitted task to merge.")
     ] = None,
     everything: Annotated[
         bool, typer.Option("--all", help="Merge every submitted task of the open batch.")
@@ -141,7 +141,7 @@ def merge(
 @command
 def abort(
     ctx: typer.Context,
-    task_id: Annotated[str | None, typer.Argument(metavar="[ID]", help="Task to give up.")] = None,
+    task_id: Annotated[str | None, typer.Argument(metavar="ID", help="Task to give up.")] = None,
     whole_batch: Annotated[
         bool, typer.Option("--batch", help="Give up every unfinished task and close the batch.")
     ] = False,

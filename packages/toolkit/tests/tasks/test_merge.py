@@ -185,10 +185,12 @@ def test_output_changed_after_submit_is_refused_at_merge(ws, change):
     assert ws.manifest_bytes() == manifest
     assert ws.task("profile-erp")["status"] == "submitted"
 
-    # The others are unaffected: a changed output is that task's problem alone.
+    # The others are unaffected, merged one by one or all together: a sealed
+    # result that was disturbed is that task's problem alone.
+    assert ws.merge("profile-sensors")["merged"] == ["profile-sensors"]
     outcome = ws.run("merge", "--all")
     assert _refusals(outcome) == {"profile-erp": ["tasks.output.changed"]}
-    assert outcome.error["detail"]["merged"] == ["profile-sensors", "profile-sheets"]
+    assert outcome.error["detail"]["merged"] == ["profile-sheets"]
     assert _profiled(ws) == {"sensors": 7, "sheets": 6}
 
 

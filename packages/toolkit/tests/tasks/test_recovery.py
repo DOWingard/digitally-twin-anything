@@ -142,4 +142,10 @@ def test_the_leftover_of_an_interrupted_task_description_write_is_cleared_by_the
     token = ws.claim("profile-erp")
     assert not leftover.exists()
     ws.write_result("profile-erp", ws.profile_patch("erp"))
+
+    # Once the task is claimed no such file can come from the toolkit any more.
+    leftover.write_text("{")
+    outcome = ws.submit("profile-erp", token)
+    assert outcome.reasons == ["tasks.zone.violation"]
+    leftover.unlink()
     assert ws.submit("profile-erp", token).code == 0

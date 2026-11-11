@@ -131,7 +131,10 @@ def inspect_task(
     findings = []
     names = sorted(os.listdir(base))
     for name in names:
-        if name not in (SPEC_FILE, INPUT_DIR, OUTPUT_DIR) and not _is_spec_leftover(name):
+        # Only a claim that died while writing the description leaves such a
+        # file, and the claim that follows removes it before recording a lease.
+        tolerated = task.status == "open" and _is_spec_leftover(name)
+        if name not in (SPEC_FILE, INPUT_DIR, OUTPUT_DIR) and not tolerated:
             findings.append(Finding("zone", f"{where}/{name}", "not part of a task directory"))
     if not is_real_dir(base / INPUT_DIR):
         findings.append(Finding("input", f"{where}/{INPUT_DIR}", "missing or not a directory"))

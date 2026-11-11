@@ -678,12 +678,13 @@ def merge(
         merged: list[str] = []
         refused: list[dict[str, Any]] = []
         if targets:
-            # One sweep over everything under tasks/ that is not about to be
-            # examined task by task.
-            others = inspect_zone(
-                workspace, batch, skip=frozenset(task.spec.id for task in targets)
+            # One sweep over everything under tasks/ except the submitted tasks.
+            # Each of those is examined when it is itself merged: a sealed
+            # result that was disturbed is refused, and holds up no other.
+            sealed = frozenset(
+                task_id for task_id, task in batch.tasks.items() if task.status == "submitted"
             )
-            elsewhere = zone_reasons(others)
+            elsewhere = zone_reasons(inspect_zone(workspace, batch, skip=sealed))
             for task in targets:
                 reasons = _merge_one(workspace, state, batch, task, elsewhere)
                 if reasons:
