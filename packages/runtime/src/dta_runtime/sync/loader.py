@@ -75,6 +75,16 @@ class Bucket:
         )
 
 
+def _whole_ms(moment: datetime) -> datetime:
+    """`moment`, or the next whole millisecond after it.
+
+    The store keeps version times to the millisecond and cuts off the rest;
+    rounding up instead keeps a version from being earlier than what it holds.
+    """
+    rest = moment.microsecond % 1000
+    return moment + timedelta(microseconds=1000 - rest) if rest else moment
+
+
 def version_time(prepared: Prepared, head_t: datetime, key: int | None) -> datetime:
     """The time of the version that takes an interval, given the head it is written on.
 
@@ -92,7 +102,7 @@ def version_time(prepared: Prepared, head_t: datetime, key: int | None) -> datet
         micros = (latest - EPOCH) // timedelta(microseconds=1)
         moment = EPOCH + timedelta(microseconds=bucket_end_us(micros, interval_us))
     else:
-        moment = latest
+        moment = _whole_ms(latest)
     return max(head_t, moment)
 
 

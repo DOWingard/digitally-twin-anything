@@ -175,6 +175,25 @@ def test_without_an_interval_everything_is_one_version_at_the_latest_time(
     assert store.get("node:J1").provenance_of("name").t_valid == T0 + 50 * MINUTE
 
 
+def test_a_version_is_never_earlier_than_what_it_holds(sync_twin: MakeTwin, run: Run):
+    # Finer than the millisecond a version's time is kept to.
+    moment = T0 + 50 * MINUTE + timedelta(microseconds=250)
+    twin = sync_twin(network_sources())
+    sources = Sources(**network_tables([("T1.level", moment, 2.0)]))
+    report = run(twin, sources)
+    store = twin.store
+
+    head = store.head()
+    assert head.t == T0 + 50 * MINUTE + timedelta(milliseconds=1)
+    # The value keeps its own time to the microsecond, and so does the cursor.
+    assert store.get("node:T1").provenance_of("level").t_valid == moment
+    assert report.watermark == moment
+    dataset = objects(store, "TwinDataset")["twin_dataset:scada/by_node"]
+    assert dataset["cursor"] == "2026-01-05T00:50:00.000250Z"
+    assert run(twin, sources).versions_written == 0
+    assert store.head() == head
+
+
 def lab_source() -> dict[str, Any]:
     """A second feed that writes another property of the junctions, as estimates."""
     return source(
