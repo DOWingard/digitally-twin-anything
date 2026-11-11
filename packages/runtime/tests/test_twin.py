@@ -7,9 +7,20 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pytest
+import yaml
 from dta_core.bundle import BundleError
 from dta_core.manifest import manifest_hash
-from dta_core.store import MigrationRequired, NotInstalled, StoreSettings
+from dta_core.ontology import loader as ontology_loader
+from dta_core.ontology import validator as ontology_validator
+from dta_core.schema import FactKind
+from dta_core.store import (
+    ChangeSet,
+    CommitMeta,
+    MigrationRequired,
+    NotInstalled,
+    Provenance,
+    StoreSettings,
+)
 from dta_runtime.twin import (
     MANIFEST_UID,
     Bundle,
@@ -172,3 +183,63 @@ def test_a_bundle_round_trips_and_a_malformed_one_is_refused(water_bundle: Bundl
         with pytest.raises(BundleError) as caught:
             Bundle.from_json(text)
         assert caught.value.code == "twin.bundle_invalid"
+
+
+def _earlier_shared_types() -> str:
+    """The types every twin shares as an earlier release had them: without what was
+    added to the record of a sync run since."""
+    meta = yaml.safe_load(ontology_loader.meta_model_text())
+    run = meta["classes"]["TwinSyncRun"]["attributes"]
+    del run["rows_late"], run["clock_at"]
+    del meta["enums"]["TwinRunStatus"]["permissible_values"]["partial"]
+    del meta["enums"]["TwinRunKind"]["permissible_values"]["replay"]
+    return yaml.safe_dump(meta, sort_keys=False)
+
+
+def test_a_twin_written_with_earlier_shared_types_opens_once_it_is_installed_again(
+    new_settings: Callable[[], StoreSettings],
+    water_bundle: Bundle,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    settings = new_settings()
+    earlier = _earlier_shared_types()
+    with monkeypatch.context() as patched:
+        patched.setattr(ontology_loader, "meta_model_text", lambda: earlier)
+        patched.setattr(ontology_validator, "meta_model_text", lambda: earlier)
+        install_twin(settings, water_bundle, t=T0).twin.close()
+
+    # This release derives other shared types from the same text: it says so and stops.
+    with pytest.raises(TwinError) as caught:
+        open_twin(settings)
+    assert caught.value.code == "twin.ontology_outdated"
+
+    result = install_twin(settings, water_bundle)
+    try:
+        assert result.actions == ("migrated",)
+        store = result.twin.store
+        assert store.versions()[-1].cause == "migration"
+        run = {
+            "uid": "twin_sync_run:later",
+            "kind": "replay",
+            "status": "partial",
+            "started_at": T0,
+            "rows_late": 2,
+            "clock_at": T0,
+        }
+        store.commit(
+            ChangeSet(
+                upserts={"TwinSyncRun": [run]},
+                provenance=Provenance(source="test", kind=FactKind.inferred, t_valid=T0),
+            ),
+            CommitMeta(cause="sync", actor="test", t=T0),
+        )
+        kept = store.get("twin_sync_run:later").values
+        assert (kept["kind"], kept["status"], kept["rows_late"], kept["clock_at"]) == (
+            "replay",
+            "partial",
+            2,
+            T0,
+        )
+    finally:
+        result.twin.close()
+    open_twin(settings).close()
