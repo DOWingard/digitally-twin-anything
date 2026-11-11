@@ -70,16 +70,21 @@ def neighbourhood(
     edge_types: Sequence[str] | None,
     limit: int,
     node_types: frozenset[str] | None = None,
+    mask: np.ndarray | None = None,
+    mask_key: object = None,
 ) -> Neighbourhood:
     """Objects within `depth` hops of the seeds (uid -> type) and the edges that reach them.
 
     The edges returned are those leaving a node nearer than `depth` in the
     direction followed. With `node_types`, only nodes of those types are
     returned, besides the seeds; the traversal itself passes through every node.
+    `mask`, named by `mask_key`, keeps only the edge rows where it is true (an
+    edge filter's `follow_mask`).
     """
     check_direction(direction)
     started = time.perf_counter()
-    view = snapshot.view(edge_types, direction)
+    view_key = None if mask is None else ("filter", mask_key)
+    view = snapshot.view(edge_types, direction, mask, view_key)
     starts = sorted({snapshot.index[uid] for uid in seeds if uid in snapshot.index})
     depth_of = _distances(view.graph, starts, depth)
     src, dst = snapshot.src[view.rows], snapshot.dst[view.rows]
@@ -128,6 +133,7 @@ def neighbourhood(
         nodes=result.nodes.num_rows,
         edges=result.edges.num_rows,
         truncated=result.truncated,
+        filtered=mask is not None,
         elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
     )
     return result
@@ -144,6 +150,7 @@ def edge_weights(
     """The weight of every edge of the version: property `name` of its link, else `default`.
 
     NaN marks an edge without a weight. One read per link type that has the property.
+    Kept with the snapshot, among its most recently used weights.
     """
 
     def compute() -> np.ndarray:
@@ -181,7 +188,7 @@ def edge_weights(
             weights[rows] = np.where(np.isnan(found), fill, found)
         return weights
 
-    return snapshot.memo(("weight", name, default), compute)
+    return snapshot.weights.get((name, default), compute)
 
 
 def _cheapest(
@@ -214,14 +221,18 @@ def shortest_paths(
     edge_types: Sequence[str] | None,
     weights: np.ndarray | None = None,
     weight_key: object = None,
+    mask: np.ndarray | None = None,
+    mask_key: object = None,
 ) -> list[Path]:
     """The `k` cheapest simple paths of at most `max_depth` hops from source to target.
 
     Without weights a path costs its number of hops; with them, the sum of the
     weights of its edges, and edges without a weight are not followed;
     `weight_key` names the weights, so that graphs built for them are reused.
-    Paths are distinct sequences of nodes; between two consecutive nodes the
-    cheapest edge is reported.
+    `mask`, named by `mask_key`, keeps only the edge rows where it is true (an
+    edge filter's `follow_mask`); with weights, an edge is followed when both
+    allow it. Paths are distinct sequences of nodes; between two consecutive
+    nodes the cheapest edge is reported.
     """
     check_direction(direction)
     started = time.perf_counter()
@@ -229,11 +240,13 @@ def shortest_paths(
         return []
     if source == target:
         return [Path(nodes=(source,), edges=(), cost=0.0)]
-    mask, mask_key = None, None
+    followed, view_key = mask, None if mask is None else ("filter", mask_key)
     if weights is not None:
-        mask, mask_key = ~np.isnan(weights), ("weighted", weight_key)
-    forward = snapshot.view(edge_types, direction, mask, mask_key)
-    backward = snapshot.view(edge_types, _REVERSE[direction], mask, mask_key)
+        weighted = ~np.isnan(weights)
+        followed = weighted if mask is None else weighted & mask
+        view_key = ("weighted", weight_key, mask_key)
+    forward = snapshot.view(edge_types, direction, followed, view_key)
+    backward = snapshot.view(edge_types, _REVERSE[direction], followed, view_key)
     s, t = snapshot.index[source], snapshot.index[target]
     from_source = _distances(forward.graph, [s], max_depth)
     to_target = _distances(backward.graph, [t], max_depth)
@@ -306,6 +319,7 @@ def shortest_paths(
         candidates=len(paths),
         returned=min(k, len(paths)),
         weighted=weights is not None,
+        filtered=mask is not None,
         elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
     )
     return paths[:k]

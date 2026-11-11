@@ -18,6 +18,7 @@ from dta_core.schema import Ontology
 from dta_core.store import Store, VersionRef
 
 from .edges import EDGE_SCHEMA, NODE_SCHEMA, EdgeKind, check_direction, select_kinds
+from .filtering import EdgeFilter, Triple
 from .result import Neighbourhood, finish
 
 log = Log("graph.local")
@@ -97,8 +98,12 @@ def _read_kind(
     kind: EdgeKind,
     ends: Sequence[str],
     outgoing: bool,
+    conditions: Sequence[Triple] = (),
 ) -> list[Edge]:
-    """The edges of one type whose source (outgoing) or target end is among `ends`."""
+    """The edges of one type whose source (outgoing) or target end is among `ends`.
+
+    `conditions` are an edge filter's conditions on the links of a link type.
+    """
     found: list[Edge] = []
     for chunk in _chunks(ends):
         if kind.is_link:
@@ -107,7 +112,7 @@ def _read_kind(
             table = store.table(
                 kind.holder,
                 columns=[kind.source, kind.target],
-                filter=[(near, "in", chunk), (far, "not_null", None)],
+                filter=[(near, "in", chunk), (far, "not_null", None), *conditions],
                 at=at,
                 ontology=ontology,
             )
@@ -147,18 +152,20 @@ def _expand(
     kinds: Sequence[EdgeKind],
     frontier: Mapping[str, str | None],
     direction: str,
+    edge_filter: EdgeFilter | None,
 ) -> list[Edge]:
     """Every edge with an end in the frontier, following `direction` from it."""
     found: list[Edge] = []
     for kind in kinds:
+        conditions = edge_filter.on(kind.name) if edge_filter and kind.is_link else []
         if direction in ("out", "both"):
             ends = [uid for uid, name in frontier.items() if name in kind.source_types]
             if ends:
-                found.extend(_read_kind(store, ontology, at, kind, ends, outgoing=True))
+                found.extend(_read_kind(store, ontology, at, kind, ends, True, conditions))
         if direction in ("in", "both"):
             ends = [uid for uid, name in frontier.items() if name in kind.target_types]
             if ends:
-                found.extend(_read_kind(store, ontology, at, kind, ends, outgoing=False))
+                found.extend(_read_kind(store, ontology, at, kind, ends, False, conditions))
     return list(dict.fromkeys(found))
 
 
@@ -171,11 +178,14 @@ def neighbourhood(
     direction: str,
     edge_types: Sequence[str] | None,
     limit: int,
+    edge_filter: EdgeFilter | None = None,
 ) -> Neighbourhood:
     """Objects within `depth` hops of the seeds (uid -> type), and the edges that reach them.
 
     The edges returned are those leaving a node nearer than `depth` in the
-    direction followed, which is what the cached graph returns as well.
+    direction followed, which is what the cached graph returns as well. With
+    `edge_filter`, an edge of a filtered link type is followed only when its
+    link passes the filter.
     """
     check_direction(direction)
     started = time.perf_counter()
@@ -186,7 +196,7 @@ def neighbourhood(
     frontier: dict[str, str | None] = dict(seeds)
     for level in range(depth):
         new: list[str] = []
-        for edge in _expand(store, ontology, at, kinds, frontier, direction):
+        for edge in _expand(store, ontology, at, kinds, frontier, direction, edge_filter):
             edges[edge] = None
             for end in edge[:2]:
                 if end not in depth_of:
@@ -223,6 +233,7 @@ def neighbourhood(
         depth=depth,
         direction=direction,
         edge_types=len(kinds),
+        filtered=bool(edge_filter),
         nodes=result.nodes.num_rows,
         edges=result.edges.num_rows,
         truncated=result.truncated,
@@ -239,11 +250,13 @@ def links(
     type_name: str,
     direction: str,
     edge_types: Sequence[str] | None,
+    edge_filter: EdgeFilter | None = None,
 ) -> pa.Table:
-    """The edges of one object, each with the object at its other end."""
+    """The edges of one object, each with the object at its other end; with `edge_filter`,
+    only edges of a filtered link type whose link passes it."""
     check_direction(direction)
     kinds = select_kinds(ontology, edge_types)
-    found = _expand(store, ontology, at, kinds, {uid: type_name}, direction)
+    found = _expand(store, ontology, at, kinds, {uid: type_name}, direction, edge_filter)
     others = [dst if src == uid else src for src, dst, _, _ in found]
     types = resolve_types(store, ontology, at, others, verify=False)
     rows = []

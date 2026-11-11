@@ -27,6 +27,12 @@ class BadWeight(GraphError):
     code = "graph.bad_weight"
 
 
+class BadEdgeFilter(GraphError):
+    """An edge filter names a type under which there is no link type."""
+
+    code = "graph.bad_edge_filter"
+
+
 @dataclass(frozen=True)
 class Neighbourhood:
     # uid, type, depth; nearest first, then by uid.
