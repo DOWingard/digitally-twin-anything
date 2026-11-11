@@ -17,16 +17,14 @@ from pathlib import Path
 
 import pymysql
 import pytest
-import yaml
 
 # Helper modules next to this file are imported by name from the tests.
 sys.path.insert(0, str(Path(__file__).parent))
 
-from dta_core.manifest import Manifest, parse_manifest  # noqa: E402
-from dta_core.ontology import parse_ontology, type_signature  # noqa: E402
 from dta_core.store import StoreSettings  # noqa: E402
 from dta_core.store.settings import ENV_NAMES  # noqa: E402
 from dta_runtime.twin import Bundle, Twin, install_twin  # noqa: E402
+from runtime_testkit import water_manifest  # noqa: E402
 
 WATER_ONTOLOGY = (
     Path(__file__).resolve().parents[2] / "core/tests/ontology/fixtures/water_network.yaml"
@@ -80,20 +78,6 @@ def new_settings(
 @pytest.fixture(scope="session")
 def water_ontology_text() -> str:
     return WATER_ONTOLOGY.read_text(encoding="utf-8")
-
-
-def water_manifest(ontology_text: str, **changes: object) -> Manifest:
-    """A small manifest for the water network; `changes` replace top-level sections."""
-    document: dict[str, object] = {
-        "twin": {"id": "water", "name": "Water network", "revision": 1},
-        "contract": {"tier": "static"},
-        "ontology": {
-            "path": "ontology/water_network.yaml",
-            "type_signature": type_signature(parse_ontology(ontology_text).ontology),
-        },
-    }
-    document.update(changes)
-    return parse_manifest(yaml.safe_load(yaml.safe_dump(document)), origin="test manifest")
 
 
 @pytest.fixture
