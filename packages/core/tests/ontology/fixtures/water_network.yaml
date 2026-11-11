@@ -1,0 +1,269 @@
+id: https://example.org/water-network
+name: water_network
+description: >-
+  Small drinking-water distribution network. It exercises every ontology
+  convention: inheritance, mixins, link types, value types, enums, units,
+  roles, bounds, patterns, checks and events.
+prefixes:
+  linkml: https://w3id.org/linkml/
+  wn: https://example.org/water-network/
+default_prefix: wn
+default_range: string
+imports:
+  - linkml:types
+
+slots:
+  name:
+    required: true
+    description: Human-readable name.
+    pattern: "^[A-Za-z0-9 _-]+$"
+
+classes:
+  Located:
+    mixin: true
+    description: Anything with a position on the network map.
+    attributes:
+      x:
+        range: float
+        unit:
+          ucum_code: m
+      y:
+        range: float
+        unit:
+          ucum_code: m
+
+  Node:
+    abstract: true
+    mixins:
+      - Located
+    description: A point where water enters, leaves or joins the network.
+    slots:
+      - name
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      elevation:
+        range: float
+        required: true
+        unit:
+          ucum_code: m
+
+  Junction:
+    is_a: Node
+    description: A node where pipes meet and water is drawn.
+    attributes:
+      base_demand:
+        range: float
+        minimum_value: 0
+        unit:
+          ucum_code: L/s
+      demand:
+        range: float
+        unit:
+          ucum_code: L/s
+        annotations:
+          dta_role: state
+      pressure:
+        range: float
+        unit:
+          ucum_code: m
+        annotations:
+          dta_role: derived
+
+  Tank:
+    is_a: Node
+    description: A storage tank whose level changes over time.
+    annotations:
+      dta_check_level_within_bounds: "level IS NULL OR (level >= min_level AND level <= max_level)"
+      dta_check_bounds_ordered: "min_level <= max_level"
+    attributes:
+      min_level:
+        range: float
+        required: true
+        minimum_value: 0
+        unit:
+          ucum_code: m
+      max_level:
+        range: float
+        required: true
+        minimum_value: 0
+        unit:
+          ucum_code: m
+      level:
+        range: float
+        unit:
+          ucum_code: m
+        annotations:
+          dta_role: state
+      volume_curve:
+        range: float
+        multivalued: true
+        description: Volume at each metre of level, from the bottom up.
+
+  Reservoir:
+    is_a: Node
+    description: An unlimited source of water at a fixed head.
+    attributes:
+      head:
+        range: float
+        required: true
+        unit:
+          ucum_code: m
+
+  Link:
+    abstract: true
+    description: A connection carrying water from one node to another.
+    annotations:
+      link_source: start_node
+      link_target: end_node
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      start_node:
+        range: Node
+        required: true
+      end_node:
+        range: Node
+        required: true
+      status:
+        range: LinkStatus
+        annotations:
+          dta_role: state
+
+  Pipe:
+    is_a: Link
+    attributes:
+      length:
+        range: float
+        required: true
+        minimum_value: 0
+        unit:
+          ucum_code: m
+      diameter:
+        range: float
+        required: true
+        minimum_value: 0
+        maximum_value: 5000
+        unit:
+          ucum_code: mm
+      roughness:
+        range: float
+        minimum_value: 0
+      lined:
+        range: boolean
+
+  Pump:
+    is_a: Link
+    attributes:
+      curve:
+        range: PumpCurvePoint
+        multivalued: true
+        description: Head delivered at each flow rate.
+      speed:
+        range: float
+        minimum_value: 0
+        maximum_value: 2
+        annotations:
+          dta_role: state
+
+  Valve:
+    is_a: Link
+    attributes:
+      valve_type:
+        range: ValveType
+        required: true
+      setting:
+        range: float
+
+  PumpCurvePoint:
+    description: One point of a pump's head-flow curve.
+    attributes:
+      flow:
+        range: float
+        required: true
+        minimum_value: 0
+        unit:
+          ucum_code: L/s
+      head:
+        range: float
+        required: true
+        unit:
+          ucum_code: m
+
+  Sensor:
+    description: An instrument measuring one quantity at one node.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      measures:
+        range: Node
+        required: true
+      quantity:
+        range: Quantity
+        required: true
+      serial:
+        pattern: "^SN-[0-9]{6}$"
+      installed_on:
+        range: date
+      active:
+        range: boolean
+        required: true
+      sample_interval:
+        range: integer
+        minimum_value: 1
+        unit:
+          ucum_code: s
+      tags:
+        multivalued: true
+      notes:
+        annotations:
+          dta_long: true
+
+  Reading:
+    description: One value reported by a sensor.
+    annotations:
+      dta_event: true
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      sensor:
+        range: Sensor
+        required: true
+      observed_at:
+        range: datetime
+        required: true
+      value:
+        range: float
+        required: true
+      quality:
+        range: ReadingQuality
+      sequence:
+        range: integer
+        minimum_value: 0
+
+enums:
+  LinkStatus:
+    permissible_values:
+      open: {}
+      closed: {}
+  ValveType:
+    permissible_values:
+      prv: {}
+      psv: {}
+      fcv: {}
+      tcv: {}
+  Quantity:
+    permissible_values:
+      pressure: {}
+      flow: {}
+      level: {}
+      chlorine: {}
+  ReadingQuality:
+    permissible_values:
+      good: {}
+      suspect: {}
+      bad: {}

@@ -1,0 +1,91 @@
+id: https://example.org/spike-fixture
+name: spike_fixture
+description: >-
+  Small typed graph with time-varying state. It is the single source of truth
+  for the schema installed into every engine under test.
+prefixes:
+  linkml: https://w3id.org/linkml/
+  fx: https://example.org/spike-fixture/
+default_prefix: fx
+default_range: string
+imports:
+  - linkml:types
+
+classes:
+  Site:
+    description: A location that holds assets.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      name:
+        required: true
+      region:
+        required: true
+
+  Asset:
+    description: A unit of equipment whose load and status change over time.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      name:
+        required: true
+      capacity:
+        range: float
+        required: true
+        minimum_value: 0
+        unit:
+          ucum_code: kW
+      load:
+        range: float
+        required: true
+        minimum_value: 0
+        unit:
+          ucum_code: kW
+      status:
+        range: AssetStatus
+        required: true
+      site:
+        range: Site
+        required: true
+
+  Sensor:
+    description: A measuring device attached to one asset.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      reading:
+        range: float
+        required: true
+      monitors:
+        range: Asset
+        required: true
+
+  Feeds:
+    description: Directed link between two assets that carries its own property.
+    annotations:
+      link_source: src
+      link_target: dst
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      src:
+        range: Asset
+        required: true
+      dst:
+        range: Asset
+        required: true
+      weight:
+        range: float
+        required: true
+        minimum_value: 0
+
+enums:
+  AssetStatus:
+    permissible_values:
+      ok: {}
+      degraded: {}
+      down: {}
