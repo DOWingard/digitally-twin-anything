@@ -27,8 +27,8 @@ from typing import Literal
 from ..workspace import Workspace
 from .catalogue import require_task_id
 from .errors import TaskError
-from .state import Batch, TaskRecord
-from .tree import entry_digest, is_real_dir, read_plain_file, scan, sha256_bytes
+from .state import Batch, TaskRecord, TasksState
+from .tree import entry_digest, is_real_dir, read_plain_file, scan, sha256_bytes, spell_name
 
 SPEC_FILE = "task.json"
 INPUT_DIR = "input"
@@ -135,7 +135,9 @@ def inspect_task(
         # file, and the claim that follows removes it before recording a lease.
         tolerated = task.status == "open" and _is_spec_leftover(name)
         if name not in (SPEC_FILE, INPUT_DIR, OUTPUT_DIR) and not tolerated:
-            findings.append(Finding("zone", f"{where}/{name}", "not part of a task directory"))
+            findings.append(
+                Finding("zone", f"{where}/{spell_name(name)}", "not part of a task directory")
+            )
     if not is_real_dir(base / INPUT_DIR):
         findings.append(Finding("input", f"{where}/{INPUT_DIR}", "missing or not a directory"))
     if not skip_output and not is_real_dir(base / OUTPUT_DIR):
@@ -179,7 +181,7 @@ def snapshot(workspace: Workspace, exclude: set[str]) -> dict[str, str]:
     if not is_real_dir(workspace.tasks_dir):
         return {}
     return {
-        name: entry_digest(workspace.tasks_dir / name)
+        spell_name(name): entry_digest(workspace.tasks_dir / name)
         for name in sorted(os.listdir(workspace.tasks_dir))
         if name not in exclude
     }
@@ -193,15 +195,40 @@ def inspect_zone(workspace: Workspace, batch: Batch, *, skip: frozenset[str]) ->
     if not is_real_dir(workspace.tasks_dir):
         return [Finding("zone", "tasks", "missing or not a directory")]
     findings = []
-    present = set(os.listdir(workspace.tasks_dir))
+    # Keyed the way the baseline is, so a name that is not text still matches its record.
+    present = {spell_name(name): name for name in os.listdir(workspace.tasks_dir)}
     for task_id, task in sorted(batch.tasks.items()):
         if task_id not in skip:
             findings.extend(inspect_task(workspace, batch, task))
-    for name in sorted(present - set(batch.tasks)):
-        if name not in batch.baseline:
-            findings.append(Finding("zone", f"tasks/{name}", "appeared after the batch opened"))
-        elif entry_digest(workspace.tasks_dir / name) != batch.baseline[name]:
-            findings.append(Finding("zone", f"tasks/{name}", "changed since the batch opened"))
-    for name in sorted(set(batch.baseline) - present):
-        findings.append(Finding("zone", f"tasks/{name}", "removed since the batch opened"))
+    for key in sorted(set(present) - set(batch.tasks)):
+        if key not in batch.baseline:
+            findings.append(Finding("zone", f"tasks/{key}", "appeared after the batch opened"))
+        elif entry_digest(workspace.tasks_dir / present[key]) != batch.baseline[key]:
+            findings.append(Finding("zone", f"tasks/{key}", "changed since the batch opened"))
+    for key in sorted(set(batch.baseline) - set(present)):
+        findings.append(Finding("zone", f"tasks/{key}", "removed since the batch opened"))
+    return findings
+
+
+def sealed_findings(workspace: Workspace, state: TasksState) -> list[Finding]:
+    """Merged results of closed batches that are no longer what was merged.
+
+    While a batch is open its baseline holds them fixed. Between batches
+    nothing does, so they are looked at again before the next batch is opened
+    and takes them into its baseline as they are. A directory that is gone
+    altogether is not reported: removing it whole is how a result is retired.
+    """
+    if not is_real_dir(workspace.tasks_dir):
+        return []
+    findings = []
+    seen: set[str] = set()
+    for batch in reversed(state.batches):
+        for task_id, task in sorted(batch.tasks.items()):
+            if task_id in seen:
+                continue
+            seen.add(task_id)  # only the latest attempt at a task owns its directory
+            if task.status != "merged" or batch.closed_at is None:
+                continue
+            if os.path.lexists(task_dir(workspace, task_id)):
+                findings.extend(inspect_task(workspace, batch, task))
     return findings

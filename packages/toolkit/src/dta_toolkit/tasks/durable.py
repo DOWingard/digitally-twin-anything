@@ -20,6 +20,7 @@ import json
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+from dta_core.errors import WorkspaceError
 from dta_core.log import Log
 
 from ..workspace import Workspace
@@ -79,7 +80,18 @@ def complete_interrupted_write(workspace: Workspace) -> None:
     except OSError:
         current = None
     if current is not None and sha256_bytes(current) == expected:
-        workspace.atomic_write(target, current)
+        try:
+            workspace.atomic_write(target, current)
+        except WorkspaceError as exc:
+            # The file is in place but the ledger cannot take the entry. The
+            # note stays, so the write is completed once the ledger is usable
+            # again; until then every command that checks the ledger refuses.
+            log.error(
+                "an interrupted write cannot be recorded; its note is kept",
+                exc=exc,
+                path=note["path"],
+            )
+            return
         log.warn("completed a write that was interrupted before it was recorded", path=note["path"])
     else:
         log.warn("an announced write never happened; nothing to complete", path=note["path"])

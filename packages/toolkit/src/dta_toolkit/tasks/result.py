@@ -8,20 +8,33 @@ is stored for the orchestrator and never applied.
 Setting a value is idempotent, so applying the same patch a second time leaves
 the manifest unchanged. The merge relies on this to recover from an
 interruption.
+
+A result is written by another agent and nothing in it is trusted. Before any
+of it reaches a shared file it has to be shown that the file can still be read
+back afterwards: text that cannot be encoded, values nested beyond what a
+reader accepts, numbers that are not numbers.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
-from dta_core.errors import ManifestError
-from dta_core.manifest import Manifest, parse_manifest, to_plain
+import yaml
+from dta_core.errors import DtaError, ManifestError
+from dta_core.manifest import Manifest, dump_manifest, manifest_hash, parse_manifest, to_plain
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .catalogue import TaskSpec
 from .errors import reason
 from .paths import covers, is_path, parse_pattern
+
+# Deeper than any manifest value has reason to be, and far below the depth at
+# which JSON readers start to refuse a document.
+MAX_DEPTH = 32
+# Proposals and notes are copied into the state file, which every command reads.
+MAX_RESULT_BYTES = 4 * 1024 * 1024
 
 
 class Proposal(BaseModel):
@@ -57,16 +70,45 @@ def _no_constants(name: str) -> Any:
     raise ValueError(f"{name} is not a JSON value")
 
 
+def _too_deep(data: Any) -> bool:
+    pending = [(data, 1)]
+    while pending:
+        node, depth = pending.pop()
+        if isinstance(node, dict | list):
+            if depth > MAX_DEPTH:
+                return True
+            children = node.values() if isinstance(node, dict) else node
+            pending.extend((child, depth + 1) for child in children)
+    return False
+
+
 def parse_result(raw: bytes) -> tuple[Result | None, list[dict[str, Any]]]:
     """Decode a result file. Returns the result, or the reasons it is not acceptable."""
+
+    def invalid(message: str, **detail: Any) -> tuple[None, list[dict[str, Any]]]:
+        return None, [reason("tasks.result.invalid", message, **detail)]
+
     try:
         data = json.loads(
             raw.decode("utf-8"), object_pairs_hook=_no_duplicates, parse_constant=_no_constants
         )
+    except RecursionError:
+        return invalid("result.json is nested too deeply to be read")
     except (UnicodeDecodeError, ValueError) as exc:
-        return None, [reason("tasks.result.invalid", f"result.json is not valid JSON: {exc}")]
+        return invalid(f"result.json is not valid JSON: {exc}")
+    if _too_deep(data):
+        return invalid(f"result.json nests values more than {MAX_DEPTH} levels deep")
     try:
-        return Result.model_validate(data), []
+        # An escape such as \udce9 is valid JSON but is half a character: text
+        # carrying it cannot be written to a file again. A number such as 1e999
+        # is read as infinity, which no later reader accepts.
+        json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return invalid("result.json contains text that is not valid Unicode (a lone surrogate)")
+    except ValueError:
+        return invalid("result.json contains a number that is out of range")
+    try:
+        result = Result.model_validate(data)
     except ValidationError as exc:
         problems = [
             {"path": ".".join(str(part) for part in error["loc"]), "problem": error["msg"]}
@@ -80,6 +122,15 @@ def parse_result(raw: bytes) -> tuple[Result | None, list[dict[str, Any]]]:
                 problems=problems,
             )
         ]
+    try:
+        # What is kept of a result goes into the state file, which every later
+        # command has to read: it must come back out exactly as it went in.
+        stored = Result.model_validate_json(result.model_dump_json())
+    except (ValueError, RecursionError) as exc:
+        return invalid(f"result.json cannot be stored: {type(exc).__name__}")
+    if stored != result:
+        return invalid("result.json would not read back as written once stored")
+    return result, []
 
 
 def ownership_reasons(spec: TaskSpec, patch: dict[str, Any]) -> list[dict[str, Any]]:
@@ -207,6 +258,14 @@ def _changed(before: Any, after: Any, path: tuple[str, ...]) -> list[tuple[str, 
     """Paths at which two plain manifests differ, as deep as the difference can be located."""
     if before == after:
         return []
+    if isinstance(before, float) and isinstance(after, float):
+        # A value that is not a number is not even equal to itself.
+        return [] if math.isnan(before) and math.isnan(after) else [path]
+    if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+        found = []
+        for index, (old, new) in enumerate(zip(before, after, strict=True)):
+            found += _changed(old, new, (*path, str(index)))
+        return [path] if found else []
     if isinstance(after, dict) and after and before is None:
         before = {}
     if isinstance(before, dict) and before and after is None:
@@ -243,3 +302,88 @@ def side_effect_reasons(spec: TaskSpec, before: Manifest, after: Manifest) -> li
             owned_keys=list(spec.owns),
         )
     ]
+
+
+def same_plain(first: Manifest, second: Manifest) -> bool:
+    """True when two manifests hold the same values."""
+    return not _changed(to_plain(first), to_plain(second), ())
+
+
+def _finite(value: Any) -> bool:
+    try:
+        json.dumps(value, allow_nan=False)
+    except ValueError:
+        return False
+    return True
+
+
+def stability_reasons(
+    spec: TaskSpec, before: Manifest, patched: Manifest, patch: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Would the patched manifest survive being written, and the merge being repeated?
+
+    Three things have to hold before a patch may touch the manifest file:
+    the file it produces can be read back and holds the same values; applying
+    the patch to what was read back changes nothing, which is what lets an
+    interrupted merge be run again; and every number it brings in is a number.
+    """
+    problems: list[tuple[tuple[str, ...], str]] = []
+    plain = to_plain(patched)
+    for path in _changed(to_plain(before), plain, ()):
+        node: Any = plain
+        for part in path:
+            node = node.get(part) if isinstance(node, dict) else None
+        if not _finite(node):
+            problems.append((path, "holds a value that is not a number"))
+    try:
+        manifest_hash(patched)
+        reread = parse_manifest(
+            yaml.safe_load(dump_manifest(patched)), origin="the manifest as it would be written"
+        )
+        manifest_hash(reread)
+    except (DtaError, yaml.YAMLError, UnicodeError, ValueError, RecursionError) as exc:
+        problems.append(((), f"cannot be written and read back: {type(exc).__name__}"))
+    else:
+        problems += [
+            (path, "does not read back as written")
+            for path in _changed(plain, to_plain(reread), ())
+        ]
+        try:
+            again = apply_patch(reread, patch)
+        except ManifestError:
+            problems.append(((), "the patch cannot be applied a second time"))
+        else:
+            problems += [
+                (path, "changes again when the patch is repeated")
+                for path in _changed(to_plain(reread), to_plain(again), ())
+            ]
+
+    # A value elsewhere in the manifest that does not survive being rewritten
+    # is not this task's doing, but merging would still alter it.
+    owned = [parse_pattern(text) for text in spec.owns]
+
+    def inside(path: tuple[str, ...]) -> bool:
+        return not path or any(covers(pattern, path) for pattern in owned)
+
+    mine = [{"path": ".".join(p), "problem": text} for p, text in problems if inside(p)]
+    others = [{"path": ".".join(p), "problem": text} for p, text in problems if not inside(p)]
+    reasons = []
+    if mine:
+        reasons.append(
+            reason(
+                "tasks.patch.unstable",
+                "with this patch the manifest could not be written, read back and merged "
+                "again without changing",
+                problems=mine,
+            )
+        )
+    if others:
+        reasons.append(
+            reason(
+                "tasks.manifest.unstable",
+                "the manifest holds values outside this task's keys that change when the "
+                "file is rewritten, so no merge can leave them alone",
+                problems=others,
+            )
+        )
+    return reasons

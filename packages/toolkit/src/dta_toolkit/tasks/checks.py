@@ -18,6 +18,8 @@ changes nothing. The callers hold the workspace lock.
 
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,19 +28,22 @@ from dta_core.log import Log
 from dta_core.manifest import Manifest, subtree_hash, to_plain
 
 from ..workspace import Workspace, sha256_file
-from .catalogue import TaskSpec
+from .batches import plan_batches
+from .catalogue import TaskSpec, stages, tasks_for
 from .errors import TaskError, reason, refusal
 from .paths import owned_paths, pinned_paths
 from .result import (
+    MAX_RESULT_BYTES,
     Result,
     apply_patch,
     artifact_reasons,
     ownership_reasons,
     parse_result,
     side_effect_reasons,
+    stability_reasons,
 )
 from .state import OntologyPin, TaskRecord
-from .tree import Scan, is_real_dir, read_plain_file, scan, sha256_bytes
+from .tree import Scan, is_real_dir, read_plain_file, scan, sha256_bytes, spell_name
 from .zone import OUTPUT_DIR, RESULT_FILE, Finding, task_dir
 
 log = Log("tasks.checks")
@@ -60,7 +65,14 @@ def ontology_pin(workspace: Workspace, manifest: Manifest) -> OntologyPin:
             code="tasks.ontology.outside",
             detail={"path": path},
         )
-    return OntologyPin(path=path, sha256=sha256_file(target) if target.is_file() else None)
+    try:
+        digest = sha256_file(target) if target.is_file() else None
+    except OSError as exc:
+        # Gone, or made unreadable, between being found and being read. Either
+        # way it is not the file that was pinned.
+        log.warn("ontology file cannot be read", exc=exc, path=path)
+        digest = None
+    return OntologyPin(path=path, sha256=digest)
 
 
 def manifest_pin(manifest: Manifest, spec: TaskSpec) -> str:
@@ -78,13 +90,36 @@ def owned_pin(manifest: Manifest, spec: TaskSpec) -> str:
     return subtree_hash(manifest, owned_paths(to_plain(manifest), spec.owns))
 
 
+def load_manifest(workspace: Workspace) -> Manifest:
+    """Read the manifest, having made sure that reading it cannot block or wander off.
+
+    A pipe in its place would hold the reader, and with it the workspace lock,
+    for ever. A link would have the file that is read differ from the file
+    that is watched.
+    """
+    try:
+        mode = os.lstat(workspace.manifest_path).st_mode
+    except OSError:
+        mode = None  # missing or out of reach: the loader says so in its own words
+    if mode is not None and not stat.S_ISREG(mode):
+        log.error("manifest is not a regular file", path=str(workspace.manifest_path))
+        raise TaskError(
+            "manifest.yaml is not a regular file",
+            code="tasks.manifest.not_plain",
+            detail={"path": str(workspace.manifest_path)},
+        )
+    return workspace.load_manifest()
+
+
 def read_manifest(workspace: Workspace) -> tuple[Manifest | None, list[dict[str, Any]]]:
     try:
-        return workspace.load_manifest(), []
-    except ManifestError as exc:
-        return None, [
-            reason("tasks.manifest.unreadable", f"the manifest cannot be read: {exc.message}")
-        ]
+        return load_manifest(workspace), []
+    except (ManifestError, TaskError) as exc:
+        problem = exc.message
+    except (UnicodeError, RecursionError) as exc:
+        problem = type(exc).__name__
+    log.warn("manifest cannot be read", problem=problem)
+    return None, [reason("tasks.manifest.unreadable", f"the manifest cannot be read: {problem}")]
 
 
 def pin_reasons(
@@ -135,6 +170,28 @@ def pin_reasons(
 # -- shared files outside tasks/ ----------------------------------------------
 
 
+def unsettled(exc: OSError) -> TaskError:
+    """The error for watched files that changed under the very comparison looking at them.
+
+    Hashing every watched file takes time, and a file can vanish between being
+    listed and being read. Nothing can be concluded from such a pass, and
+    nothing has been written; the command is simply to be run again.
+    """
+    log.warn("watched files changed while they were being read", exc=exc)
+    return TaskError(
+        "shared files changed while they were being read; run the command again",
+        code="tasks.files.unsettled",
+        detail={"problem": str(exc)},
+    )
+
+
+def _foreign_changes(workspace: Workspace) -> list[dict[str, str]]:
+    try:
+        return workspace.foreign_changes()
+    except OSError as exc:
+        raise unsettled(exc) from exc
+
+
 def ledger_reasons(workspace: Workspace) -> list[dict[str, Any]]:
     """Changes to watched files that did not come through the toolkit, one reason per kind."""
     if not workspace.ledger_path.is_file():
@@ -146,7 +203,7 @@ def ledger_reasons(workspace: Workspace) -> list[dict[str, Any]]:
             )
         ]
     try:
-        changes = workspace.foreign_changes()
+        changes = _foreign_changes(workspace)
     except WorkspaceError as exc:
         return [reason("tasks.ledger.unreadable", exc.message)]
     wording = {
@@ -170,7 +227,35 @@ def state_key(workspace: Workspace) -> str:
 def state_file_changed(workspace: Workspace) -> bool:
     """True when the task state file itself differs from the ledger."""
     key = state_key(workspace)
-    return any(entry["path"] == key for entry in workspace.foreign_changes())
+    return any(entry["path"] == key for entry in _foreign_changes(workspace))
+
+
+def touches_state(workspace: Workspace, reasons: list[dict[str, Any]]) -> bool:
+    """True when the task state file is among the files these reasons name."""
+    key = state_key(workspace)
+    return any(key in entry["detail"].get("paths", []) for entry in reasons)
+
+
+def rewrite_reasons(workspace: Workspace) -> list[dict[str, Any]]:
+    """Why the task state may not be rewritten now, for commands that check nothing else.
+
+    A command that loads the state file and writes it back enters the result
+    in the ledger. If the file it loaded was put there by someone else, that
+    someone's edit would from then on pass for a sanctioned write.
+    """
+    reasons = ledger_reasons(workspace)
+    if touches_state(workspace, reasons):
+        log.error("task state changed outside the toolkit", path=state_key(workspace))
+        reasons.insert(
+            0,
+            reason(
+                "tasks.state.tampered",
+                "the task state file was changed outside the toolkit; what it says about "
+                "tasks and leases cannot be relied on. Abort the batch",
+                path=state_key(workspace),
+            ),
+        )
+    return reasons
 
 
 def discard_stale_ledger(workspace: Workspace) -> None:
@@ -184,7 +269,17 @@ def discard_stale_ledger(workspace: Workspace) -> None:
     """
     if not workspace.ledger_path.is_file():
         return
-    if state_file_changed(workspace):
+    try:
+        changed = state_file_changed(workspace)
+    except WorkspaceError as exc:
+        log.error("a ledger left behind cannot be read", exc=exc)
+        raise refusal(
+            "tasks.ledger.unreadable",
+            "a ledger of sanctioned writes was left behind and cannot be read, so the task "
+            "state file cannot be checked against it; inspect .dta/tasks.json, then delete "
+            ".dta/ledger.json to accept it as it is",
+        ) from exc
+    if changed:
         log.error("task state changed outside the toolkit", path=state_key(workspace))
         raise refusal(
             "tasks.state.tampered",
@@ -219,6 +314,20 @@ def own_reasons(findings: list[Finding]) -> list[dict[str, Any]]:
     return reasons
 
 
+def sealed_reasons(findings: list[Finding]) -> list[dict[str, Any]]:
+    """Findings about results that were merged in batches since closed."""
+    if not findings:
+        return []
+    return [
+        reason(
+            "tasks.results.changed",
+            "results merged in earlier batches are no longer what was merged; restore "
+            "them, or delete a task's whole directory to retire its result",
+            problems=[finding.as_dict() for finding in findings],
+        )
+    ]
+
+
 def zone_reasons(findings: list[Finding]) -> list[dict[str, Any]]:
     """Findings about the rest of `tasks/`: other tasks' directories and anything stray."""
     if not findings:
@@ -251,7 +360,7 @@ def examine_output(workspace: Workspace, task: TaskRecord, *, sealed: bool) -> O
     where = f"tasks/{task.spec.id}/{OUTPUT_DIR}"
     # A link anywhere on the way would have the walk read some other directory.
     reachable = is_real_dir(workspace.tasks_dir) and is_real_dir(base)
-    raw = read_plain_file(out_dir / RESULT_FILE) if reachable else None
+    raw = read_plain_file(out_dir / RESULT_FILE, limit=MAX_RESULT_BYTES) if reachable else None
     tree = scan(out_dir) if reachable else Scan(exists=False)
     if not tree.exists:
         return Output(
@@ -263,7 +372,10 @@ def examine_output(workspace: Workspace, task: TaskRecord, *, sealed: bool) -> O
             reason(
                 "tasks.output.symlink",
                 "the output directory may not contain links",
-                links=[{"path": path, "target": target} for path, target in tree.links.items()],
+                links=[
+                    {"path": path, "target": spell_name(target)}
+                    for path, target in tree.links.items()
+                ],
             )
         )
     if tree.special:
@@ -294,6 +406,16 @@ def examine_output(workspace: Workspace, task: TaskRecord, *, sealed: bool) -> O
     if raw is None:
         reasons.append(reason("tasks.result.missing", f"{where}/{RESULT_FILE} is not a file"))
         return Output(tree.digest, None, reasons)
+    if len(raw) > MAX_RESULT_BYTES:
+        reasons.append(
+            reason(
+                "tasks.result.invalid",
+                f"{RESULT_FILE} is larger than {MAX_RESULT_BYTES} bytes; put bulk into "
+                "other files of the output directory",
+                limit=MAX_RESULT_BYTES,
+            )
+        )
+        return Output(tree.digest, None, reasons)
     if tree.files.get(RESULT_FILE) != sha256_bytes(raw):
         reasons.append(
             reason(
@@ -318,8 +440,9 @@ def apply(
 ) -> tuple[Manifest | None, list[dict[str, Any]]]:
     """The manifest with the task's patch applied, or why it may not be applied.
 
-    The patched manifest has to match the schema and may differ from the current
-    one only inside the keys the task owns.
+    The patched manifest has to match the schema, may differ from the current
+    one only inside the keys the task owns, has to survive being written and
+    read back, and must leave the work of every stage plannable.
     """
     try:
         patched = apply_patch(manifest, result.manifest_patch)
@@ -331,5 +454,38 @@ def apply(
                 problems=exc.detail.get("problems", []),
             )
         ]
-    strays = side_effect_reasons(task.spec, manifest, patched)
-    return (None, strays) if strays else (patched, [])
+    reasons = side_effect_reasons(task.spec, manifest, patched)
+    reasons += stability_reasons(task.spec, manifest, patched, result.manifest_patch)
+    broken = _unplannable(patched)
+    if broken:
+        already = _unplannable(manifest)
+        broken = {stage: why for stage, why in broken.items() if stage not in already}
+    if broken:
+        reasons.append(
+            reason(
+                "tasks.patch.unplannable",
+                "with this patch applied the tasks of a stage could no longer be worked out",
+                stages=broken,
+            )
+        )
+    return (None, reasons) if reasons else (patched, [])
+
+
+def _unplannable(manifest: Manifest) -> dict[str, str]:
+    """Stages whose tasks, batches or pins cannot be worked out from a manifest, and why.
+
+    A value a task may legitimately set can still be one the planner cannot
+    use, such as a new entry whose id cannot appear in a task id. Accepting it
+    would leave every later batch of that stage impossible to open.
+    """
+    broken = {}
+    for stage in stages():
+        try:
+            specs = tasks_for(manifest, stage)
+            plan_batches(specs)
+            for spec in specs:
+                manifest_pin(manifest, spec)
+                owned_pin(manifest, spec)
+        except TaskError as exc:
+            broken[stage] = exc.message
+    return broken

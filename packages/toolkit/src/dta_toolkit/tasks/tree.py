@@ -52,6 +52,20 @@ class Scan:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def spell_name(name: str) -> str:
+    """A file name as it is recorded and reported.
+
+    A name is bytes, and not every name is text. One that is not is spelled out
+    in hex, so that records hold exactly what is on disk and can always be
+    written. No real name contains a slash, so the two cannot be confused.
+    """
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return "hex/" + os.fsencode(name).hex()
+    return name
+
+
 def is_real_dir(path: Path) -> bool:
     try:
         return stat.S_ISDIR(os.lstat(path).st_mode)
@@ -77,16 +91,25 @@ def _open_plain(path: Path) -> int | None:
     return None
 
 
-def read_plain_file(path: Path) -> bytes | None:
-    """Content of a regular file, or None if the name is not one or cannot be read."""
+def read_plain_file(path: Path, limit: int | None = None) -> bytes | None:
+    """Content of a regular file, or None if the name is not one or cannot be read.
+
+    With `limit`, reading stops just past it: a result longer than the limit
+    tells the caller the file is too large without holding all of it.
+    """
     fd = _open_plain(path)
     if fd is None:
         return None
     try:
         chunks = []
+        held = 0
         while block := os.read(fd, 1 << 20):
             chunks.append(block)
-        return b"".join(chunks)
+            held += len(block)
+            if limit is not None and held > limit:
+                break
+        data = b"".join(chunks)
+        return data if limit is None else data[: limit + 1]
     except OSError:
         return None
     finally:
@@ -127,12 +150,16 @@ def scan(root: Path) -> Scan:
             found.special.append(prefix.rstrip("/") or ".")
             continue
         for entry in entries:
-            relative = f"{prefix}{entry.name}"
+            relative = f"{prefix}{spell_name(entry.name)}"
             try:
                 info = entry.stat(follow_symlinks=False)
             except OSError:
                 found.special.append(relative)
                 continue
+            if relative != f"{prefix}{entry.name}":
+                # Still walked and hashed like any other entry, so the digest
+                # covers it, but nothing with such a name is ever accepted.
+                found.special.append(relative)
             if stat.S_ISLNK(info.st_mode):
                 try:
                     found.links[relative] = os.readlink(entry.path)
@@ -152,7 +179,7 @@ def scan(root: Path) -> Scan:
             else:
                 found.special.append(relative)
     found.dirs.sort()
-    found.special.sort()
+    found.special = sorted(set(found.special))
     found.shared.sort()
     found.files = dict(sorted(found.files.items()))
     found.links = dict(sorted(found.links.items()))
