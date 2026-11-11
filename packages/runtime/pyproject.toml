@@ -18,6 +18,10 @@ dependencies = [
     "dash-cytoscape>=1.0",
     "waitress>=3.0",
     "pyyaml>=6.0",
+    "statsforecast>=2.0",
+    "mlforecast>=1.0",
+    "utilsforecast>=0.2",
+    "scikit-learn>=1.5",
 ]
 
 [project.scripts]
