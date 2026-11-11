@@ -34,6 +34,9 @@ class Api:
         self.interval: str | None = "PT15M"
         self.manifest_hash = "h1"
         self.refuse_runs = 0
+        # A sync job the API has in progress, as health and a repeated request show it.
+        self.job: dict[str, Any] | None = None
+        self.hide_job_from_health = False
         self.runs: list[dict[str, Any]] = []
         self.manifest_reads = 0
         self.unauthorised = 0
@@ -69,7 +72,11 @@ def _handler(api: Api) -> type[BaseHTTPRequestHandler]:
                     "now": api.now.isoformat().replace("+00:00", "Z") if api.now else None,
                 }
                 manifest = {"hash": api.manifest_hash, "revision": 1}
-                self._send(200, {"tier": api.tier, "manifest": manifest, "clock": clock})
+                shown = None if api.hide_job_from_health else api.job
+                sync = {"job": {"id": shown["id"], "state": shown["state"]} if shown else None}
+                self._send(
+                    200, {"tier": api.tier, "manifest": manifest, "clock": clock, "sync": sync}
+                )
             elif self.path == "/api/v1/meta/manifest":
                 api.manifest_reads += 1
                 sync = {"interval": api.interval} if api.interval else {}
@@ -87,8 +94,13 @@ def _handler(api: Api) -> type[BaseHTTPRequestHandler]:
                 self._send(503, {"code": "store.unavailable"})
                 return
             key = self.headers.get("Idempotency-Key")
+            if api.job is not None:
+                # The same run is in progress: it is handed back, with the key it was made for.
+                self._send(200, {"job": api.job})
+                return
             api.runs.append({"key": key, "body": body})
-            self._send(202, {"job": {"id": f"job-{len(api.runs)}", "state": "queued"}})
+            job = {"id": f"job-{len(api.runs)}", "state": "queued", "idempotency_key": key}
+            self._send(202, {"job": job})
 
     return Handler
 
@@ -150,6 +162,49 @@ def test_after_a_gap_one_run_is_started_for_the_latest_interval(api, scheduler):
     state.now = T0 + timedelta(hours=6, minutes=7)  # the run itself catches up on what it missed
     assert scheduler.tick()["key"] == "sync:2026-01-19T06:00:00+00:00"
     assert len(state.runs) == 2
+
+
+def test_a_boundary_that_comes_while_a_run_is_going_gets_its_run_when_that_one_ends(api, scheduler):
+    state, _ = api
+    assert scheduler.tick()["started"] == "sync"
+    # The first run is still going when the next boundary comes.
+    state.job = {"id": "job-1", "state": "running", "idempotency_key": state.runs[0]["key"]}
+    state.now = T0 + timedelta(minutes=15)
+    assert scheduler.tick() == {"started": None, "reason": "sync.in_progress"}
+    assert scheduler.tick() == {"started": None, "reason": "sync.in_progress"}
+    assert len(state.runs) == 1
+    state.job = None
+    state.now = T0 + timedelta(minutes=17)
+    assert scheduler.tick()["key"] == "sync:2026-01-19T00:15:00+00:00"
+    assert scheduler.tick()["reason"] == "not_due"
+    assert len(state.runs) == 2
+
+
+def test_a_run_handed_back_that_is_another_requests_does_not_count_for_the_boundary(
+    api, scheduler, tmp_path: Path
+):
+    state, url = api
+    # Someone else's run began after the scheduler looked: health did not show it yet.
+    state.job = {"id": "job-x", "state": "running", "idempotency_key": None}
+    state.hide_job_from_health = True
+    assert scheduler.tick() == {"started": None, "reason": "sync.in_progress"}
+    assert state.runs == []
+    state.job = None
+    assert scheduler.tick()["key"] == "sync:2026-01-19T00:00:00+00:00"
+    # Its own run handed back, as after a restart of the scheduler, does count.
+    state.job = {"id": "job-1", "state": "running", "idempotency_key": state.runs[0]["key"]}
+    state.hide_job_from_health = False
+    restarted = Scheduler(
+        SchedulerSettings(api_url=url, api_token=TOKEN, logs_dir=tmp_path, poll_s=0.05)
+    )
+    try:
+        assert restarted.tick()["reason"] == "sync.in_progress"  # health shows the job
+        state.hide_job_from_health = True
+        assert restarted.tick()["started"] == "sync"
+        assert restarted.tick()["reason"] == "not_due"
+    finally:
+        restarted.close()
+    assert len(state.runs) == 1
 
 
 def test_nothing_starts_while_the_clock_is_unavailable(api, scheduler):

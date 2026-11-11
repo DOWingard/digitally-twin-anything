@@ -4,7 +4,8 @@ Two runs of one twin must never overlap, and a caller that repeats a request
 (the scheduler after a restart, a client after a timeout) must not start a
 second run. Both are decided here, under one lock: an `Idempotency-Key` seen
 before gives back the job made for it, and while a sync job is queued or
-running a request for the same run gives back that job.
+running a request for the same run gives back that job. A caller can tell the
+two apart by the key the job carries.
 """
 
 from __future__ import annotations
@@ -101,8 +102,8 @@ class SyncJobs:
         self._work_for = work_for
         self._keys_kept = keys_kept
         self._lock = threading.Lock()
-        # Idempotency-Key -> (parameters, the job made or found for it), oldest first. The
-        # job is held here, so a key outlives its job's place among the jobs kept.
+        # Idempotency-Key -> (parameters, the job made for it), oldest first. The job is
+        # held here, so a key outlives its job's place among the jobs kept.
         self._keys: OrderedDict[str, tuple[SyncParams, Job]] = OrderedDict()
 
     def start(self, params: SyncParams, key: str | None) -> tuple[dict[str, Any], bool]:
@@ -133,7 +134,9 @@ class SyncJobs:
                         detail={"job": active.id},
                         extra={"job": document},
                     )
-                self._remember(key, params, active)
+                # The key is not bound to this job, which was made for another request and
+                # began before this one: asked again once it has ended, the key starts
+                # its own run, which takes what that one was too early for.
                 log.info("the same sync run is already queued or running", job=active.id)
                 return document, False
             job = self._runner.submit(

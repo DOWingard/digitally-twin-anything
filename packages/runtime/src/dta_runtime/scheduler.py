@@ -6,7 +6,8 @@ contains no twin logic, opens neither the store nor a source, and keeps no
 state worth saving: a restarted scheduler asks for the run of the current
 interval again, and asking twice does no harm because every request carries a
 key the API recognises and a sync run that finds nothing new writes nothing
-of the domain.
+of the domain. A boundary that comes while a run is still going is not dropped:
+its run is asked for as soon as that one has ended.
 
 What is due is decided on the twin's clock, never on the wall: a twin of a
 simulated or replayed system runs at that system's pace. The wall is used
@@ -40,6 +41,7 @@ API_REFUSED = "api.refused"
 CLOCK_UNAVAILABLE = "clock.unavailable"
 NOT_LIVE = "twin.not_live"
 NO_INTERVAL = "sync.no_interval"
+SYNC_IN_PROGRESS = "sync.in_progress"
 NOT_DUE = "not_due"
 
 
@@ -85,6 +87,11 @@ class Scheduler:
         due = boundary(now, self._interval)
         if self._fired is not None and due <= self._fired:
             return self._idle(NOT_DUE, quiet=True)
+        if (health.get("sync") or {}).get("job"):
+            # A run still going began before this boundary and leaves its interval
+            # untaken. Asked now, the API would hand that run back; the boundary's own
+            # run is asked for once it has ended.
+            return self._idle(SYNC_IN_PROGRESS)
         key = f"sync:{due.isoformat()}"
         started = time.perf_counter()
         try:
@@ -108,9 +115,12 @@ class Scheduler:
                 duration_ms=elapsed,
             )
             return self._idle(API_REFUSED)
+        job = _json(response).get("job") or {}
+        if response.status_code == 200 and job.get("idempotency_key") != key:
+            # Another run began between the look and the request and was handed back.
+            return self._idle(SYNC_IN_PROGRESS)
         missed = 0 if self._fired is None else (due - self._fired) // self._interval - 1
         self._fired, self._idle_reason = due, None
-        job = _json(response).get("job") or {}
         log.info(
             "sync run started",
             due=due.isoformat(),

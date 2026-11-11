@@ -183,6 +183,10 @@ def test_while_a_run_is_in_progress_it_is_given_back_or_others_are_refused(
     assert (same.status_code, same.json()["job"]["id"]) == (200, job_id)
     assert same.json()["job"]["state"] == "running"
     assert again_ms < POST_LIMIT_MS
+    # Asked with a key of its own, the same run is still that job, which carries no key.
+    keyed = live.post(RUNS, json={}, headers={"Idempotency-Key": "next-boundary"})
+    assert (keyed.status_code, keyed.json()["job"]["id"]) == (200, job_id)
+    assert keyed.json()["job"]["idempotency_key"] is None
     # Another run: refused, and told which job is in the way.
     busy = live.post(RUNS, json={"sources": ["lab"]}, headers={"Idempotency-Key": "lab-only"})
     assert (busy.status_code, problem_code(busy)) == (409, "sync.busy")
@@ -213,6 +217,14 @@ def test_while_a_run_is_in_progress_it_is_given_back_or_others_are_refused(
     assert later.status_code == 202
     live.wait(later.json()["job"]["id"])
     assert len(live.runs()) == 2
+    # Nor is a key bound to a job that was made for another request: the run that was in
+    # progress began before this one was asked for, so the key now starts its own.
+    own = live.post(RUNS, json={}, headers={"Idempotency-Key": "next-boundary"})
+    assert own.status_code == 202
+    assert own.json()["job"]["idempotency_key"] == "next-boundary"
+    assert own.json()["job"]["id"] != job_id
+    live.wait(own.json()["job"]["id"])
+    assert len(live.runs()) == 3
 
 
 def test_twenty_requests_at_once_make_one_job_and_one_run(live_api: MakeLive, plant_dir: Path):
