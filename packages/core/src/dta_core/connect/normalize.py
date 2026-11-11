@@ -13,7 +13,7 @@ does not depend on where it is kept.
 from __future__ import annotations
 
 from collections.abc import Collection
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -253,11 +253,3 @@ def filter_after(table: pa.Table, column: str, since: Any) -> pa.Table:
     """Rows whose `column` is greater than `since`; rows where it is null are dropped."""
     target = table.column(column)
     return table.filter(pc.greater(target, cursor_scalar(since, target.type)))
-
-
-def empty_like(schema: pa.Schema) -> pa.Table:
-    return schema.empty_table()
-
-
-def micros(delta: timedelta) -> int:
-    return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
