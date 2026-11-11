@@ -163,6 +163,13 @@ def held(twin: Twin) -> dict[str, Any]:
     }
 
 
+def listen(caplog: pytest.LogCaptureFixture) -> None:
+    """Capture what the next run logs, and nothing an earlier one did: whether those
+    were captured depends on the level other tests left the logger at."""
+    caplog.set_level(logging.INFO, logger="dta")
+    caplog.clear()
+
+
 def said_of(caplog: pytest.LogCaptureFixture, dataset: str) -> dict[str, Any]:
     """What the one line a run logs about reading a dataset says."""
     (found,) = [
@@ -377,7 +384,7 @@ def test_a_mapping_added_later_has_the_dataset_read_whole_once(
     revise(twin, sources, SYNC)
     telemetry.append("readings", arrived(31, 46))
     clock.set(at(46))
-    caplog.set_level(logging.INFO, logger="dta")
+    listen(caplog)
     report = tick(twin, clock, connect=connect)
 
     # Nothing has been taken through the new view, so it needs every row there is.
@@ -449,7 +456,7 @@ def test_a_changed_valid_time_column_has_the_dataset_read_whole_once(
     revise(twin, sources, SYNC)
     telemetry.append("readings", arrived(16, 31))
     clock.set(at(31))
-    caplog.set_level(logging.INFO, logger="dta")
+    listen(caplog)
     report = tick(twin, clock, connect=connect)
 
     # How far the view was taken is known by a column it no longer has.
@@ -498,7 +505,7 @@ def test_a_view_nothing_has_come_through_keeps_the_dataset_read_whole(
     # so there is no time after which it is known to need nothing.
     telemetry.append("readings", levels(16, 31))
     clock.set(at(31))
-    caplog.set_level(logging.INFO, logger="dta")
+    listen(caplog)
     report = tick(twin, clock, connect=connect)
 
     assert asked_of(connect, "readings") == [None, None]
@@ -559,7 +566,7 @@ def test_a_dataset_no_longer_declared_is_read_whole_again(
     revise(twin, sources, SYNC)
     telemetry.append("readings", arrived(31, 46))
     clock.set(at(46))
-    caplog.set_level(logging.INFO, logger="dta")
+    listen(caplog)
     report = tick(twin, clock, connect=connect)
 
     assert asked_of(connect, "readings")[-1] is None
