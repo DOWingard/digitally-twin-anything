@@ -421,35 +421,46 @@ name = "dta-core"
 version = "0.1.0"
 source = { editable = "packages/core" }
 dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+ontology = [
+    { name = "linkml" },
+    { name = "linkml-runtime" },
+]
+sources = [
     { name = "aiohttp" },
     { name = "dlt", extra = ["sql-database"] },
     { name = "fsspec" },
-    { name = "linkml" },
-    { name = "linkml-runtime" },
     { name = "numpy" },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
-    { name = "pydantic" },
+]
+store = [
+    { name = "pyarrow" },
     { name = "pymysql" },
-    { name = "pyyaml" },
     { name = "sqlalchemy" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.10" },
-    { name = "dlt", extras = ["sql-database"], specifier = ">=1.20" },
-    { name = "fsspec", specifier = ">=2024.10" },
-    { name = "linkml", specifier = ">=1.9" },
-    { name = "linkml-runtime", specifier = ">=1.9" },
-    { name = "numpy", specifier = ">=2.0" },
-    { name = "psycopg2-binary", specifier = ">=2.9" },
-    { name = "pyarrow", specifier = ">=17" },
+    { name = "aiohttp", marker = "extra == 'sources'", specifier = ">=3.10" },
+    { name = "dlt", extras = ["sql-database"], marker = "extra == 'sources'", specifier = ">=1.20" },
+    { name = "fsspec", marker = "extra == 'sources'", specifier = ">=2024.10" },
+    { name = "linkml", marker = "extra == 'ontology'", specifier = ">=1.9" },
+    { name = "linkml-runtime", marker = "extra == 'ontology'", specifier = ">=1.9" },
+    { name = "numpy", marker = "extra == 'sources'", specifier = ">=2.0" },
+    { name = "psycopg2-binary", marker = "extra == 'sources'", specifier = ">=2.9" },
+    { name = "pyarrow", marker = "extra == 'sources'", specifier = ">=17" },
+    { name = "pyarrow", marker = "extra == 'store'", specifier = ">=17" },
     { name = "pydantic", specifier = ">=2.9" },
-    { name = "pymysql", specifier = ">=1.1" },
+    { name = "pymysql", marker = "extra == 'store'", specifier = ">=1.1" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "sqlalchemy", specifier = ">=2.0" },
+    { name = "sqlalchemy", marker = "extra == 'store'", specifier = ">=2.0" },
 ]
+provides-extras = ["ontology", "store", "sources"]
 
 [[package]]
 name = "dta-runtime"
@@ -459,7 +470,7 @@ dependencies = [
     { name = "dash" },
     { name = "dash-ag-grid" },
     { name = "dash-cytoscape" },
-    { name = "dta-core" },
+    { name = "dta-core", extra = ["ontology", "sources", "store"] },
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -474,7 +485,7 @@ requires-dist = [
     { name = "dash", specifier = ">=3.0" },
     { name = "dash-ag-grid", specifier = ">=31" },
     { name = "dash-cytoscape", specifier = ">=1.0" },
-    { name = "dta-core", editable = "packages/core" },
+    { name = "dta-core", extras = ["ontology", "store", "sources"], editable = "packages/core" },
     { name = "duckdb", specifier = ">=1.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
@@ -489,7 +500,7 @@ name = "dta-toolkit"
 version = "0.1.0"
 source = { editable = "packages/toolkit" }
 dependencies = [
-    { name = "dta-core" },
+    { name = "dta-core", extra = ["ontology", "sources", "store"] },
     { name = "filelock" },
     { name = "httpx" },
     { name = "jinja2" },
@@ -498,7 +509,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dta-core", editable = "packages/core" },
+    { name = "dta-core", extras = ["ontology", "store", "sources"], editable = "packages/core" },
     { name = "filelock", specifier = ">=3.16" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
