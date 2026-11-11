@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import dash_cytoscape as cyto
-from dash import Dash, Input, Output, State, ctx, dcc, html, no_update
+from dash import ClientsideFunction, Dash, Input, Output, State, ctx, dcc, html, no_update
 from dash.exceptions import PreventUpdate
 
 from . import ids
@@ -44,7 +44,9 @@ def layout() -> html.Div:
                         clearable=True,
                         # No `debounce`: in Dash 4 it holds a single choice back until the
                         # menu closes, and a choice that closes the menu was never sent.
+                        # The search text waits for a pause in the browser instead.
                     ),
+                    dcc.Store(id=ids.GRAPH_SEARCH_TEXT),
                     html.Div(id=ids.GRAPH_SEARCH_FEEDBACK),
                     html.Label("or around all objects of a type", htmlFor=ids.GRAPH_TYPE),
                     dcc.Dropdown(id=ids.GRAPH_TYPE, options=[], clearable=False),
@@ -295,15 +297,25 @@ def register(app: Dash, backend: Backend) -> None:
             kept if kept != (shown or []) else no_update,
         )
 
+    # The text typed is searched for once the operator pauses, not at every keystroke.
+    app.clientside_callback(
+        ClientsideFunction(namespace="dta", function_name="settleSearch"),
+        Output(ids.GRAPH_SEARCH_TEXT, "data", allow_duplicate=True),
+        Input(ids.GRAPH_OBJECT, "search_value"),
+        State(ids.GRAPH_SEARCH_TEXT, "data"),
+        prevent_initial_call=True,
+    )
+
     @app.callback(
         Output(ids.GRAPH_OBJECT, "options"),
         Output(ids.GRAPH_SEARCH_FEEDBACK, "children"),
-        Input(ids.GRAPH_OBJECT, "search_value"),
+        Input(ids.GRAPH_SEARCH_TEXT, "data"),
         State(ids.GRAPH_OBJECT, "value"),
         State(ids.VERSION, "data"),
     )
     @guarded(1)
     def search(text: str | None, chosen: str | None, version: dict[str, Any] | None) -> Any:
+        """Objects whose uid holds the text, a few of each type, at the selected version."""
         if not text or not version:
             raise PreventUpdate
         schema = backend.schema(version["id"])

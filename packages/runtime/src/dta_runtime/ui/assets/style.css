@@ -242,3 +242,85 @@ body {
 .fidelity {
   margin-top: 8px;
 }
+
+/* The live twin: its clock, how old its data is, its last run. */
+.live-line {
+  display: block;
+  color: var(--muted);
+}
+
+.live-line:empty {
+  display: none;
+}
+
+.live-age.stale,
+.live-clock.unavailable,
+.live-run.run-partial {
+  color: var(--warn-ink);
+}
+
+.stale-mark {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+
+.live-run.run-failed {
+  color: var(--error-ink);
+  font-weight: 600;
+}
+
+.live-job,
+.run-progress {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* The sync section of the history tab. */
+.sync-section h3 {
+  font-size: 14px;
+  margin: 12px 0 4px;
+}
+
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0;
+}
+
+.button:disabled,
+.button:disabled:hover {
+  border-color: var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.run-outcome.outcome-partial {
+  color: var(--warn-ink);
+}
+
+.run-outcome.outcome-failed,
+.run-outcome.outcome-unknown {
+  color: var(--error-ink);
+}
+
+.sources ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.source-row.marked .source-status,
+.source-row.marked .source-error {
+  color: var(--error-ink);
+}
+
+.runs-grid .run-partial {
+  background: var(--warn-bg);
+}
+
+.runs-grid .run-failed {
+  background: var(--error-bg);
+}

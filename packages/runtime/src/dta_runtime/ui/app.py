@@ -17,7 +17,7 @@ from dta_core.log import Log
 from flask import jsonify
 
 from ..settings import UiSettings
-from . import graph, header, history, ids, sheet
+from . import graph, header, history, ids, sheet, sync
 from .backend import Backend
 
 log = Log("ui")
@@ -65,6 +65,7 @@ def create_app(settings: UiSettings) -> Dash:
     graph.register(app, backend)
     sheet.register(app, backend)
     history.register(app, backend)
+    sync.register(app, backend)
 
     @app.server.route("/healthz")
     def healthz():  # type: ignore[no-untyped-def]

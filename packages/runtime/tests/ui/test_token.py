@@ -6,15 +6,21 @@ import json
 
 from api_testkit import node
 from dta_runtime.ui import ids
+from live_testkit import at
 from selenium.webdriver.common.keys import Keys
 from ui_page import (
     choose_dropdown,
     click_graph_element,
+    click_run,
     click_tab,
     grid_cells,
     header_filter_input,
+    open_history,
     open_page,
+    run_now,
+    run_outcome,
     select_version,
+    source_cells,
     text_of,
     wait_for,
     wait_graph_at,
@@ -61,6 +67,27 @@ def test_the_token_never_reaches_the_browser(stack, browser):
     select_version(browser, 9)
     wait_for(browser, lambda: "#9 against" in text_of(browser, ids.DIFF), "changes at #9")
 
+    assert_token_kept(browser, stack)
+
+
+def test_the_token_never_reaches_the_browser_from_a_live_twin(make_live, browser):
+    live = make_live()
+    open_history(browser, live.ui_url)
+    # The calls a live twin adds: its live line, its sources, runs, rows set aside, a run.
+    wait_for(browser, lambda: "twin time" in text_of(browser, ids.LIVE_LINE), "the live line")
+    wait_for(browser, lambda: source_cells(browser, "scada"), "the sources")
+    first = live.runs()[0]["uid"]
+    click_run(browser, first)
+    wait_for(browser, lambda: "set no row aside" in text_of(browser, ids.REJECTS), "rejects")
+    live.clock.set(at(31))
+    run_now(browser)
+    assert run_outcome(browser).startswith("The run succeeded")
+
+    assert_token_kept(browser, live)
+
+
+def assert_token_kept(browser, stack) -> None:
+    """The stack's token is nowhere the browser can see, nor in the stack's log lines."""
     token = stack.token
     assert token not in browser.page_source
     assert token not in browser.current_url

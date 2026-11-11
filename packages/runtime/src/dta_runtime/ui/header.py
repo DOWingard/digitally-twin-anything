@@ -6,31 +6,47 @@ every read the tabs make passes that id as `at`. The page polls
 head; not following, it stays and counts the versions written since.
 Choosing an older version by hand stops following, as scrolling up stops a
 log from tailing.
+
+One poll feeds two stores. The first holds what changes only with the head
+or the twin, so that nothing which depends on the version runs on a poll that
+brought no new head. The second holds what a live twin changes on every poll:
+its clock, how old its data is against what its contract allows, its last
+run and the sync job in progress. A version is read only once the slider has
+stayed still for a moment, so stepping through versions reads only the one
+the operator stops at.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
+from dash import ALL, ClientsideFunction, Dash, Input, Output, State, ctx, dcc, html, no_update
 from dta_core.log import Log
 
 from . import ids
 from .backend import Backend
 from .feedback import guarded
-from .text import plural, time_text
+from .text import duration_text, minute_text, plural, seconds_text, time_text
 
 log = Log("ui.header")
 
 POLL_MS = 5_000
+# How long the slider must stay still before its version is read; the same value as
+# SETTLE_MS in assets/clientside.js.
+SETTLE_MS = 300
 FOLLOW_ON = "follow"
+ACTIVE_JOB_STATES = ("queued", "running")
 
 
 def layout() -> html.Header:
     return html.Header(
         [
             dcc.Store(id=ids.HEALTH),
+            dcc.Store(id=ids.LIVE),
+            dcc.Store(id=ids.SYNC_KEY),
             dcc.Store(id=ids.VERSION),
+            dcc.Store(id=ids.SETTLED),
+            dcc.Store(id=ids.GRIDS_REFRESHED),
             dcc.Interval(id=ids.POLL, interval=POLL_MS),
             html.Div(
                 [
@@ -40,6 +56,7 @@ def layout() -> html.Header:
                 ],
                 className="header-row",
             ),
+            html.Div(id=ids.LIVE_LINE, className="header-row live-line"),
             html.Div(
                 [
                     html.Label("Version", htmlFor=ids.SLIDER, className="slider-label"),
@@ -89,12 +106,21 @@ def _head_seq(health: dict[str, Any] | None) -> int | None:
 def register(app: Dash, backend: Backend) -> None:
     @app.callback(
         Output(ids.HEALTH, "data"),
+        Output(ids.LIVE, "data"),
+        Output(ids.SYNC_KEY, "data"),
         Output(ids.HEALTH_FEEDBACK, "children"),
         Input(ids.POLL, "n_intervals"),
         State(ids.HEALTH, "data"),
+        State(ids.LIVE, "data"),
+        State(ids.SYNC_KEY, "data"),
     )
-    @guarded(1)
-    def poll_health(_: int | None, known: dict[str, Any] | None) -> Any:
+    @guarded(3)
+    def poll_health(
+        _: int | None,
+        known: dict[str, Any] | None,
+        known_live: dict[str, Any] | None,
+        known_key: dict[str, Any] | None,
+    ) -> Any:
         document = backend.client.get("/meta/health")
         health = {
             "twin_id": document.get("twin_id"),
@@ -104,8 +130,20 @@ def register(app: Dash, backend: Backend) -> None:
             "versions": document.get("versions"),
             "fidelity": document.get("fidelity"),
         }
+        live = {"clock": document.get("clock"), "sync": document.get("sync")}
+        key = sync_key(live["sync"])
+        if key != known_key:
+            log.info("the twin's sync state changed", **key)
         # An unchanged answer is not sent on, so that nothing downstream reruns every poll.
-        return no_update if health == known else health
+        return (
+            no_update if health == known else health,
+            no_update if live == known_live else live,
+            no_update if key == known_key else key,
+        )
+
+    @app.callback(Output(ids.LIVE_LINE, "children"), Input(ids.LIVE, "data"))
+    def show_live(live: dict[str, Any] | None) -> Any:
+        return live_line(live)
 
     @app.callback(
         Output(ids.TWIN_NAME, "children"),
@@ -128,11 +166,13 @@ def register(app: Dash, backend: Backend) -> None:
         Output(ids.SLIDER, "marks"),
         Output(ids.SLIDER, "value"),
         Output(ids.FOLLOW, "value"),
+        Output(ids.SETTLED, "data"),
         Input(ids.HEALTH, "data"),
         Input(ids.JUMP, "n_clicks"),
         Input(ids.FOLLOW, "value"),
         Input(ids.SLIDER, "value"),
         Input({"role": ids.COMMIT_LOG, "query": ALL}, "cellClicked"),
+        State(ids.SETTLED, "data"),
     )
     def steer(
         health: dict[str, Any] | None,
@@ -140,10 +180,14 @@ def register(app: Dash, backend: Backend) -> None:
         follow: list[str] | None,
         value: int | None,
         _clicks: list[Any],
+        settled: int | None,
     ) -> Any:
+        """Where the slider goes. A move the page makes (following, a jump, a click in the
+        commit log) is settled at once; a move the operator makes with the slider itself
+        is settled in the browser once the slider stays still."""
         head = _head_seq(health)
         if head is None:
-            return no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update
         following = FOLLOW_ON in (follow or [])
         trigger = ctx.triggered_id
         marks = {0: "#0", head: f"#{head}"}
@@ -163,6 +207,7 @@ def register(app: Dash, backend: Backend) -> None:
         elif trigger == ids.SLIDER and value is not None and value != head and following:
             follow_out = []
         value_out = target if target is not None and target != value else no_update
+        settled_out = target if target is not None and target != settled else no_update
         log.debug(
             "version steered",
             trigger=str(trigger),
@@ -172,13 +217,22 @@ def register(app: Dash, backend: Backend) -> None:
             target=target,
             following=following,
         )
-        return head, marks, value_out, follow_out
+        return head, marks, value_out, follow_out, settled_out
+
+    # The slider's own moves are handed on once it has stayed still for SETTLE_MS.
+    app.clientside_callback(
+        ClientsideFunction(namespace="dta", function_name="settleVersion"),
+        Output(ids.SETTLED, "data", allow_duplicate=True),
+        Input(ids.SLIDER, "value"),
+        State(ids.SETTLED, "data"),
+        prevent_initial_call=True,
+    )
 
     @app.callback(
         Output(ids.VERSION, "data"),
         Output(ids.VERSION_DETAIL, "children"),
         Output(ids.VERSION_FEEDBACK, "children"),
-        Input(ids.SLIDER, "value"),
+        Input(ids.SETTLED, "data"),
         State(ids.VERSION, "data"),
     )
     @guarded(2)
@@ -215,6 +269,93 @@ def register(app: Dash, backend: Backend) -> None:
         if newer <= 0:
             return "at head"
         return f"{plural(newer, 'newer version')}"
+
+
+def sync_key(sync: dict[str, Any] | None) -> dict[str, Any]:
+    """What the sync section shows depends on: it changes when a run finishes or a job
+    starts or ends, never with the clock alone."""
+    if not sync:
+        return {"live": False}
+    last = sync.get("last_run") or {}
+    job = sync.get("job") or {}
+    return {
+        "live": True,
+        "run": last.get("uid"),
+        "run_status": last.get("status"),
+        "job": job.get("id"),
+        "job_state": job.get("state"),
+    }
+
+
+def clock_kind_text(kind: str | None) -> str:
+    """`source:telemetry` -> `source telemetry`."""
+    return (kind or "unknown").replace(":", " ", 1)
+
+
+def live_line(live: dict[str, Any] | None) -> list[Any]:
+    """The twin's time, how old its data is against its limit, its last run and the
+    run in progress; nothing for a twin that is not live."""
+    if not live or not live.get("sync"):
+        return []
+    clock = live.get("clock") or {}
+    sync = live["sync"]
+    kind = f"(clock: {clock_kind_text(clock.get('kind'))})"
+    parts: list[Any] = []
+    if clock.get("available") and clock.get("now"):
+        parts.append(
+            html.Span(f"twin time {minute_text(clock['now'])} {kind}", className="live-clock")
+        )
+    else:
+        parts.append(html.Span(f"clock unavailable {kind}", className="live-clock unavailable"))
+    age = _age(sync)
+    if age is not None:
+        parts.append(age)
+    parts.append(_last_run(sync.get("last_run")))
+    job = sync.get("job") or {}
+    if job.get("state") in ACTIVE_JOB_STATES:
+        parts.append(html.Span("run in progress", className="live-job"))
+    line: list[Any] = []
+    for part in parts:
+        if line:
+            line.append(html.Span(" · ", className="live-sep"))
+        line.append(part)
+    return line
+
+
+def _age(sync: dict[str, Any]) -> html.Span | None:
+    """`data 12 min old (limit 1 h)`, marked stale with the questions that are not fresh;
+    None when no question of the contract sets a limit."""
+    staleness = sync.get("staleness")
+    if not staleness:
+        return None
+    limit = duration_text(staleness)
+    age = sync.get("freshness_s")
+    if age is None:
+        return html.Span(f"data age unknown (limit {limit})", className="live-age")
+    text = f"data {seconds_text(age)} old (limit {limit})"
+    if sync.get("fresh") is not False:
+        return html.Span(text, className="live-age")
+    behind = [
+        f"{found['id']} ({seconds_text(found['freshness_s'])} old, limit "
+        f"{duration_text(found.get('staleness'))}, waits for {found.get('source') or 'a source'})"
+        for found in sync.get("questions") or []
+        if found.get("fresh") is False and found.get("freshness_s") is not None
+    ]
+    parts: list[Any] = [text, " ", html.Strong("stale", className="stale-mark")]
+    if behind:
+        parts.append(": not fresh " + "; ".join(behind))
+    return html.Span(parts, className="live-age stale")
+
+
+def _last_run(last: dict[str, Any] | None) -> html.Span:
+    """`last run succeeded at …`, at the time of the twin's clock when it ran; partial
+    and failed runs are marked."""
+    if not last:
+        return html.Span("no run yet", className="live-run")
+    status = last.get("status") or "unknown"
+    when = minute_text(last.get("clock_at") or last.get("finished_at"))
+    text = f"last run {status}" + (f" at {when}" if when else "")
+    return html.Span(text, className=f"live-run run-{status}")
 
 
 def _clicked_seq(clicked: Any) -> int | None:

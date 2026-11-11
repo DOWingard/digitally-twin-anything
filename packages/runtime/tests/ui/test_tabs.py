@@ -17,9 +17,8 @@ from ui_page import (
     wait_for,
     wait_graph_at,
 )
-from ui_testkit import FIRST_RUN, SECOND_RUN
 
-# The valve still exists, J6 and Pipe.material do not, and no sync run is recorded yet.
+# The valve still exists, J6 and Pipe.material do not.
 OLD_SEQ = VALVE_REMOVED_SEQ - 1
 
 
@@ -106,10 +105,10 @@ def test_history_differs_between_head_and_an_older_version(stack, browser):
     diff = wait_for(browser, lambda: text_of(browser, ids.DIFF), "the changes of the head")
     assert f"#{head} against #{head - 1}" in diff
     assert "TwinSyncRun" in diff and "Junction" in diff
-    runs = wait_for(browser, lambda: text_of(browser, ids.RUNS), "the sync runs at head")
-    assert "2 sync runs" in runs
-    assert FIRST_RUN in runs and SECOND_RUN in runs
-    assert "the source did not answer" in runs
+    # The water twin is static: its sync section says so whatever version is selected.
+    static = wait_for(browser, lambda: text_of(browser, ids.SYNC_STATIC), "the sync section")
+    assert "static" in static
+    assert not browser.find_element("id", ids.SYNC_BODY).is_displayed()
 
     select_version(browser, VALVE_REMOVED_SEQ)
     diff_old = wait_for(
@@ -122,12 +121,7 @@ def test_history_differs_between_head_and_an_older_version(stack, browser):
         "the changes of an older version",
     )
     assert "Valve" in diff_old and "removed" in diff_old and link("V1") in diff_old
-    runs_old = wait_for(
-        browser,
-        lambda: "No sync run" in (text := text_of(browser, ids.RUNS)) and text,
-        "no sync runs at the older version",
-    )
-    assert FIRST_RUN not in runs_old
+    assert text_of(browser, ids.SYNC_STATIC) == static
 
 
 # Routes that read data at a version; each must name the selected version by its id.
@@ -150,7 +144,7 @@ def test_every_read_names_the_selected_version_by_id(stack, browser):
     wait_for(browser, lambda: grid_cells(browser, ids.SHEET_BOX, "uid"), "sheet rows")
     click_tab(browser, "History")
     wait_for(browser, lambda: f"#{OLD_SEQ} against" in text_of(browser, ids.DIFF), "changes")
-    wait_for(browser, lambda: text_of(browser, ids.RUNS), "sync runs")
+    wait_for(browser, lambda: text_of(browser, ids.SYNC_STATIC), "the sync section")
 
     # The slider passes through the versions between, each selected for a moment, so
     # reads at those are expected too; what never happens is a read by `head`, a seq or
