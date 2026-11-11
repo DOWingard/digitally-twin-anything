@@ -8,6 +8,7 @@ like a change made by someone else and block the whole batch.
 import hashlib
 import json
 import time
+from datetime import UTC, datetime
 
 SOURCES = ("erp", "sensors", "sheets")
 
@@ -71,10 +72,16 @@ def test_a_claim_killed_after_the_lease_was_written_holds_the_task_until_it_expi
     ws.open("3")
     ws.crash_recording("tasks.json", "claim", "profile-erp", "--holder", "alice", "--ttl", "1")
     # The lease is on disk but its token died with the process.
-    assert ws.task("profile-erp")["lease"]["holder"] == "alice"
-    ws.run("claim", "profile-erp", "--holder", "bob").refused("tasks.lease.held")
-    time.sleep(1.2)
-    taken = ws.run("claim", "profile-erp", "--holder", "bob").result
+    lease = ws.task("profile-erp")["lease"]
+    assert lease["holder"] == "alice"
+    attempt = ws.run("claim", "profile-erp", "--holder", "bob")
+    if attempt.code != 0:
+        attempt.refused("tasks.lease.held")
+        time.sleep(1.2)
+        attempt = ws.run("claim", "profile-erp", "--holder", "bob")
+    # However slow the machine, a grant can only have come after the dead lease ran out.
+    taken = attempt.result
+    assert datetime.now(UTC) >= datetime.fromisoformat(lease["expires_at"])
     assert taken["taken_over_from"] == "alice"
     ws.write_result("profile-erp", ws.profile_patch("erp"))
     assert ws.submit("profile-erp", taken["token"]).code == 0

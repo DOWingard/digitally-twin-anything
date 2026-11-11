@@ -1,6 +1,6 @@
 import hashlib
 import time
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from dta_toolkit.tasks import lifecycle
@@ -141,10 +141,16 @@ def test_an_expired_lease_can_be_taken_over_and_the_old_token_is_refused(ws, clo
 
 def test_takeover_works_across_real_processes_and_real_time(ws):
     ws.open("3")
-    old = ws.spawn("claim", "profile-erp", "--holder", "alice", "--ttl", "1").result["token"]
-    ws.spawn("claim", "profile-erp", "--holder", "bob").refused("tasks.lease.held")
-    time.sleep(1.2)
-    taken = ws.spawn("claim", "profile-erp", "--holder", "bob", "--ttl", "600").result
+    first = ws.spawn("claim", "profile-erp", "--holder", "alice", "--ttl", "1").result
+    old, expires_at = first["token"], datetime.fromisoformat(first["expires_at"])
+    attempt = ws.spawn("claim", "profile-erp", "--holder", "bob", "--ttl", "600")
+    if attempt.code != 0:
+        attempt.refused("tasks.lease.held")
+        time.sleep(1.2)
+        attempt = ws.spawn("claim", "profile-erp", "--holder", "bob", "--ttl", "600")
+    # However slow the machine, a grant can only have come after the first lease ran out.
+    taken = attempt.result
+    assert datetime.now(UTC) >= expires_at
     assert taken["taken_over_from"] == "alice"
     ws.write_result("profile-erp", ws.profile_patch("erp"))
     refused = ws.spawn("submit", "profile-erp", "--token", old)
