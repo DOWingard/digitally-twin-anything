@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 import pytest
+from dta_core.bundle import BundleError
 from dta_core.manifest import manifest_hash
 from dta_core.store import MigrationRequired, NotInstalled, StoreSettings
 from dta_runtime.twin import (
@@ -168,6 +169,6 @@ def test_a_bundle_round_trips_and_a_malformed_one_is_refused(water_bundle: Bundl
         '{"manifest": 1, "ontology": ""}',
         '{"manifest": "a: [", "ontology": ""}',
     ):
-        with pytest.raises(TwinError) as caught:
+        with pytest.raises(BundleError) as caught:
             Bundle.from_json(text)
         assert caught.value.code == "twin.bundle_invalid"

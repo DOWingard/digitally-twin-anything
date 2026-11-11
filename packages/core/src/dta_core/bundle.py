@@ -1,0 +1,52 @@
+"""The document a twin is installed or revised from: its manifest and its ontology text.
+
+The toolkit writes a bundle and the runtime reads it, so its format is defined
+once, here, for both.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+
+import yaml
+
+from .errors import DtaError
+from .log import Log
+from .manifest import Manifest, dump_manifest, parse_manifest
+
+log = Log("core.bundle")
+
+
+class BundleError(DtaError):
+    """The text is not a bundle."""
+
+    code = "twin.bundle_invalid"
+
+
+@dataclass(frozen=True)
+class Bundle:
+    """Everything needed to install or revise a twin, as one document."""
+
+    manifest: Manifest
+    ontology_text: str
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {"manifest": dump_manifest(self.manifest), "ontology": self.ontology_text}
+        )
+
+    @classmethod
+    def from_json(cls, text: str) -> Bundle:
+        try:
+            document = json.loads(text)
+            manifest_text, ontology_text = document["manifest"], document["ontology"]
+            if not isinstance(manifest_text, str) or not isinstance(ontology_text, str):
+                raise TypeError("manifest and ontology must both be text")
+            manifest = parse_manifest(yaml.safe_load(manifest_text), origin="bundle")
+        except (ValueError, KeyError, TypeError, yaml.YAMLError, DtaError) as exc:
+            log.error("bundle cannot be read", exc=exc)
+            raise BundleError(
+                f"the bundle is not a JSON document holding a manifest and an ontology: {exc}"
+            ) from exc
+        return cls(manifest=manifest, ontology_text=ontology_text)

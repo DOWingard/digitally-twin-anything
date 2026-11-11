@@ -522,10 +522,11 @@ name = "dta-toolkit"
 version = "0.1.0"
 source = { editable = "packages/toolkit" }
 dependencies = [
-    { name = "dta-core", extra = ["ontology", "sources", "store"] },
+    { name = "dta-core", extra = ["ontology"] },
     { name = "filelock" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "pyarrow" },
     { name = "python-dotenv" },
     { name = "schemathesis" },
     { name = "typer" },
@@ -533,10 +534,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dta-core", extras = ["ontology", "store", "sources"], editable = "packages/core" },
+    { name = "dta-core", extras = ["ontology"], editable = "packages/core" },
     { name = "filelock", specifier = ">=3.16" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
+    { name = "pyarrow", specifier = ">=17" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "schemathesis", specifier = ">=4.0" },
     { name = "typer", specifier = ">=0.15" },

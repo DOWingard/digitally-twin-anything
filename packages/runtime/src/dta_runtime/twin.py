@@ -9,7 +9,6 @@ which can be run again at any time and changes only what differs.
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from datetime import datetime
 from typing import Any
 
 import yaml
+from dta_core.bundle import Bundle
 from dta_core.errors import DtaError
 from dta_core.log import Log
 from dta_core.manifest import (
@@ -58,35 +58,6 @@ class TwinError(DtaError):
     """The twin cannot be opened or installed as asked."""
 
     code = "twin.error"
-
-
-@dataclass(frozen=True)
-class Bundle:
-    """Everything needed to install or revise a twin, as one document."""
-
-    manifest: Manifest
-    ontology_text: str
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {"manifest": dump_manifest(self.manifest), "ontology": self.ontology_text}
-        )
-
-    @classmethod
-    def from_json(cls, text: str) -> Bundle:
-        try:
-            document = json.loads(text)
-            manifest_text, ontology_text = document["manifest"], document["ontology"]
-            if not isinstance(manifest_text, str) or not isinstance(ontology_text, str):
-                raise TypeError("manifest and ontology must both be text")
-            manifest = parse_manifest(yaml.safe_load(manifest_text), origin="bundle")
-        except (ValueError, KeyError, TypeError, yaml.YAMLError) as exc:
-            log.error("bundle cannot be read", exc=exc)
-            raise TwinError(
-                f"the bundle is not a JSON document holding a manifest and an ontology: {exc}",
-                code="twin.bundle_invalid",
-            ) from exc
-        return cls(manifest=manifest, ontology_text=ontology_text)
 
 
 @dataclass
