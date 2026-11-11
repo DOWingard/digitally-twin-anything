@@ -221,3 +221,62 @@ def test_schema_error_cannot_run(workspace, complete):
     code, document = workspace.json("manifest", "validate")
     assert code == 2
     assert document["error"]["code"] == "manifest.schema"
+
+
+_ONTOLOGY = """\
+id: https://example.org/dta/sample
+name: sample
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/dta/sample/
+default_prefix: ex
+default_range: string
+imports:
+  - linkml:types
+classes:
+  Shed:
+    attributes:
+      uid:
+        identifier: true
+        required: true
+"""
+
+
+def _write_ontology(workspace, complete, text):
+    workspace.write_manifest(complete)
+    target = workspace.root / complete["ontology"]["path"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+
+
+def test_validate_checks_the_manifest_against_its_ontology_file(workspace, complete):
+    workspace.write_manifest(complete)
+    code, document = workspace.json("manifest", "validate")
+    assert code == 0, document  # no ontology file yet: only the manifest's own checks run
+
+    _write_ontology(workspace, complete, _ONTOLOGY)
+    code, document = workspace.json("manifest", "validate")
+    assert code == 1
+    found = document["error"]["detail"]["findings"]
+    codes = {finding["code"] for finding in found if finding["severity"] == "error"}
+    assert "ontology.unknown_type" in codes
+    assert workspace.gate("design")["result"] == "failed"
+    # The gaps gate looks at the same findings, so it cannot pass either.
+    assert any("error finding" in reason for reason in workspace.gate("gaps")["reasons"])
+
+
+def test_an_ontology_file_that_cannot_be_loaded_is_one_error_finding(workspace, complete):
+    _write_ontology(workspace, complete, "classes: [this is not an ontology\n")
+    code, document = workspace.json("manifest", "validate")
+    assert code == 1
+    found = [f for f in document["error"]["detail"]["findings"] if f["severity"] == "error"]
+    assert [(f["code"], f["path"]) for f in found] == [("ontology.unusable", "ontology.path")]
+
+
+def test_signing_is_refused_while_the_manifest_does_not_fit_its_ontology(workspace, complete):
+    _write_ontology(workspace, complete, _ONTOLOGY)
+    code, document = workspace.json(
+        "manifest", "sign", "--non-interactive", "--approved-by", "tester"
+    )
+    assert code == 1
+    assert document["error"]["code"] == "sign.errors"

@@ -14,19 +14,58 @@ from dta_core.manifest.checks import (
     Finding,
     GateInputs,
     OntologyTypes,
+    Severity,
+    ontology_findings,
     read_ontology_types,
     render_summary,
 )
+from dta_core.ontology import OntologyError, load_ontology, type_signature
 
 from ..output import session
 from ..workspace import Workspace
 
 log = Log("commands")
 
+ONTOLOGY_UNUSABLE = "ontology.unusable"
+
+
+def ontology_checks(workspace: Workspace, manifest: Manifest) -> list[Finding]:
+    """What in the manifest does not fit its ontology file; nothing while the file is unwritten."""
+    relative = manifest.ontology.path if manifest.ontology else None
+    if not relative:
+        return []
+    path = workspace.root / relative
+    if not path.is_file():
+        log.debug("ontology file not written yet; manifest not checked against it", path=relative)
+        return []
+    try:
+        ontology = load_ontology(path)
+    except OntologyError as exc:
+        log.warn("ontology file cannot be used", path=relative, code=exc.code, detail=exc.detail)
+        return [
+            Finding(
+                code=ONTOLOGY_UNUSABLE,
+                severity=Severity.error,
+                path="ontology.path",
+                message=f"{relative}: {exc}",
+            )
+        ]
+    return ontology_findings(manifest, ontology, type_signature(ontology))
+
+
+def all_findings(workspace: Workspace, manifest: Manifest) -> list[Finding]:
+    """Findings of the manifest's own checks and of those against its ontology, in one order."""
+    return gate_inputs(workspace, manifest).findings
+
 
 def gate_inputs(workspace: Workspace, manifest: Manifest) -> GateInputs:
     state = workspace.load_state()
-    return GateInputs(manifest, recorded=state.gates, signatures=state.signatures)
+    return GateInputs(
+        manifest,
+        recorded=state.gates,
+        signatures=state.signatures,
+        extra_findings=ontology_checks(workspace, manifest),
+    )
 
 
 def ontology_types(workspace: Workspace, manifest: Manifest) -> OntologyTypes | None:

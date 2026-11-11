@@ -9,10 +9,11 @@ import typer
 from dta_core.errors import DtaError
 from dta_core.log import Log
 from dta_core.manifest import Owner, Status, gaps, required_fields
-from dta_core.manifest.checks import errors_of, run_checks, subject_of, summary_hash
+from dta_core.manifest.checks import errors_of, subject_of, summary_hash
 
 from ..output import command, emit, session
 from .common import (
+    all_findings,
     build_summary,
     fail_check,
     findings_text,
@@ -37,7 +38,7 @@ def validate(
     workspace = session(ctx).workspace
     with workspace.exclusive():
         manifest = workspace.load_manifest()
-        findings = run_checks(manifest)
+        findings = all_findings(workspace, manifest)
         errors = errors_of(findings)
         subject = subject_of(_DESIGN_STAGE, manifest)
         workspace.record_gate(

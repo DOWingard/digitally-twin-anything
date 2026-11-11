@@ -15,12 +15,12 @@ import typer
 from dta_core.errors import CheckFailed, DtaError
 from dta_core.log import Log
 from dta_core.manifest import Manifest, contract_hash, gaps, manifest_hash
-from dta_core.manifest.checks import errors_of, run_checks, summary_hash
+from dta_core.manifest.checks import errors_of, summary_hash
 
 from ..output import command, emit, session
-from ..workspace import STAGES, GateResult, Signature
+from ..workspace import STAGES, GateResult, Signature, Workspace
 from ..workspace import now as utc_now
-from .common import build_summary, gap_dict
+from .common import all_findings, build_summary, gap_dict
 
 log = Log("commands.sign")
 
@@ -32,7 +32,7 @@ def _is_terminal() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _require_signable(manifest: Manifest) -> None:
+def _require_signable(workspace: Workspace, manifest: Manifest) -> None:
     open_gaps = gaps(manifest)
     if open_gaps:
         log.warn("sign refused: gaps remain", gaps=len(open_gaps))
@@ -41,7 +41,7 @@ def _require_signable(manifest: Manifest) -> None:
             code="sign.gaps",
             detail={"gaps": [gap_dict(state) for state in open_gaps]},
         )
-    errors = errors_of(run_checks(manifest))
+    errors = errors_of(all_findings(workspace, manifest))
     if errors:
         log.warn("sign refused: error findings", codes=sorted({f.code for f in errors}))
         raise CheckFailed(
@@ -93,7 +93,7 @@ def sign(
         )
     manifest = workspace.load_manifest()
     workspace.load_state()
-    _require_signable(manifest)
+    _require_signable(workspace, manifest)
     summary = build_summary(workspace, manifest)
     shown = manifest_hash(manifest)
 
