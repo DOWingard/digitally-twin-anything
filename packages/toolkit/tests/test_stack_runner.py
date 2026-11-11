@@ -223,6 +223,21 @@ def test_store_comes_up_healthy_and_goes_down_with_its_data(stack: Stack):
 
 
 @needs_stack
+def test_a_stopped_service_keeps_its_container_and_comes_back(stack: Stack):
+    stack.up("store")
+    stack.stop("store")
+    (store,) = stack.services()
+    assert (store["service"], store["state"]) == ("store", "exited")
+    # Stopping what is not running, or was never started, is not an error.
+    stack.stop("store", "api")
+    stack.up("store")
+    (store,) = stack.services()
+    assert (store["state"], store["health"]) == ("running", "healthy")
+    with pytest.raises(ValueError):
+        stack.stop()
+
+
+@needs_stack
 def test_a_failing_compose_command_reports_its_exit_code_without_secrets(stack: Stack):
     with pytest.raises(StackError) as caught:
         stack.compose("up", "--detach", "no-such-service")

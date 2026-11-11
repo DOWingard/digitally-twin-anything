@@ -367,6 +367,16 @@ class Stack:
         self.compose("up", "--detach", "--wait", *services, timeout=timeout)
         log.info("stack services are up", services=list(services) or "all")
 
+    def stop(self, *services: str, timeout: float = UP_TIMEOUT_S) -> None:
+        """Stop the named services; their containers and the stack's data stay.
+
+        A service that is not running, or was never started, is left as it is.
+        """
+        if not services:
+            raise ValueError("name the services to stop; `down` stops the whole stack")
+        self.compose("stop", *services, timeout=timeout)
+        log.info("stack services are stopped", services=list(services))
+
     def down(self, *, volumes: bool = False) -> None:
         """Stop and remove the stack's containers; its data too only when `volumes` is set."""
         extra = ["--volumes"] if volumes else []
