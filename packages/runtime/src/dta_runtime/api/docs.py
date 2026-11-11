@@ -50,8 +50,25 @@ def errors(*statuses: int, notes: dict[int, str] | None = None) -> dict[int | st
     return {status: {"model": Problem, "description": described[status]} for status in wanted}
 
 
-def tabular(*statuses: int) -> dict[int | str, dict[str, Any]]:
-    """Responses of a route returning a table in JSON, Arrow or Parquet."""
+TOTAL_HEADER = "x-dta-total"
+
+
+def tabular(*statuses: int, counted: bool = False) -> dict[int | str, dict[str, Any]]:
+    """Responses of a route returning a table in JSON, Arrow or Parquet; `counted` for a
+    listing that gives its total with `count=true`."""
+    headers: dict[str, Any] = {
+        **VERSION_HEADERS,
+        "x-dta-next-cursor": {
+            "description": "Cursor of the next page, for Arrow and Parquet",
+            "schema": {"type": "string"},
+        },
+    }
+    if counted:
+        headers[TOTAL_HEADER] = {
+            "description": "With `count=true`, in every format: rows of the whole listing, "
+            "all pages",
+            "schema": {"type": "string"},
+        }
     return {
         200: {
             "description": "The table as JSON, an Arrow IPC stream or Parquet, chosen with "
@@ -59,13 +76,7 @@ def tabular(*statuses: int) -> dict[int | str, dict[str, Any]]:
             "schema metadata (`dta:version`), and the next cursor in `x-dta-next-cursor`; "
             "columns holding JSON text are marked `dta:json` in their field metadata",
             "content": {ARROW_MEDIA: _BINARY, PARQUET_MEDIA: _BINARY},
-            "headers": {
-                **VERSION_HEADERS,
-                "x-dta-next-cursor": {
-                    "description": "Cursor of the next page, for Arrow and Parquet",
-                    "schema": {"type": "string"},
-                },
-            },
+            "headers": headers,
         },
         **errors(*statuses),
     }

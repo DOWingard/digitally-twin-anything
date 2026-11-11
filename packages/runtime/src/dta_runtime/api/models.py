@@ -119,6 +119,52 @@ class Page(BaseModel):
     version: VersionOut
 
 
+class CountedPage(Page):
+    total: int | None = Field(
+        default=None,
+        description="With `count=true`: rows of the whole listing, all pages, after the "
+        "filters; absent otherwise",
+    )
+
+
+class FoundObject(BaseModel):
+    uid: str = Field(examples=["node:J1"])
+    type: str = Field(description="The object's concrete type", examples=["Junction"])
+
+
+class FoundPage(BaseModel):
+    """Objects whose uid matches a pattern, in uid order."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "data": [
+                        {"uid": "node:J1", "type": "Junction"},
+                        {"uid": "node:J2", "type": "Junction"},
+                    ],
+                    "next_cursor": None,
+                    "version": {
+                        "id": "u0h2kqv3b4m5c6n7d8p9f0g1h2j3k4l5",
+                        "seq": 21,
+                        "t": "2026-01-05T21:00:00Z",
+                        "branch": "main",
+                    },
+                    "total": 2,
+                }
+            ]
+        }
+    )
+
+    data: list[FoundObject]
+    next_cursor: str | None = Field(description="Pass as `cursor` for the next page")
+    version: VersionOut
+    total: int | None = Field(
+        default=None,
+        description="With `count=true`: objects matched, all pages; absent otherwise",
+    )
+
+
 class TensorPage(Page):
     uids: list[str] = Field(description="uid of each uid_index")
     properties: list[str] = Field(description="Property of each property_index")
@@ -464,6 +510,13 @@ class SubgraphRequest(BaseModel):
     direction: Direction = Field("both", description="Edge direction to follow")
     edge_types: list[str] | None = Field(
         None, description="Edge types to follow (link type names, `Type.property`); all if absent"
+    )
+    edge_where: list[str] | None = Field(
+        None,
+        description="Follow only the links that pass: `<LinkType>.<property>:<op>:<value>` "
+        "clauses, written as for `where`; an abstract class stands for every link type under "
+        "it. Edges of other link types and references are unaffected",
+        examples=[["Pipe.status:eq:open"]],
     )
     node_types: list[str] | None = Field(
         None,

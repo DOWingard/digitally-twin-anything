@@ -224,13 +224,13 @@ def test_a_cursor_ignores_versions_written_after_the_first_page(
     assert len(fresh["data"]) == 20 and fresh["version"]["seq"] == first["version"]["seq"] + 1
 
 
-def test_sort_too_large_is_refused(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
-    from dta_runtime.api import objects
-
-    monkeypatch.setattr(objects, "SORT_MAX_ROWS", 3)
+def test_a_sort_is_not_refused_for_its_size(api: Api) -> None:
+    # Sorting was once refused above a number of rows; now any listing is sorted by the store.
     response = api.get("/api/v1/objects/Junction", params={"sort": "elevation"})
-    assert response.status_code == 400
-    assert response.json()["code"] == "api.sort_too_large"
+    assert response.status_code == 200, response.text
+    assert uids(response.json()) == [node(k) for k in ("J6", "J5", "J4", "J3", "J2", "J1")]
+    readings = api.ok("/api/v1/objects/Reading", params={"sort": "-observed_at", "limit": 2})
+    assert uids(readings) == ["reading:S1-9", "reading:S1-8"]
 
 
 def test_json_limit(api: Api) -> None:

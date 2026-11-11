@@ -1,26 +1,33 @@
 """Reading the objects of a type, abstract classes included, a page at a time.
 
-Pages follow uid order and are read with a keyset filter (`uid > last`), so
-each page is one bounded read per concrete type. Sorting by another property
-sorts the whole filtered result in memory, which is allowed up to
-`SORT_MAX_ROWS` rows.
+In uid order, pages are read with a keyset filter (`uid > last`), so each
+page is one bounded read per concrete type. Sorted by another property (or by
+uid descending), the store orders the rows and a page starts at an offset: a
+concrete type is one read of one page, while the members of an abstract class
+are each read up to the end of the page and merged here in the store's order.
+Either way the database scans the type's rows that pass the filters to sort
+them, so a sorted page costs more than a page in uid order, and more the
+deeper it is.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
+from dta_core.log import Log
 from dta_core.schema import UID_FIELD, Field, ObjectType, Ontology
 from dta_core.store import Store, StoredObject, UnknownProperty, UnknownType, VersionRef
 
+from .paging import offset_of
 from .problems import ApiError
 from .tables import TYPE_COLUMN, readable
 
-SORT_MAX_ROWS = 10_000
+log = Log("api.objects")
 
 
 @dataclass(frozen=True)
@@ -95,6 +102,73 @@ def _sort_key(shape: Shape, sort: str) -> tuple[str, bool]:
     return name, descending
 
 
+def store_order(table: pa.Table, key: str, descending: bool) -> pa.Table:
+    """The rows in the order the store gives them for `order_by=[(key, direction)]`.
+
+    By the key, rows without a value last in either direction, then by uid.
+    Arrow compares text by its UTF-8 bytes, as the store's binary collation
+    does, and the store hands an enumeration out as its text.
+    """
+    order = pc.sort_indices(
+        table,
+        sort_keys=[
+            (key, "descending" if descending else "ascending", "at_end"),
+            (UID_FIELD, "ascending", "at_end"),
+        ],
+    )
+    return table.take(order)
+
+
+def _with_type(part: pa.Table, member: str) -> pa.Table:
+    return part.add_column(
+        1, pa.field(TYPE_COLUMN, pa.string()), pa.array([member] * part.num_rows, pa.string())
+    )
+
+
+def _concat(parts: list[pa.Table]) -> pa.Table:
+    return parts[0] if len(parts) == 1 else pa.concat_tables(parts, promote_options="permissive")
+
+
+def _by_uid(
+    store: Store,
+    ontology: Ontology,
+    version: VersionRef,
+    shape: Shape,
+    names: list[str],
+    filters: Sequence[tuple[str, str, Any]],
+    prov: bool,
+    limit: int | None,
+    position: Any | None,
+) -> Listing:
+    conditions = list(filters)
+    if position is not None:
+        if not isinstance(position, str):
+            raise ApiError("the cursor is not one this API issued", code="api.bad_cursor")
+        conditions.append((UID_FIELD, ">", position))
+    fetch = None if limit is None else limit + 1
+    parts = []
+    for member in shape.members:
+        part = store.table(
+            member,
+            columns=names,
+            filter=conditions,
+            limit=fetch,
+            at=version,
+            prov=prov,
+            ontology=ontology,
+        )
+        parts.append(_with_type(part, member) if shape.abstract else part)
+    table = _concat(parts)
+    # The store orders rows only when it is given a limit.
+    if len(parts) > 1 or fetch is None:
+        table = table.take(pc.sort_indices(table, sort_keys=[(UID_FIELD, "ascending")]))
+    next_position = None
+    if limit is not None and table.num_rows > limit:
+        table = table.slice(0, limit)
+        next_position = table.column(UID_FIELD)[-1].as_py()
+    return Listing(readable(table, shape.template), next_position)
+
+
 def read_objects(
     store: Store,
     ontology: Ontology,
@@ -110,72 +184,76 @@ def read_objects(
 ) -> Listing:
     names = _columns(shape, columns)
     key, descending = _sort_key(shape, sort) if sort else (UID_FIELD, False)
-    by_uid = key == UID_FIELD and not descending
+    if key == UID_FIELD and not descending:
+        return _by_uid(store, ontology, version, shape, names, filters, prov, limit, position)
+    started = time.perf_counter()
+    offset = offset_of(position)
     read_names = names if key in (UID_FIELD, *names) else [*names, key]
-    conditions = list(filters)
-    if by_uid:
-        if position is not None:
-            if not isinstance(position, str):
-                raise ApiError("the cursor is not one this API issued", code="api.bad_cursor")
-            conditions.append((UID_FIELD, ">", position))
-        fetch = None if limit is None else limit + 1
-    else:
-        fetch = SORT_MAX_ROWS + 1
+    order = [(key, "desc" if descending else "asc")]
     parts = []
     for member in shape.members:
+        if shape.abstract:
+            # Each member up to the end of the page: the page's rows are among those.
+            window = {"limit": None if limit is None else offset + limit + 1}
+        else:
+            window = {"limit": None if limit is None else limit + 1, "offset": offset}
         part = store.table(
             member,
             columns=read_names,
-            filter=conditions,
-            limit=fetch,
+            filter=list(filters),
             at=version,
             prov=prov,
             ontology=ontology,
+            order_by=order,
+            **window,
         )
-        if shape.abstract:
-            part = part.add_column(
-                1,
-                pa.field(TYPE_COLUMN, pa.string()),
-                pa.array([member] * part.num_rows, pa.string()),
-            )
-        parts.append(part)
-    table = parts[0] if len(parts) == 1 else pa.concat_tables(parts, promote_options="permissive")
-    if by_uid:
-        # The store orders rows only when it is given a limit.
-        if len(parts) > 1 or fetch is None:
-            table = table.take(pc.sort_indices(table, sort_keys=[(UID_FIELD, "ascending")]))
-        next_position = None
-        if limit is not None and table.num_rows > limit:
-            table = table.slice(0, limit)
-            next_position = table.column(UID_FIELD)[-1].as_py()
-        return Listing(readable(table, shape.template), next_position)
-    if table.num_rows > SORT_MAX_ROWS:
-        raise ApiError(
-            f"sorting by {key} is possible for at most {SORT_MAX_ROWS} rows; narrow the "
-            "listing with where, or page in uid order",
-            code="api.sort_too_large",
-        )
-    order = pc.sort_indices(
-        table,
-        sort_keys=[
-            (key, "descending" if descending else "ascending", "at_end"),
-            (UID_FIELD, "ascending", "at_end"),
-        ],
-    )
-    table = table.take(order)
+        parts.append(_with_type(part, member) if shape.abstract else part)
+    table = _concat(parts)
+    read_rows = table.num_rows
+    if shape.abstract:
+        table = store_order(table, key, descending).slice(offset)
+    next_position = None
+    if limit is not None and table.num_rows > limit:
+        table = table.slice(0, limit)
+        next_position = offset + limit
     if key not in (UID_FIELD, *names):
         table = table.drop_columns([key])
-    offset = position or 0
-    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
-        raise ApiError("the cursor is not one this API issued", code="api.bad_cursor")
-    next_position = None
-    if limit is not None:
-        if offset + limit < table.num_rows:
-            next_position = offset + limit
-        table = table.slice(offset, limit)
-    elif offset:
-        table = table.slice(offset)
+    log.debug(
+        "sorted page read",
+        type=shape.name,
+        members=len(shape.members),
+        key=key,
+        descending=descending,
+        offset=offset,
+        limit=limit,
+        read_rows=read_rows,
+        rows=table.num_rows,
+        elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
+    )
     return Listing(readable(table, shape.template), next_position)
+
+
+def count_objects(
+    store: Store,
+    ontology: Ontology,
+    version: VersionRef,
+    shape: Shape,
+    filters: Sequence[tuple[str, str, Any]],
+) -> int:
+    """Rows of the whole listing, all pages: one count per concrete type."""
+    started = time.perf_counter()
+    total = sum(
+        store.count(member, list(filters), at=version, ontology=ontology)
+        for member in shape.members
+    )
+    log.debug(
+        "listing counted",
+        type=shape.name,
+        members=len(shape.members),
+        total=total,
+        elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
+    )
+    return total
 
 
 def is_a(ontology: Ontology, concrete: str, name: str) -> bool:

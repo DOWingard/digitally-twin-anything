@@ -70,6 +70,7 @@ def test_the_document_describes_every_route(app_client: TestClient, auth: dict[s
         "/api/v1/history/versions/{selector}",
         "/api/v1/history/diff",
         "/api/v1/history/branches",
+        "/api/v1/objects",
         "/api/v1/objects/{type}",
         "/api/v1/objects/{type}/{uid}",
         "/api/v1/object/{uid}",
