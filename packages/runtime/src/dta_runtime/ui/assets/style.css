@@ -245,6 +245,7 @@ body {
 
 /* The live twin: its clock, how old its data is, its last run. */
 .live-line {
+  display: block;
   color: var(--muted);
 }
 

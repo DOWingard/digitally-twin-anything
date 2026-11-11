@@ -400,16 +400,17 @@ def register(app: Dash, backend: Backend) -> None:
 
         return block_response(ids.LOG_FEEDBACK, "a block of the commit log", read, start)
 
-    @app.callback(
-        Output({"role": ids.COMMIT_LOG, "query": ALL}, "selectedRows"),
+    # The selected version's row is the commit log's selected row. The grid loads its rows
+    # block by block, after it is drawn, so the row is marked in the browser each time
+    # the grid's rows change: a selection set before its row is loaded would be lost.
+    app.clientside_callback(
+        ClientsideFunction(namespace="dta", function_name="markVersionRow"),
+        Output(ids.GRIDS_REFRESHED, "data", allow_duplicate=True),
+        Input({"role": ids.COMMIT_LOG, "query": ALL}, "getRowsRequest"),
         Input(ids.VERSION, "data"),
         State({"role": ids.COMMIT_LOG, "query": ALL}, "id"),
+        prevent_initial_call=True,
     )
-    def mark_selected(version: dict[str, Any] | None, present: list[Any] | None) -> Any:
-        """The selected version's row is the commit log's selected row, once it is loaded."""
-        if not version or not present:
-            raise PreventUpdate
-        return [{"ids": [str(version["seq"])]} for _ in present]
 
     @app.callback(
         Output(ids.DIFF, "children"),
