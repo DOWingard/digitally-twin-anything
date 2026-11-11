@@ -17,7 +17,10 @@ from dta_toolkit.envfile import MASK, EnvFileError, missing, read_env, scrub
 from dta_toolkit.stack import Stack, StackError, reported_error
 from dta_toolkit.workspace import State, Workspace, now
 
-RUNTIME_IMAGE = "dta-runtime:0.1.0"
+# The image the stacks of these tests run. A tree whose code differs from the one the
+# default tag was built from builds its own image and names it in this variable, so
+# that the toolkit under test and the services it starts are of one version.
+RUNTIME_IMAGE = os.environ.get("DTA_TEST_RUNTIME_IMAGE") or "dta-runtime:0.1.0"
 
 
 def _image_present(name: str) -> bool:
@@ -45,6 +48,7 @@ def _document(twin_id: str) -> dict[str, Any]:
             }
         },
         "interfaces": {"ui": False},
+        "runtime": {"image": RUNTIME_IMAGE},
     }
 
 

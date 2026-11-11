@@ -7,6 +7,7 @@ stack never collides with another one on this machine.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import shutil
 import socket
@@ -17,7 +18,10 @@ from typing import Any, Protocol
 import pytest
 import yaml
 
-RUNTIME_IMAGE = "dta-runtime:0.1.0"
+# The image the stacks of these tests run. A tree whose code differs from the one the
+# default tag was built from builds its own image and names it in this variable, so
+# that the toolkit under test and the services it starts are of one version.
+RUNTIME_IMAGE = os.environ.get("DTA_TEST_RUNTIME_IMAGE") or "dta-runtime:0.1.0"
 PROJECT_PREFIX = "dta-m3tk-"
 PORTS = range(18800, 18900)
 DATA_ENV = "M3TK_DATA_DIR"
@@ -125,6 +129,7 @@ def manifest(twin_id: str, *, ui: bool = False) -> dict[str, Any]:
             "boundary": {"state": ["Sensor.level"], "observations": ["Sensor.level"]},
         },
         "ontology": {"path": "ontology/plant.yaml"},
+        "runtime": {"image": RUNTIME_IMAGE},
         "sources": {
             "plant": {
                 "description": "CSV files the plant exports",

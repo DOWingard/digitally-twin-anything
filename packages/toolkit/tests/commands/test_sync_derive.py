@@ -10,10 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from conftest import Dta
 
-
-def _ready(workspace: Dta, complete: dict[str, Any], **sync: Any) -> Dta:
+def _ready(workspace: Any, complete: dict[str, Any], **sync: Any) -> Any:
     """The complete sample in the workspace, its `sync` section replaced."""
     complete["sync"] = {"minimum_interval": "PT5M", "maximum_interval": "PT10M", **sync}
     complete["field_status"] = {
@@ -26,7 +24,7 @@ def _ready(workspace: Dta, complete: dict[str, Any], **sync: Any) -> Dta:
 
 
 def test_derive_reports_the_interval_its_inputs_and_what_decided_it(
-    workspace: Dta, complete: dict[str, Any]
+    workspace: Any, complete: dict[str, Any]
 ) -> None:
     _ready(workspace, complete)
     before = workspace.read_manifest()
@@ -53,7 +51,7 @@ def test_derive_reports_the_interval_its_inputs_and_what_decided_it(
 
 
 def test_write_records_the_interval_and_its_inputs_as_derived(
-    workspace: Dta, complete: dict[str, Any]
+    workspace: Any, complete: dict[str, Any]
 ) -> None:
     _ready(workspace, complete)
 
@@ -77,7 +75,7 @@ def test_write_records_the_interval_and_its_inputs_as_derived(
 
 
 def test_a_derived_interval_follows_the_rule_when_its_inputs_change(
-    workspace: Dta, complete: dict[str, Any]
+    workspace: Any, complete: dict[str, Any]
 ) -> None:
     _ready(workspace, complete)
     assert workspace.json("sync", "derive", "--write")[0] == 0
@@ -92,7 +90,7 @@ def test_a_derived_interval_follows_the_rule_when_its_inputs_change(
 
 
 def test_a_confirmed_interval_is_reported_against_the_rule_and_never_replaced(
-    workspace: Dta, complete: dict[str, Any]
+    workspace: Any, complete: dict[str, Any]
 ) -> None:
     _ready(workspace, complete, interval="PT5M")
     before = workspace.read_manifest()
@@ -109,7 +107,7 @@ def test_a_confirmed_interval_is_reported_against_the_rule_and_never_replaced(
 
 
 def test_a_contract_no_interval_can_meet_is_refused_with_the_reason(
-    workspace: Dta, complete: dict[str, Any]
+    workspace: Any, complete: dict[str, Any]
 ) -> None:
     # The pump source changes every 5 min; data no older than 4 min cannot be had from it.
     complete["contract"]["questions"]["q_level"]["staleness"] = "PT90S"
@@ -126,13 +124,13 @@ def test_a_contract_no_interval_can_meet_is_refused_with_the_reason(
     assert workspace.read_manifest() == before
 
 
-def test_nothing_known_means_nothing_derived(workspace: Dta) -> None:
+def test_nothing_known_means_nothing_derived(workspace: Any) -> None:
     # The skeleton of a new workspace: no sources, no questions.
     code, document = workspace.json("sync", "derive")
     assert code == 1 and document["error"]["code"] == "sync.underivable"
 
 
-def test_text_output_names_every_input(workspace: Dta, complete: dict[str, Any]) -> None:
+def test_text_output_names_every_input(workspace: Any, complete: dict[str, Any]) -> None:
     _ready(workspace, complete)
     result = workspace.run("sync", "derive")
     assert result.exit_code == 0, result.output
