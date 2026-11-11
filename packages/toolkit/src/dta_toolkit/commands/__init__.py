@@ -49,7 +49,11 @@ def register(app: typer.Typer) -> None:
 
     sync_app = typer.Typer(add_completion=False, no_args_is_help=True)
     sync_app.command("derive")(sync.derive)
-    app.add_typer(sync_app, name="sync", help="How often the twin reads its sources.")
+    sync_app.command("run")(sync.run_sync)
+    sync_app.command("status")(sync.sync_status)
+    app.add_typer(
+        sync_app, name="sync", help="How often the twin reads its sources, and its sync runs."
+    )
 
     ontology_app = typer.Typer(add_completion=False, no_args_is_help=True)
     ontology_app.command("check")(ontology.check)
