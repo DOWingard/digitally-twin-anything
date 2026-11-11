@@ -135,7 +135,7 @@ models:
     target: Tank.level
     candidates:
       arima: {family: arima}
-      boosted: {family: gradient_boosting}
+      boosted: {family: gbm_lags}
     features: [Tank.inflow, Pump.speed]
     backtest: {initial_window: P30D, step: P1D, min_folds: 3}
     acceptance: {metric: rmse, threshold: 0.15, baseline: persistence}
@@ -143,7 +143,7 @@ models:
     question: q_schedule
     target: Pump.power
     candidates:
-      linear: {family: linear}
+      linear: {family: policies:PumpPower}
     features: [Pump.speed]
     backtest: {initial_window: P30D, step: P1D, min_folds: 3}
     acceptance: {metric: mae, threshold: 1.5}
@@ -172,6 +172,8 @@ functions:
     params: {property: Pump.power, op: sum}
     complexity: O(|V|)
     latency_budget: PT1S
+runtime:
+  code: code
 actions:
   set_pump_speed:
     description: Set the speed of the main pump

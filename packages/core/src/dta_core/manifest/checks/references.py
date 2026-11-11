@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ...families import FAMILIES
 from ...functions import BUILTINS, REGISTERED_ENTRY, shape_problem
 from .findings import Issue, Severity, check
 from .view import FORECAST_KINDS, ManifestView, is_property_ref
@@ -58,6 +59,42 @@ def function_entry(view: ManifestView) -> Iterator[Issue]:
             problem = shape_problem(parameter, value)
             if problem is not None:
                 yield Issue(f"{base}.params.{name}", f"{name} {problem}")
+
+
+@check("ref.model_family")
+def model_family(view: ManifestView) -> Iterator[Issue]:
+    """A candidate is a family the runtime ships, or code named as `module:name`."""
+    for mid, model in sorted(view.models.items()):
+        for cid, candidate in sorted((model.candidates or {}).items()):
+            family = candidate.family
+            if family is None or family in FAMILIES or REGISTERED_ENTRY.match(family):
+                continue
+            yield Issue(
+                f"models.{mid}.candidates.{cid}.family",
+                f"'{family}' is neither a shipped family ({', '.join(FAMILIES)}) nor code "
+                "named as module:name",
+            )
+
+
+@check("ref.code_declared")
+def code_declared(view: ManifestView) -> Iterator[Issue]:
+    """Code of the twin's own has to come from somewhere: `runtime.code`."""
+    if view.manifest.runtime.code:
+        return
+    for fid, function in sorted(view.functions.items()):
+        if function.kind == "registered":
+            yield Issue(
+                f"functions.{fid}.kind",
+                "the function is supplied as code but runtime.code names no directory",
+            )
+    for mid, model in sorted(view.models.items()):
+        for cid, candidate in sorted((model.candidates or {}).items()):
+            family = candidate.family
+            if family is not None and family not in FAMILIES and REGISTERED_ENTRY.match(family):
+                yield Issue(
+                    f"models.{mid}.candidates.{cid}.family",
+                    f"'{family}' is code but runtime.code names no directory",
+                )
 
 
 @check("ref.question_model")

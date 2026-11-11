@@ -491,6 +491,11 @@ class Runtime(Base):
         gt=timedelta(milliseconds=50),
         le=timedelta(hours=1),
     )
+    code: str | None = opt(
+        Owner.agent,
+        "Directory in the workspace holding the twin's own code: registered functions and "
+        "model families, named as module:name",
+    )
     worker_requirements: str | None = opt(
         Owner.agent,
         "Requirements file in the workspace, installed into the image registered code runs in",
