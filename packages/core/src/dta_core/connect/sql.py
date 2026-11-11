@@ -19,7 +19,7 @@ from typing import Any
 
 import pyarrow as pa
 import sqlalchemy as sa
-from dlt.sources.sql_database import sql_table
+from dlt.sources.sql_database import TableLoader, sql_table
 from dlt.sources.sql_database.arrow_helpers import row_tuples_to_arrow
 from sqlalchemy import exc as sa_exc
 from sqlalchemy import types as sa_types
@@ -42,12 +42,11 @@ DEFAULT_CONNECT_TIMEOUT_S = 10.0
 
 _QUERY_ALIAS = "dta_query"
 _LEADING_KEYWORD = re.compile(r"^\s*(select|with|values)\b", re.I)
-# Anything that changes data, schema, session or locks has no place in a dataset query.
+# Inside one statement that starts with SELECT or WITH, data changes come from
+# data-modifying CTEs, SELECT INTO and row locks; DDL words are refused as well.
 _WRITING_KEYWORD = re.compile(
-    r"\b(insert|update|delete|merge|upsert|replace|create|drop|alter|truncate|rename|grant"
-    r"|revoke|copy|call|exec|execute|do|lock|vacuum|analyze|reindex|cluster|refresh|comment"
-    r"|set|reset|begin|commit|rollback|savepoint|release|prepare|deallocate|listen|notify"
-    r"|attach|detach|pragma|into|share)\b",
+    r"\b(insert|update|delete|merge|into|create|drop|alter|truncate|grant|revoke|copy"
+    r"|for\s+(?:no\s+key\s+|key\s+)?share)\b",
     re.I,
 )
 _SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.S)
@@ -127,6 +126,28 @@ def _float_hint(sql_type: sa_types.TypeEngine) -> sa_types.TypeEngine:
     if isinstance(sql_type, sa_types.Float):
         return sa_types.Numeric(asdecimal=False)
     return sql_type
+
+
+def _tracked_loader(opened: list[sa.Connection]) -> type[TableLoader]:
+    """dlt's table loader, recording the connection it reads on.
+
+    The iterator of a dlt resource offers no way to close it, so a read that
+    stops early would keep its server-side cursor open, and with it a
+    transaction and its locks, until garbage collection. The connector closes
+    the recorded connection itself.
+    """
+
+    class TrackedLoader(TableLoader):
+        def _load_rows(self, query: Any, backend_kwargs: dict[str, Any]) -> Iterator[Any]:
+            with self.engine.connect() as connection:
+                opened.append(connection)
+                result = connection.execution_options(yield_per=self.chunk_size).execute(query)
+                try:
+                    yield from self._convert_result(result, backend_kwargs)
+                finally:
+                    result.close()
+
+    return TrackedLoader
 
 
 class SqlConnector(BaseConnector):
@@ -286,15 +307,19 @@ class SqlConnector(BaseConnector):
             tables = self._table_tables(spec, request)
         else:
             tables = self._query_tables(spec, request)
+        # SQLite keeps timestamps as text, and the columns of a query carry no
+        # declared type to convert them by, so they are recognised like CSV text.
+        detect = spec.query is not None and self.dialect == "sqlite"
         for table in tables:
-            yield Piece(normalize_table(table, timezone=self._options.timezone))
+            yield Piece(
+                normalize_table(table, timezone=self._options.timezone, detect_iso_text=detect)
+            )
 
     def _table_tables(self, spec: SqlDataset, request: ReadRequest) -> Iterator[pa.Table]:
         assert spec.table is not None
-        reflected: dict[str, sa.Table] = {}
+        opened: list[sa.Connection] = []
 
         def adapt(query: Any, table: sa.Table) -> Any:
-            reflected["table"] = table
             names = request.columns or [column.name for column in table.columns]
             statement = sa.select(*[table.c[name] for name in names])
             if request.cursor_column is not None and request.since is not None:
@@ -318,6 +343,7 @@ class SqlConnector(BaseConnector):
                 reflection_level="full",
                 type_adapter_callback=_float_hint,
                 query_adapter_callback=adapt,
+                table_loader_class=_tracked_loader(opened),
             )
         except sa_exc.NoSuchTableError:
             raise self._error(
@@ -338,17 +364,21 @@ class SqlConnector(BaseConnector):
         )
         self._require_columns(spec.name, [column.name for column in table.columns], request)
         yielded = False
-        for item in resource:
-            if isinstance(item, pa.Table):
-                yielded = True
-                yield item
-            else:
-                self._log.debug(
-                    "skipped a non-table item from dlt",
-                    source=self.source_id,
-                    dataset=spec.name,
-                    item_type=type(item).__name__,
-                )
+        try:
+            for item in resource:
+                if isinstance(item, pa.Table):
+                    yielded = True
+                    yield item
+                else:
+                    self._log.debug(
+                        "skipped a non-table item from dlt",
+                        source=self.source_id,
+                        dataset=spec.name,
+                        item_type=type(item).__name__,
+                    )
+        finally:
+            for connection in opened:
+                connection.close()
         if not yielded:
             hints = resource.compute_table_schema()["columns"]
             names = request.columns or [column.name for column in table.columns]
