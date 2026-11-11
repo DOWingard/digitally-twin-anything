@@ -43,7 +43,7 @@ Responses that read data name the version they read: `"version": {"id", "seq", "
 | Endpoint | Returns |
 |---|---|
 | `GET /graph/neighbors?seed=&depth=&direction=&edge_types=&limit=` | nodes within `depth` hops of the seeds, with type and depth, and the edges between them |
-| `GET /graph/paths?source=&target=&max_depth=&k=&weight=&direction=&edge_types=` | up to `k` simple paths of at most `max_depth` hops (default 6, at most 64), shortest first; links cannot be left out by a property (see the recipes) |
+| `GET /graph/paths?source=&target=&max_depth=&k=&weight=&direction=&edge_types=` | up to `k` simple paths of at most `max_depth` hops (default 6, at most 64), shortest first; each path has `nodes`, `edges` (each with `src`, `dst`, `edge_type`, `link_uid`), `hops` and `cost`; links cannot be left out by a property (see the recipes) |
 | `POST /graph/subgraph` body `{seeds, depth, direction, edge_types, node_types, limit, properties}`; `part=nodes\|edges` picks the table for Arrow and Parquet | the part of the graph reached from the seeds |
 | `GET /graph/edges?edge_types=` | every edge: `src`, `dst`, `edge_type`, `link_uid` |
 

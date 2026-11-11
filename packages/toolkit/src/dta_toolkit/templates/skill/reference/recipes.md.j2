@@ -159,7 +159,7 @@ curl -sS -H "$AUTH" "$API/history/diff?from=%231&to=head&types=<Type>&detail=row
 - `#` must be written `%23` in a URL, and `+` as `%2B`. Passing parameters with `--data-urlencode` or with a client library's `params` avoids both.
 - History and diff rows carry `_version`, `_seq`, `_t` (the version's time) and `_change` (`added`, `modified`, `removed`).
 - A version's time is the time of the data. On a twin loaded from history, many versions were written in one run; their times are still the times of the data they hold.
-- Versions with `cause` `install` or `registration` hold the twin's own setup, not data, and carry no data time. The period the twin covers runs from the first version with data (`/history/versions?cause=sync&order=asc&limit=1`) to the head.
+- Versions with `cause` `install` or `registration` hold the twin's own setup, not data, and carry no data time. The period the twin covers runs from the first version with data (`/history/versions?cause=sync&order=asc&limit=1`) to the head. A slice or a history over `#0..head` therefore begins at that first data version, and a value held at the head is known up to the head's time and no further: an integral or a duration ends there.
 
 ## 5. Pull tables for analysis or training
 
