@@ -5,6 +5,7 @@ from __future__ import annotations
 from api_testkit import link, node
 from dta_runtime.ui import ids
 from dta_runtime.ui.graph import NODE_LIMIT
+from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from ui_page import (
     choose_dropdown,
@@ -106,3 +107,40 @@ def test_a_click_shows_values_and_their_provenance(stack, browser):
     )
     assert "2026-01-05 09:00:00 UTC" in older  # demand as observed at #9
     assert "2026-01-05 09:00:00 UTC" not in details
+
+
+def _node_types(browser):
+    return browser.execute_script(
+        "return document.getElementById(arguments[0])._cyreg.cy.nodes().map(n => n.data('type'))",
+        ids.GRAPH_VIEW,
+    )
+
+
+def test_graph_filters_by_depth_and_type(stack, browser):
+    open_page(browser, stack.ui_url)
+    wait_graph_at(browser, max(stack.history.versions))
+    _around(browser, node("J2"))
+    wait_for(browser, lambda: len(graph_nodes(browser)) == 5, "the neighbourhood of J2")
+
+    mark = stack.api_requests.mark()
+    browser.find_element(
+        By.XPATH, f"//*[@id='{ids.GRAPH_DEPTH}']//label[normalize-space()='2']"
+    ).click()
+    wait_for(browser, lambda: "2 hops deep" in graph_status(browser), "two hops")
+    two_hops = wait_for(
+        browser, lambda: len(graph_nodes(browser)) > 5 and graph_nodes(browser), "more nodes"
+    )
+    assert {node("R1"), node("J4")} <= set(two_hops)
+    assert any(
+        request.json() and request.json()["depth"] == 2
+        for request in stack.api_requests.since(mark, SUBGRAPH_PATH)
+    )
+
+    mark = stack.api_requests.mark()
+    choose_dropdown(browser, ids.GRAPH_NODE_TYPES, "Junction", typed="Junc")
+    browser.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+    wait_for(browser, lambda: set(_node_types(browser)) == {"Junction"}, "only junctions")
+    assert any(
+        request.json() and request.json().get("node_types") == ["Junction"]
+        for request in stack.api_requests.since(mark, SUBGRAPH_PATH)
+    )

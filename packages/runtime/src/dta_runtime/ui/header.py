@@ -13,11 +13,14 @@ from __future__ import annotations
 from typing import Any
 
 from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
+from dta_core.log import Log
 
 from . import ids
 from .backend import Backend
 from .feedback import guarded
 from .text import plural, time_text
+
+log = Log("ui.header")
 
 POLL_MS = 5_000
 FOLLOW_ON = "follow"
@@ -160,6 +163,15 @@ def register(app: Dash, backend: Backend) -> None:
         elif trigger == ids.SLIDER and value is not None and value != head and following:
             follow_out = []
         value_out = target if target is not None and target != value else no_update
+        log.debug(
+            "version steered",
+            trigger=str(trigger),
+            clicked=str(ctx.triggered[0]["value"])[:200] if ctx.triggered else None,
+            head=head,
+            value=value,
+            target=target,
+            following=following,
+        )
         return head, marks, value_out, follow_out
 
     @app.callback(

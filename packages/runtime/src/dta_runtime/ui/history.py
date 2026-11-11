@@ -151,8 +151,10 @@ def log_grid(query: dict[str, Any]) -> dag.AgGrid:
                 "enableClickSelection": True,
             },
         },
-        # Rows are identified by seq, so a click names the version it landed on.
-        getRowId="String(params.data.seq)",
+        # Rows are identified by their seq, as text, so that a click names the version it
+        # landed on. dash-ag-grid evaluates this as a restricted expression: a call such as
+        # String(...) yields nothing, so the text is prepared on the server.
+        getRowId="params.data.row_id",
         className="commit-log",
         style={"height": "32vh", "width": "100%"},
     )
@@ -161,6 +163,7 @@ def log_grid(query: dict[str, Any]) -> dag.AgGrid:
 def version_row(entry: dict[str, Any]) -> dict[str, Any]:
     extra = entry.get("extra") or {}
     return {
+        "row_id": str(entry["seq"]),
         "seq": entry["seq"],
         "t": time_text(entry.get("t")),
         "cause": entry.get("cause"),

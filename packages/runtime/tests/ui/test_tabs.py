@@ -6,6 +6,7 @@ from api_testkit import J6_SEQ, VALVE_REMOVED_SEQ, link, node
 from dta_runtime.ui import ids
 from ui_page import (
     choose_dropdown,
+    click_graph_element,
     click_tab,
     grid_cells,
     grid_headers,
@@ -127,3 +128,41 @@ def test_history_differs_between_head_and_an_older_version(stack, browser):
         "no sync runs at the older version",
     )
     assert FIRST_RUN not in runs_old
+
+
+# Routes that read data at a version; each must name the selected version by its id.
+READS = ("/api/v1/objects/", "/api/v1/object/", "/api/v1/graph/", "/api/v1/meta/schema")
+
+
+def test_every_read_names_the_selected_version_by_id(stack, browser):
+    mark = stack.api_requests.mark()
+    open_page(browser, stack.ui_url)
+    head = head_seq(browser)
+    wait_graph_at(browser, head)
+    choose_dropdown(browser, ids.GRAPH_OBJECT, node("J2"), typed="J2")
+    wait_for(browser, lambda: "around node:J2" in text_of(browser, ids.GRAPH_STATUS), "J2")
+    click_graph_element(browser, node("J2"))
+    wait_for(browser, lambda: "elevation" in text_of(browser, ids.GRAPH_DETAILS), "details")
+    select_version(browser, OLD_SEQ)
+    wait_graph_at(browser, OLD_SEQ)
+    wait_for(browser, lambda: f"as of #{OLD_SEQ}" in text_of(browser, ids.GRAPH_DETAILS), "old")
+    click_tab(browser, "Spreadsheet")
+    wait_for(browser, lambda: grid_cells(browser, ids.SHEET_BOX, "uid"), "sheet rows")
+    click_tab(browser, "History")
+    wait_for(browser, lambda: f"#{OLD_SEQ} against" in text_of(browser, ids.DIFF), "changes")
+    wait_for(browser, lambda: text_of(browser, ids.RUNS), "sync runs")
+
+    # The slider passes through the versions between, each selected for a moment, so
+    # reads at those are expected too; what never happens is a read by `head`, a seq or
+    # a time, or one without a version.
+    known = {version.id for version in stack.history.versions.values()}
+    seen = stack.api_requests.since(mark)
+    reads = [request for request in seen if request.path.startswith(READS)]
+    assert len(reads) > 10
+    unpinned = [(r.path, r.value("at")) for r in reads if r.value("at") not in known]
+    assert not unpinned
+    read_at = {r.value("at") for r in reads}
+    assert {stack.history.versions[head].id, stack.history.versions[OLD_SEQ].id} <= read_at
+    diffs = [request for request in seen if request.path == "/api/v1/history/diff"]
+    assert diffs and all(r.value("to") in known and r.value("from") in known for r in diffs)
+    assert stack.history.versions[OLD_SEQ].id in {r.value("to") for r in diffs}
