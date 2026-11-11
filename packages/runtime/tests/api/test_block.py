@@ -12,6 +12,7 @@ from api_testkit import (
     J6_SEQ,
     JUNCTIONS,
     MIGRATION_SEQ,
+    SCENARIO,
     VALVE_REMOVED_SEQ,
     Api,
     WaterHistory,
@@ -223,3 +224,16 @@ def test_slice_pages_keep_their_range(api: Api) -> None:
             break
         params = {"range": "#0..#1", "limit": 7, "cursor": body["next_cursor"]}
     assert found == whole and len(whole) == 25
+
+
+def test_slice_pages_keep_their_branch(api: Api, water_history: WaterHistory) -> None:
+    params: dict = {"range": "#19..head", "branch": SCENARIO, "limit": 2, "uids": "node:J1,node:J9"}
+    first = api.ok("/api/v1/block/slice/Junction", params=params)
+    rest = api.ok(
+        "/api/v1/block/slice/Junction",
+        params={**params, "branch": "main", "range": "#0", "cursor": first["next_cursor"]},
+    )
+    rows = [(row["_seq"], row["uid"]) for row in first["data"] + rest["data"]]
+    assert rows == [(19, "node:J1"), (20, "node:J1"), (21, "node:J1"), (21, "node:J9")]
+    assert rest["version"]["id"] == water_history.scenario.id
+    assert rest["data"][-1]["_version"] == water_history.scenario.id

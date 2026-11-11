@@ -49,10 +49,10 @@ def start_range(
     """The versions of a range, written with commit ids, and where the page starts."""
     if cursor:
         payload = decode_cursor(cursor, kind, query)
-        pinned = payload.get("r")
-        if not isinstance(pinned, str):
+        pinned, pinned_branch = payload.get("r"), payload.get("b")
+        if not isinstance(pinned, str) or not isinstance(pinned_branch, str):
             raise ApiError("the cursor is not one this API issued", code="api.bad_cursor")
-        versions, pinned = services.resolve_range(pinned, branch)
+        versions, pinned = services.resolve_range(pinned, pinned_branch)
         return versions, pinned, payload.get("p")
     versions, pinned = services.resolve_range(selector, branch)
     return versions, pinned, None
