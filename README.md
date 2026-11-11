@@ -15,9 +15,10 @@ A twin built by this system is:
   tells an agent how to operate it;
 - one container stack that can be exported and moved to another host.
 
-Status: under construction. A static twin (loaded once from recorded data) can
-be built, accepted and handed over today; live sync, models, fidelity and
-control are not built yet.
+Status: under construction. A static twin (loaded once from recorded data) and
+a live twin (kept in step with its sources, one version per sync interval)
+can be built, accepted and handed over today; models, fidelity, control and
+the plugin's entry skill are not built yet.
 
 ## Layout
 
@@ -25,9 +26,9 @@ control are not built yet.
 |---|---|
 | `packages/core` | Shared library: structured logging, environment configuration, the manifest schema and its checks, ontology loading (LinkML), the versioned store, the connector protocol |
 | `packages/toolkit` | The `dta` command line tool: manifest checks, the gate each build stage ends in, delegated tasks, the twin's container stack derived from its manifest, build, acceptance and the operator skill |
-| `packages/runtime` | What runs inside a twin's stack: installing and opening a twin, reading its sources, loading them into the graph, the HTTP API and the browser UI |
+| `packages/runtime` | What runs inside a twin's stack: installing and opening a twin, reading its sources, loading them into the graph and keeping it in step with them, the HTTP API, the scheduler and the browser UI |
 | `docker/runtime.Dockerfile` | Image of the twin's services: one image, one command per service |
-| `testbed` | A simulated water utility used as the standing test target, with a reference twin definition in `testbed/twin` |
+| `testbed` | A simulated water utility used as the standing test target, with the definitions of two reference twins: `testbed/twin` (static) and `testbed/twin-live` (live) |
 | `spikes/storage` | Benchmark that selected Dolt as the versioned store |
 
 ## The store
@@ -65,7 +66,7 @@ written; `dta manifest gaps` lists every required field still unknown or
 waiting for confirmation; `dta status` shows the stage the build stands at
 and the result of each stage's gate.
 
-## Building a static twin
+## Building a twin
 
 A build moves through stages; each ends in a gate, and `dta status` shows where
 the build stands. All commands act on a workspace (`--workspace`, default the
@@ -90,10 +91,12 @@ dta ontology check --write     # confirm the ontology's types in the manifest
 dta env template               # .env.example and .env; fill in what is not generated
 dta source probe               # reach every source from inside the stack
 dta profile                    # measure the sources; profiles go into the manifest
+dta sync derive --write        # a live twin: its sync interval, from the contract and the profiles
 dta manifest validate
 dta manifest confirm --all-user
+dta manifest validate          # confirming changes the manifest; the design gate is of the result
 dta manifest sign
-dta build                      # store, install, load, API, UI, skill
+dta build                      # store, install, load, API, contract, sync (live), UI, skill
 dta accept                     # acceptance report, or a deficit report
 dta install-skill              # the skill an agent operates the twin with
 ```
@@ -108,13 +111,50 @@ dta install-skill              # the skill an agent operates the twin with
 - `dta accept` runs every check and reports all failures together: the API
   against its own OpenAPI document (generated requests, fixed seed), the five
   data-readiness requirements, constraint violations in the load, coverage of
-  every property the contract names, the UI and the skill.
+  every property the contract names, the UI, the skill and that the skill
+  lists every endpoint the API serves.
 - `dta install-skill` refuses a twin that has not been accepted unless
   `--provisional` is given; the handover report then lists what has not passed.
 - `dta up`, `dta down` and `dta logs` manage the stack. `dta down
   --destroy-data` removes the twin's data and takes back the build and
   acceptance gates.
 - No value of `.env` is printed, logged or written to a report.
+
+### A live twin
+
+A twin whose contract says `tier: live` keeps reading its sources after the
+load. The manifest's `sync.interval` (Δ) is how often; `dta sync derive`
+computes it as the longest of three: the sources' refresh period, their
+rate-limit period, and what the questions need, which is the shorter of the
+tightest staleness less the source's own delay and half the fastest change
+the profiles measured.
+
+- Time is the twin's clock, never the machine's: `runtime.clock` is `wall` or
+  `source:<id>`, a source that tells the time. Intervals are counted from the
+  Unix epoch; a run takes every interval that has closed and writes one
+  version for each, so a twin that was stopped catches up interval by interval.
+- A scheduler service in the stack starts the runs through the API. One run
+  at a time; a run asked for twice with the same key is started once.
+- Each run records itself in the twin (`TwinSyncRun`): what it read and wrote
+  per source, the rows it set aside with the rule each broke, the rows that
+  arrived for an interval already written. A source that fails does not stop
+  the others; the run is then `partial`.
+- A dataset declared under `sources.<id>.incremental` is read on from where
+  the last run stopped instead of whole.
+- Freshness is measured per question: the age of the newest data of the
+  sources the question is answered from, against the question's staleness.
+- `dta build` loads history once, only while no run has written; it stops the
+  scheduler before a load and its `sync` step starts the scheduler, makes one
+  run and fails unless that run synced every source. `dta accept` adds: the
+  scheduler runs, the latest run succeeded, no source is failing, every
+  question is fresh.
+
+```sh
+dta sync status                # the clock, freshness per question, the sources
+dta sync run                   # one run now; waits and prints its report
+dta sync run --source scada    # only these sources
+dta sync run --replay scada.readings   # read one dataset again, whole
+```
 
 ## What a built twin serves
 
@@ -124,19 +164,31 @@ token. `GET /api/v1/openapi.json` describes every endpoint.
 | Group | For |
 |---|---|
 | `/meta` | identity, health, the manifest and the ontology at a version |
-| `/objects` | objects of a type: filter, sort, page; one object with the provenance of each value; its links and its history |
-| `/graph` | neighbours, shortest paths, subgraphs, the edge list |
+| `/objects` | objects of a type: filter, sort, page, count; a search by uid across types; one object with the provenance of each value; its links and its history |
+| `/graph` | neighbours, shortest paths, subgraphs, the edge list, each over all links or only those that pass a filter on their properties |
 | `/history` | versions, the difference between two versions, branches |
 | `/block` | whole node and edge tables, and slices over a range of versions, as Arrow or Parquet |
-| `/lifecycle` | the twin's own structured logs |
+| `/sync` | a live twin: its sources and how far each has been read, its runs and the rows they set aside, starting a run |
+| `/lifecycle` | background jobs and the twin's own structured logs |
 
 - Every read takes `at`: `head`, a version id, `#<n>` or a time. A response
   names the version it read, and a cursor keeps reading that version.
 - Tables come as JSON (paged), Arrow or Parquet.
 - Errors are RFC 9457 problem documents with a code and a trace id.
+- `GET /api/v1/meta/health` of a live twin tells its clock, the age of its
+  data against each question's staleness, its last run and the run in
+  progress.
 
 The browser UI (graph, spreadsheet and history tabs, a version slider, follow
 head) reads the twin only through this API; the token stays on its server.
+While a live twin moves on, a session that is not following stays on the
+version it shows and counts the newer ones; "Jump to head" or following takes
+it there, and the open tab redraws in place. The header shows the twin's
+time, the age of its data and its last run; the history tab lists sources,
+runs and rows set aside, and can start a run. The UI is published on the
+loopback address and answers only requests addressed to it as `127.0.0.1` or
+`localhost`; a request that would change something is accepted only from its
+own pages.
 
 The operator skill is generated from the manifest: how to reach the twin, the
 questions it was built to answer with their tolerances and exact definitions,
@@ -209,8 +261,8 @@ docker compose -p dta-store-dev --env-file .env -f packages/core/tests/store/com
   (`dta-m3tk-<random>`) on loopback ports 18800 to 18899 and remove them.
   They are skipped when Docker or the image is missing. Rebuild the image
   after changing `packages/core` or `packages/runtime`.
-- The UI tests drive headless Chrome through Selenium and are skipped when
-  Chrome is not installed.
+- The UI tests drive headless Chrome through Selenium, on loopback ports
+  18720 to 18739, and are skipped when Chrome is not installed.
 
 The testbed is a separate project with its own environment; see
 `testbed/README.md`.
