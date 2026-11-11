@@ -15,6 +15,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..schema import FactKind
+
 MANIFEST_VERSION = 1
 _ID = r"^[a-z][a-z0-9_-]{0,62}$"
 
@@ -57,13 +59,6 @@ class ErrorMetric(StrEnum):
     mape = "mape"
     max_abs = "max_abs"
     error_rate = "error_rate"
-
-
-class FactKind(StrEnum):
-    observed = "observed"
-    inferred = "inferred"
-    assumed = "assumed"
-    simulated = "simulated"
 
 
 class ConnectorKind(StrEnum):

@@ -45,6 +45,7 @@ STAGES = {
 }
 _TMP_SUFFIX = ".tmp"
 _DEFAULT_LOCK_TIMEOUT_S = 30.0
+_DEFAULT_FILE_MODE = 0o644
 
 
 class GateResult(BaseModel):
@@ -163,8 +164,13 @@ class Workspace:
             )
         return target
 
-    def atomic_write(self, path: Path, data: str | bytes) -> Path:
-        """Replace `path` in one step. The caller must hold the lock."""
+    def atomic_write(self, path: Path, data: str | bytes, mode: int | None = None) -> Path:
+        """Replace `path` in one step. The caller must hold the lock.
+
+        The file keeps its permissions when it already exists; a new file is
+        readable by everyone unless `mode` says otherwise, so that containers
+        running as another user can read the workspace.
+        """
         if not self.locked:
             log.error("refused a write without the workspace lock", target=str(path))
             raise WorkspaceError(
@@ -175,11 +181,14 @@ class Workspace:
         target = self._inside(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = data.encode("utf-8") if isinstance(data, str) else data
+        if mode is None:
+            mode = (target.stat().st_mode & 0o777) if target.exists() else _DEFAULT_FILE_MODE
         fd, tmp_name = tempfile.mkstemp(
             dir=target.parent, prefix=f".{target.name}.", suffix=_TMP_SUFFIX
         )
         try:
             with os.fdopen(fd, "wb") as handle:
+                os.fchmod(handle.fileno(), mode)
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())

@@ -45,6 +45,16 @@ def test_atomic_write_leaves_no_temporary_files(tmp_path):
     assert [p.name for p in (workspace.root / "stack").iterdir()] == ["compose.yaml"]
 
 
+def test_new_files_are_world_readable_and_existing_modes_are_kept(tmp_path):
+    workspace = _make(tmp_path)
+    assert workspace.manifest_path.stat().st_mode & 0o777 == 0o644
+    private = workspace.root / "private.txt"
+    with workspace.exclusive():
+        workspace.atomic_write(private, "a", mode=0o600)
+        workspace.atomic_write(private, "b")
+    assert private.stat().st_mode & 0o777 == 0o600 and private.read_text() == "b"
+
+
 def test_lock_excludes_another_process(tmp_path):
     workspace = _make(tmp_path)
     holder = subprocess.Popen(

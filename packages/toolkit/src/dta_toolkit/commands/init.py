@@ -9,7 +9,7 @@ import typer
 from dta_core.errors import DtaError, WorkspaceError
 from dta_core.log import Log
 from dta_core.manifest import Manifest
-from dta_core.manifest.models import Twin
+from dta_core.manifest.models import EnvVar, Interfaces, Twin
 
 from ..output import command, emit, session
 from ..workspace import State, Workspace, now
@@ -26,6 +26,17 @@ def default_id(directory_name: str) -> str:
     text = re.sub(r"^[^a-z]+", "", text)
     text = re.sub(r"-{2,}", "-", text)
     return text[:63].rstrip("-_") or _FALLBACK_ID
+
+
+def _interface_env() -> dict[str, EnvVar]:
+    """The variables every twin needs for its own API and UI, so a new skeleton validates."""
+    names = Interfaces()
+    return {
+        names.base_url_env: EnvVar(description="Address of the twin's API", secret=False),
+        names.token_env: EnvVar(description="Bearer token of the twin's API", secret=True),
+        names.api_port_env: EnvVar(description="Host port of the twin's API", secret=False),
+        names.ui_port_env: EnvVar(description="Host port of the twin's UI", secret=False),
+    }
 
 
 def _ensure_env_ignored(workspace: Workspace) -> bool:
@@ -55,7 +66,7 @@ def _create(workspace: Workspace, twin_id: str, name: str) -> bool:
             "a manifest already exists; it is kept as it is", path=str(workspace.manifest_path)
         )
     else:
-        workspace.save_manifest(Manifest(twin=Twin(id=twin_id, name=name)))
+        workspace.save_manifest(Manifest(twin=Twin(id=twin_id, name=name), env=_interface_env()))
         manifest_created = True
     _ensure_env_ignored(workspace)
     # Written last: its presence is what marks the directory as a workspace, so an

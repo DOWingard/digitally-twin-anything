@@ -32,6 +32,29 @@ def test_log_line_has_required_fields_and_masks_secrets(tmp_path):
     assert "Traceback" in second["stack"]
 
 
+def test_masking_matches_whole_key_tokens_only():
+    data = {
+        "passed": True,
+        "tokenizer": "bert",
+        "bypass": 1,
+        "db_password": "x",
+        "API-Key": "x",
+        "token": "x",
+        "store.dsn": "x",
+        "aws_access_key_id": "x",
+    }
+    assert dta_log.redact(data) == {
+        "passed": True,
+        "tokenizer": "bert",
+        "bypass": 1,
+        "db_password": "***",
+        "API-Key": "***",
+        "token": "***",
+        "store.dsn": "***",
+        "aws_access_key_id": "***",
+    }
+
+
 def test_unknown_level_falls_back_and_warns(tmp_path):
     target = tmp_path / "out.log"
     dta_log.configure(log_file=target, level="chatty")

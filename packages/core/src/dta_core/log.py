@@ -24,7 +24,12 @@ from typing import Any
 _ROOT = "dta"
 _LEVEL_ENV = "DTA_LOG_LEVEL"
 _LEVEL_NAMES = {"WARNING": "warn", "CRITICAL": "error"}
-_SECRET_KEY = re.compile(r"pass(word)?|secret|token|api[_-]?key|authorization|credential", re.I)
+# Whole tokens only, so that `passed` or `tokenizer` are not mistaken for credentials.
+_SECRET_KEY = re.compile(
+    r"(^|[_.\-\s])(pass(word|wd)?|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
+    r"|authorization|credentials?|dsn)($|[_.\-\s])",
+    re.I,
+)
 _MASK = "***"
 
 # Correlates every line written while one request or command is being served.
