@@ -39,6 +39,35 @@ def table(path, **params):
     return pa.ipc.open_stream(response.content).read_all()
 ```
 
+Python with the standard library only (JSON; enough for everything except Arrow and Parquet):
+
+```python
+import json, os, urllib.error, urllib.parse, urllib.request
+
+ROOT = os.environ["{{ base_url_env }}"].rstrip("/") + "/api/v1"
+HEADERS = {"Authorization": "Bearer " + os.environ["{{ token_env }}"]}
+
+def fetch(path, **params):
+    url = ROOT + path + "?" + urllib.parse.urlencode(params, doseq=True)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=120) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as error:
+        problem = json.load(error)
+        raise RuntimeError(f"{problem['code']}: {problem['detail']} (trace {problem['trace_id']})")
+
+def rows(path, **params):
+    """Every row of a JSON table, following next_cursor."""
+    params.setdefault("limit", 10000)
+    out, cursor = [], None
+    while True:
+        page = fetch(path, **params, **({"cursor": cursor} if cursor else {}))
+        out.extend(page["data"])
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return out
+```
+
 ## 1. Orient
 
 ```python
@@ -75,7 +104,7 @@ curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>?at=$VERSION&include=provenance"
 curl -sS -H "$AUTH" "$API/object/<uid>?at=$VERSION"
 ```
 
-- A JSON listing is `{"data": [...], "next_cursor": ..., "version": {...}}`. While `next_cursor` is not null, repeat the request with `cursor=<next_cursor>`; the cursor keeps reading the version of the first page.
+- A JSON table is `{"data": [...], "next_cursor": ..., "version": {...}}`: 100 rows unless `limit` says otherwise. This holds for every table, not only object listings: `/graph/edges`, `/block/*`, versions and logs are paged the same way, and a short first page is not an error. While `next_cursor` is not null, repeat the request with `cursor=<next_cursor>`; the cursor keeps reading the version of the first page.
 - Filter operators: `eq ne lt le gt ge in like null notnull`. A value is read by the property's kind (number, `true`/`false`, ISO time with offset, date, text). `like` takes an SQL pattern (`%` any run, `_` one character).
 - An abstract type (listed under the schema's abstract classes) can be listed too: the rows are its concrete kinds, with the properties they share and a `_type` column.
 - uids look like `<scope>:<key>`. Take them from listings; do not construct them.
@@ -109,6 +138,8 @@ all_edges = table("/graph/edges", at=version)
 - `edge_types` (repeated or comma-separated) restricts what is followed. Use it whenever the question is about one kind of connection. Every reference is an edge too, so without it a traversal also runs through shared membership (two objects that belong to the same group are two hops apart), which is rarely what a question about physical or logical connection means.
 - `max_depth` on `/graph/paths` is 6 unless given, and at most 64. An empty `paths` list means "no path within that many hops", not "not connected": raise `max_depth` before concluding anything.
 - `weight=<numeric link property>` on `/graph/paths` ranks paths by the sum of that property instead of by hops.
+- A path's edges are listed in the direction walked. With `direction=both` an edge's `src` and `dst` can therefore be the reverse of the link's own ends.
+- The path search cannot leave out links by a property (closed, out of service, or whatever a question's definition excludes). When a definition excludes some links: list them first (`/objects/<LinkType>?where=<property>:ne:<value>`), then either ask for several paths (`k`) and drop every path that uses one, or pull `/graph/edges`, remove them and search the rest yourself. Do this even when the first path returned looks right.
 - If a traversal is refused as too broad (`graph.too_broad`), lower `depth` or `limit`, or name `edge_types`.
 
 ## 4. Look at the past
@@ -128,6 +159,7 @@ curl -sS -H "$AUTH" "$API/history/diff?from=%231&to=head&types=<Type>&detail=row
 - `#` must be written `%23` in a URL, and `+` as `%2B`. Passing parameters with `--data-urlencode` or with a client library's `params` avoids both.
 - History and diff rows carry `_version`, `_seq`, `_t` (the version's time) and `_change` (`added`, `modified`, `removed`).
 - A version's time is the time of the data. On a twin loaded from history, many versions were written in one run; their times are still the times of the data they hold.
+- Versions with `cause` `install` or `registration` hold the twin's own setup, not data, and carry no data time. The period the twin covers runs from the first version with data (`/history/versions?cause=sync&order=asc&limit=1`) to the head.
 
 ## 5. Pull tables for analysis or training
 
@@ -153,6 +185,9 @@ with open("nodes.parquet", "wb") as out:
 
 - `range` takes `<a>..<b>` and optionally `/<step>`: `#1..head/4` is every fourth version. Use a step, or name `uids`, when a slice is refused as too large.
 - `mode=state` forward-fills: a row for every version in the range, holding the value that was current then. `mode=changes` has a row only where something changed.
+- The twin holds state, not the source's individual readings: a reading equal to the value already held writes nothing. To say when, how often or how long a condition held, count versions in `mode=state`. `mode=changes` undercounts, and neither is the number of readings the source sent.
+- A null means the twin holds no value for that property of that object (it was never observed). It is not zero; leave such objects out of an answer about the property, and say how many objects do have values.
+- Without pyarrow, the same endpoints answer in JSON (`format=json`, paged): `rows("/block/slice/<Type>", range="#1..head", properties="<p1>", mode="state", layout="long")`.
 - `layout=tensor` returns coordinates `(uid_index, property_index, version_index, value)` for numeric properties, with the three index tables in the Arrow schema's metadata; use it to build a dense array of shape objects × properties × versions.
 - For a training set: take the slice of the properties you need over the range, split it by `_t` (never at random: later versions must not leak into the past), and keep the version ids of the split points with the model so the set can be rebuilt exactly.
 

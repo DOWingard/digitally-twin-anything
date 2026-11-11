@@ -89,10 +89,10 @@ All endpoints, with parameters: `reference/api.md`. Error codes and what to do a
 
 1. Read the schema before naming a type or property.
 2. Pin the version for multi-step work.
-3. Ask for tables as Arrow or Parquet when you need more than a few hundred rows; do not page through JSON for bulk data.
+3. Ask for tables as Arrow or Parquet when you need more than a few hundred rows and can read them. In JSON every table is paged (100 rows unless `limit`): follow `next_cursor` to the end before you count or conclude anything.
 4. Let the twin do the filtering, the traversal and the history: use `where`, the graph endpoints and the slice endpoint instead of downloading everything and searching it yourself.
 5. Every value has provenance (`include=provenance`): where it came from, whether it was observed, inferred, assumed or simulated, and when it was true. Quote it when the user asks how a number is known.
-6. Report what the twin says. If the data does not answer a question, say that; do not fill the gap with an estimate presented as the twin's.
+6. Report what the twin says. If the data does not answer a question, say that; do not fill the gap with an estimate presented as the twin's. A null is "no value held", never zero. If a definition leaves a choice open (how to integrate, what counts as an occurrence, which time zone a day is in), state the choice you made with the answer.
 7. This API only reads. You cannot change the twin through it, and you should not try to reach its database or its sources directly.
 8. If the user needs something the contract does not cover (a new question, a tighter tolerance, another source), that is a revision of the contract: tell the user it has to be agreed and rebuilt; do not improvise it.
 {% if ui %}

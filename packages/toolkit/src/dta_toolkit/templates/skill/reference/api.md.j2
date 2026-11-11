@@ -11,7 +11,7 @@ The authoritative description, with every parameter and response schema, is `GET
 | `at` | version to read: `head` (default), a commit id, `#<n>`, or an ISO 8601 time with an offset |
 | `branch` | branch to read; default `main` |
 | `format` | `json` (default), `arrow`, `parquet`; or an `Accept` header of `application/vnd.apache.arrow.stream` or `application/vnd.apache.parquet` |
-| `limit` | most rows; JSON default 100 and at most 10,000; Arrow and Parquet return everything unless given |
+| `limit` | most rows of any table (listings, `/graph/edges`, `/block/*`, versions, logs); JSON default 100 and at most 10,000; Arrow and Parquet return everything unless given |
 | `cursor` | `next_cursor` of the previous page |
 | `columns`, `properties`, `types`, `edge_types`, `uids` | lists: repeat the parameter or separate values with commas |
 
@@ -43,7 +43,7 @@ Responses that read data name the version they read: `"version": {"id", "seq", "
 | Endpoint | Returns |
 |---|---|
 | `GET /graph/neighbors?seed=&depth=&direction=&edge_types=&limit=` | nodes within `depth` hops of the seeds, with type and depth, and the edges between them |
-| `GET /graph/paths?source=&target=&max_depth=&k=&weight=&direction=&edge_types=` | up to `k` simple paths of at most `max_depth` hops (default 6, at most 64), shortest first |
+| `GET /graph/paths?source=&target=&max_depth=&k=&weight=&direction=&edge_types=` | up to `k` simple paths of at most `max_depth` hops (default 6, at most 64), shortest first; links cannot be left out by a property (see the recipes) |
 | `POST /graph/subgraph` body `{seeds, depth, direction, edge_types, node_types, limit, properties}`; `part=nodes\|edges` picks the table for Arrow and Parquet | the part of the graph reached from the seeds |
 | `GET /graph/edges?edge_types=` | every edge: `src`, `dst`, `edge_type`, `link_uid` |
 
@@ -63,6 +63,8 @@ Responses that read data name the version they read: `"version": {"id", "seq", "
 | `GET /block/nodes/{type}?columns=` | every object of a type at a version |
 | `GET /block/edges/{edge_type}` | every edge of one type, with the link's properties |
 | `GET /block/slice/{type}?range=&properties=&uids=&mode=state\|changes&layout=long\|tensor` | the type's objects over a range of versions |
+
+As JSON these are paged like every other table; as Arrow or Parquet they come whole.
 
 ## Lifecycle
 
