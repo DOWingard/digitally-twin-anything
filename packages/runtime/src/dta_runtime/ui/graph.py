@@ -42,7 +42,8 @@ def layout() -> html.Div:
                         placeholder="search by uid…",
                         searchable=True,
                         clearable=True,
-                        debounce=True,
+                        # No `debounce`: in Dash 4 it holds a single choice back until the
+                        # menu closes, and a choice that closes the menu was never sent.
                     ),
                     html.Div(id=ids.GRAPH_SEARCH_FEEDBACK),
                     html.Label("or around all objects of a type", htmlFor=ids.GRAPH_TYPE),

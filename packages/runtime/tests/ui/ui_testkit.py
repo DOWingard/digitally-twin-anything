@@ -7,6 +7,7 @@ The observers wrap the real applications; nothing is replaced.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -23,6 +24,9 @@ from dta_core.store import ChangeSet, CommitMeta, Provenance
 from waitress.server import create_server
 
 PORTS = range(18720, 18740)
+# Fixed before measuring; the measured times are recorded by the test and printed at the end.
+FIRST_RENDER_LIMIT_S = 5.0
+FIRST_RENDER_S: dict[str, float] = {}
 
 # Versions written on top of the water history; readings enough for several sheet blocks
 # and for a neighbourhood larger than the graph's default node limit.
@@ -146,11 +150,15 @@ def wait_until(check: Callable[[], bool], timeout: float, what: str) -> None:
     raise TimeoutError(f"{what} within {timeout} s")
 
 
-@dataclass(frozen=True)
+@dataclass
 class SeenRequest:
     method: str
     path: str
     query: tuple[tuple[str, str], ...]
+    body: bytes = b""
+
+    def json(self) -> Any:
+        return json.loads(self.body) if self.body else None
 
     def values(self, name: str) -> list[str]:
         return [value for key, value in self.query if key == name]
@@ -168,12 +176,20 @@ class RequestLog:
     seen: list[SeenRequest] = field(default_factory=list)
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] == "http":
-            query = tuple(
-                parse_qsl(scope["query_string"].decode("latin-1"), keep_blank_values=True)
-            )
-            self.seen.append(SeenRequest(scope["method"], scope["path"], query))
-        await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        query = tuple(parse_qsl(scope["query_string"].decode("latin-1"), keep_blank_values=True))
+        seen = SeenRequest(scope["method"], scope["path"], query)
+        self.seen.append(seen)
+
+        async def receive_and_keep() -> Any:
+            message = await receive()
+            if message["type"] == "http.request":
+                seen.body += message.get("body", b"")
+            return message
+
+        await self.app(scope, receive_and_keep, send)
 
     def mark(self) -> int:
         return len(self.seen)

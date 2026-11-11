@@ -28,6 +28,8 @@ from dta_runtime.api import create_app as create_api  # noqa: E402
 from dta_runtime.settings import RuntimeSettings, UiSettings  # noqa: E402
 from dta_runtime.ui import create_app as create_ui  # noqa: E402
 from ui_testkit import (  # noqa: E402
+    FIRST_RENDER_LIMIT_S,
+    FIRST_RENDER_S,
     ApiServer,
     RequestLog,
     ResponseLog,
@@ -40,9 +42,6 @@ CHROME = Path("/usr/bin/google-chrome-stable")
 WATER_ONTOLOGY = (
     Path(__file__).resolve().parents[3] / "core/tests/ontology/fixtures/water_network.yaml"
 )
-# Recorded by the tests that measure them, printed at the end of the run.
-FIRST_RENDER_S: dict[str, float] = {}
-FIRST_RENDER_LIMIT_S = 5.0
 
 
 def pytest_terminal_summary(terminalreporter: Any) -> None:
