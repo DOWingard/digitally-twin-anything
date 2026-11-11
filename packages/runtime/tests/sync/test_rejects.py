@@ -452,6 +452,49 @@ def test_a_reading_of_an_object_the_twin_does_not_have_is_set_aside(
     assert sorted(line["t"] for line in lines) == ["2026-01-05T00:15:00Z", "2026-01-05T00:30:00Z"]
 
 
+def test_a_reading_without_a_time_is_set_aside(sync_twin: MakeTwin, run: Run, tmp_path: Path):
+    feeds = {
+        "registry": source({"tanks": registry()["mappings"]["tanks"]}),
+        "levels": source(
+            {
+                "levels": {
+                    "dataset": "tank_levels",
+                    "object_type": "Tank",
+                    "identity": ["tank"],
+                    "valid_time": "at",
+                    "properties": columns("level"),
+                }
+            }
+        ),
+    }
+    levels = [
+        {"tank": "T1", "at": "2026-01-05 00:10:00", "level": 1.0},
+        {"tank": "T1", "at": "the day before yesterday", "level": 1.5},
+        {"tank": "T1", "at": None, "level": 2.5},
+        {"tank": "T1", "at": "2026-01-05T00:25:00+00:00", "level": 2.0},
+    ]
+    tables = {
+        "registry": {"tanks": table([tank("T1", "Hill tank", 0.5, 6.0)])},
+        "levels": {"tank_levels": table(levels)},
+    }
+    twin = sync_twin(feeds, sync=BACKFILL)
+    report = run(twin, Sources(**tables))
+
+    assert changes_of(twin.store, "node:T1", "level") == [
+        (T0 + 15 * MINUTE, 1.0),
+        (T0 + 30 * MINUTE, 2.0),
+    ]
+    counts = report.mappings["levels.levels"]
+    assert (counts.rows_read, counts.rows_written, counts.rows_rejected) == (4, 2, 2)
+    assert report.watermark == T0 + 25 * MINUTE
+    text, lines = rejects_of(tmp_path, report.rejects_location)
+    assert [(line["uid"], line["rule"], line["property"], line["t"]) for line in lines] == [
+        ("node:T1", "valid_time", None, None),
+        ("node:T1", "valid_time", None, None),
+    ]
+    assert "yesterday" not in text
+
+
 def test_a_mapping_whose_every_row_is_wrong_fails_the_run_before_anything_is_written(
     sync_twin: MakeTwin, run: Run, tmp_path: Path
 ):
