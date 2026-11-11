@@ -332,7 +332,9 @@ class Build:
             detail, status = {"reason": str(reason)}, SKIPPED
         except StepFailed as exc:
             elapsed = round((time.perf_counter() - started) * 1000.0, 1)
-            evidence = scrub_values({"message": exc.message, **exc.evidence}, self.env)
+            evidence = scrub_values(
+                {"message": exc.message, **exc.evidence}, self.stack.secret_values()
+            )
             log.error(
                 "build step failed its check", step=name, duration_ms=elapsed, evidence=evidence
             )
@@ -341,7 +343,8 @@ class Build:
         except DtaError as exc:
             elapsed = round((time.perf_counter() - started) * 1000.0, 1)
             evidence = scrub_values(
-                {"message": exc.message, "code": exc.code, "detail": exc.detail}, self.env
+                {"message": exc.message, "code": exc.code, "detail": exc.detail},
+                self.stack.secret_values(),
             )
             log.error("build step failed", exc=exc, step=name, code=exc.code, duration_ms=elapsed)
             self.save(name, FAILED, elapsed, evidence)
@@ -357,7 +360,7 @@ class Build:
             )
             raise
         elapsed = round((time.perf_counter() - started) * 1000.0, 1)
-        detail = scrub_values(detail, self.env)
+        detail = scrub_values(detail, self.stack.secret_values())
         self.save(name, status, elapsed, detail)
         log.info("build step finished", step=name, status=status, duration_ms=elapsed)
         return {

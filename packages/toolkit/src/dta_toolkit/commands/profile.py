@@ -134,7 +134,7 @@ def profile(
     workspace = session(ctx).workspace
     manifest = workspace.load_manifest()
     stack = Stack(workspace, manifest)
-    env = require_complete_env(stack)
+    require_complete_env(stack)
     if not no_write:
         _refuse_while_batch_open(workspace)
     args = ["profile", "--at", datetime.now(UTC).isoformat()]
@@ -158,7 +158,7 @@ def profile(
             "written": written,
             "derived": derived,
         },
-        env,
+        stack.secret_values(),
     )
     text = _text(parsed, result["failed"], written)
     if not parsed and not failed:

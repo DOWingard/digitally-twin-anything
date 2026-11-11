@@ -213,3 +213,25 @@ def test_compose_accepts_the_file_and_refuses_to_start_without_a_variable(tmp_pa
         refused = _config(tmp_path, {k: v for k, v in ENV.items() if k != missing})
         assert refused.returncode != 0
         assert missing in refused.stderr
+
+
+def test_only_secret_values_are_masked(tmp_path) -> None:
+    """A value declared as not secret is often an ordinary word and must stay readable."""
+    from dta_toolkit.stack import Stack
+    from dta_toolkit.workspace import Workspace
+
+    workspace = Workspace(tmp_path)
+    twin = manifest(
+        env={
+            "REG_HOST": {"description": "Host of the register", "secret": False},
+            "REG_PASSWORD": {"description": "Password of the register"},
+        }
+    )
+    workspace.env_path.write_text(
+        "DTA_STORE_PASSWORD=store-secret-value\nDTA_API_TOKEN=token-secret-value\n"
+        "DTA_API_PORT=18710\nDTA_BASE_URL=http://127.0.0.1:18710\n"
+        "REG_HOST=registry\nREG_PASSWORD=register-secret\nREG_USER=reader-name\n",
+        encoding="utf-8",
+    )
+    secret = Stack(workspace, twin).secret_values()
+    assert set(secret) == {"DTA_STORE_PASSWORD", "DTA_API_TOKEN", "REG_PASSWORD", "REG_USER"}

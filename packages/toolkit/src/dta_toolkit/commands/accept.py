@@ -89,7 +89,8 @@ def accept(
         raise CheckFailed(
             f"the ontology file cannot be used: {exc.message}", code="ontology.unusable"
         ) from exc
-    values = require_complete_env(Stack(workspace, manifest))
+    stack = Stack(workspace, manifest)
+    values = require_complete_env(stack)
     with timed(log, "acceptance", examples=examples, seed=seed):
         run = run_checks(
             manifest,
@@ -109,7 +110,7 @@ def accept(
             "failed": run.failed,
             "checks": [check.as_dict() for check in run.checks],
         },
-        values,
+        stack.secret_values(),
     )
     keep, drop = (_PASSED, _FAILED) if run.passed else (_FAILED, _PASSED)
     reports = workspace.root / REPORTS

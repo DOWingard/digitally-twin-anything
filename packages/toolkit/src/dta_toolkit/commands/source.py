@@ -84,7 +84,7 @@ def probe(
     workspace = session(ctx).workspace
     manifest = workspace.load_manifest()
     stack = Stack(workspace, manifest)
-    env = require_complete_env(stack)
+    require_complete_env(stack)
     args = ["probe"]
     for source_id in source or []:
         args += ["--source", source_id]
@@ -92,7 +92,7 @@ def probe(
         document = stack.runtime(
             *args, input=dump_manifest(manifest), store=False, timeout=PROBE_TIMEOUT_S
         )
-    reports = scrub_values(document.get("sources") or [], env)
+    reports = scrub_values(document.get("sources") or [], stack.secret_values())
     ok = bool(document.get("ok"))
     failing = failing_entries(reports)
     recorded = not source

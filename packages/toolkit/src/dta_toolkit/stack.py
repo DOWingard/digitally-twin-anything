@@ -253,6 +253,21 @@ class Stack:
         self.plan = plan_stack(manifest)
         self.compose_path = workspace.stack_dir / COMPOSE_FILE
         self.env_file = workspace.env_path
+        # Names whose values may be shown: what the manifest declares as not secret, and
+        # the ports and the API address. The store's password and the token never are.
+        interfaces = manifest.interfaces
+        shown = {name for name, entry in manifest.env.items() if not entry.secret}
+        shown |= {interfaces.api_port_env, interfaces.ui_port_env, interfaces.base_url_env}
+        self._shown_env = shown - {self.plan.store_password_env, self.plan.token_env}
+
+    def secret_values(self) -> dict[str, str]:
+        """The values of `.env` to mask in anything shown: all but the declared non-secrets.
+
+        A value that is not a secret (a database name, a folder) is often an
+        ordinary word; masking it would blank that word wherever it appears.
+        """
+        values = read_env(self.env_file)
+        return {name: value for name, value in values.items() if name not in self._shown_env}
 
     # -- files ---------------------------------------------------------------
 
@@ -324,7 +339,7 @@ class Stack:
             ) from exc
         elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
         if done.returncode != 0:
-            tail = scrub(done.stderr[-_STDERR_TAIL:], read_env(self.env_file))
+            tail = scrub(done.stderr[-_STDERR_TAIL:], self.secret_values())
             code = "stack.command_failed"
             if "Cannot connect to the Docker daemon" in done.stderr:
                 code = "stack.docker_unavailable"
@@ -382,7 +397,7 @@ class Stack:
         """The last lines the stack's containers wrote, values of the .env file masked."""
         names = [service] if service else []
         done = self.compose("logs", "--no-color", "--tail", str(tail), *names)
-        return scrub(done.stdout, read_env(self.env_file))
+        return scrub(done.stdout, self.secret_values())
 
     # -- the twin's own commands --------------------------------------------
 
