@@ -9,6 +9,13 @@ done for the same manifest and ontology file and `install`, which has just
 run, finds the twin at the version that load left it at. A store that was
 emptied or replaced is therefore loaded again without being asked. A failing
 step stops the build; nothing already done is undone.
+
+A live twin moves on by itself, so its version says nothing about the load:
+its history is loaded only while `install` finds no data written by sync, and
+its runs keep it in step afterwards. Before a load writes to a live twin, the
+scheduler is stopped and any sync job in progress is waited for, so the load
+is the only writer. Its last step, `sync`, starts the scheduler and one run,
+and passes only when that run synced every source.
 """
 
 from __future__ import annotations
@@ -25,25 +32,43 @@ from dta_core.log import Log
 from dta_core.manifest import Manifest, manifest_hash
 from dta_core.manifest.checks import evaluate_gates, subject_of
 
-from ..acceptance import Context, TwinApi, probe_health, service_url, smoke
+from ..acceptance import ApiUnavailable, Context, TwinApi, probe_health, service_url, smoke
 from ..envfile import read_env
 from ..output import command, emit, session
-from ..stack import API_SERVICE, STORE_SERVICE, UI_SERVICE, Stack
+from ..stack import API_SERVICE, SCHEDULER_SERVICE, STORE_SERVICE, UI_SERVICE, Stack
 from ..workspace import Workspace, now, sha256_file
 from .common import fail_check, gate_inputs, ontology_path, scrub_values
 from .env import write_example
 from .skill import rendered_hash, skill_dir, write_skill
+from .syncjobs import (
+    BUSY,
+    CLOCK_UNAVAILABLE,
+    HEALTH_PATH,
+    POLL_FIRST_S,
+    POLL_MAX_S,
+    ApiRefused,
+    clock_origin,
+    read_json,
+    run_summary,
+    start_run,
+    verdict,
+    wait_job,
+)
 
 log = Log("commands.build")
 
-STEPS = ("scaffold", "store", "install", "load", "api", "contract", "ui", "skill")
+STEPS = ("scaffold", "store", "install", "load", "api", "contract", "sync", "ui", "skill")
 # The only step whose earlier result may stand in for running it again.
 REUSABLE_STEPS = frozenset({"load"})
 BUILD_STAGE = 6
 LAST_REQUIRED_STAGE = 5
 RECORD_VERSION = 1
 INSTALL_TIMEOUT_S = 900.0
+# How long a load of a live twin waits for a sync job in progress to end.
+LOAD_WAIT_S = 600.0
 API = "/api/v1"
+LIVE_LOADED = "the twin already holds data; its runs keep it in step"
+RUNNING = "running"
 
 OK, FAILED, SKIPPED = "ok", "failed", "skipped"
 
@@ -102,7 +127,10 @@ class Build:
         self.record = read_record(workspace)
         self.start = start
         self.force = force
+        self.live = self.stack.plan.live
         self.install_head: dict[str, Any] | None = None
+        # What install said: sync has already written data to the twin.
+        self.install_loaded = False
         self.env: dict[str, str] = {}
         self.steps: dict[str, Callable[[], dict[str, Any]]] = {
             "scaffold": self.scaffold,
@@ -111,6 +139,7 @@ class Build:
             "load": self.load,
             "api": self.api,
             "contract": self.contract,
+            "sync": self.sync,
             "ui": self.ui,
             "skill": self.skill,
         }
@@ -129,6 +158,11 @@ class Build:
             return False, "asked to rerun from an earlier step"
         if name not in REUSABLE_STEPS:
             return False, "runs on every build"
+        if self.live:
+            # Runs move a live twin's head on, so only what install found can tell.
+            if self.install_loaded:
+                return True, LIVE_LOADED
+            return False, "the twin holds no data written by sync yet"
         entry = self.recorded(name)
         if entry is None:
             return False, "not recorded"
@@ -196,13 +230,61 @@ class Build:
             "seq": version.get("seq"),
             "t": version.get("t"),
         }
+        self.install_loaded = document.get("loaded") is True
         return {
             "actions": list(document.get("actions") or []),
             "version": self.install_head,
             "ontology_hash": document.get("ontology"),
+            "loaded": self.install_loaded,
         }
 
+    def _quiet_writers(self) -> dict[str, Any]:
+        """Stop what writes to a live twin so the load is its only writer.
+
+        The scheduler is stopped; if the API answers, the load waits until no
+        sync job is queued or running. On a first build neither exists yet.
+        """
+        started = time.perf_counter()
+        self.stack.stop(SCHEDULER_SERVICE)
+        found: dict[str, Any] = {"scheduler": "stopped", "api": None, "waited_for_job": None}
+        with TwinApi(self.manifest, self.env) as client:
+            pause = POLL_FIRST_S
+            while True:
+                try:
+                    response = client.get(HEALTH_PATH)
+                except ApiUnavailable:
+                    log.info("the API does not answer; no sync job can be in progress")
+                    found["api"] = "not answering"
+                    break
+                if response.status_code != 200:
+                    log.warn(
+                        "the API answered health with an error; no sync job can be seen",
+                        status=response.status_code,
+                    )
+                    found["api"] = f"answered {response.status_code}"
+                    break
+                found["api"] = "answering"
+                job = (response.json().get("sync") or {}).get("job")
+                if job is None:
+                    break
+                found["waited_for_job"] = job.get("id")
+                waited = time.perf_counter() - started
+                if waited >= LOAD_WAIT_S:
+                    log.error("a sync job is still in progress; the load is not started", job=job)
+                    raise StepFailed(
+                        f"a sync job is still {job.get('state')} after {LOAD_WAIT_S:g} s; the "
+                        "load would write beside it. Wait for it (dta sync status) and build again",
+                        {"job": job, "waited_s": round(waited, 1)},
+                    )
+                log.info("waiting for the sync job in progress before the load", job=job)
+                time.sleep(pause)
+                pause = min(pause * 2, POLL_MAX_S)
+        found["waited_ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+        log.info("the live twin has no other writer; the load may start", **found)
+        return found
+
     def load(self) -> dict[str, Any]:
+        writers = self._quiet_writers() if self.live else None
         report = self.stack.runtime("load", timeout=None)
         status = report.get("status")
         counts = {
@@ -226,6 +308,8 @@ class Build:
             sid: {k: v for k, v in (entry or {}).items() if k != "datasets"}
             for sid, entry in (report.get("sources") or {}).items()
         }
+        if writers is not None:
+            counts["writers"] = writers
         if status != "succeeded":
             raise StepFailed(f"the load run ended as {status}", counts)
         previous = self.recorded("load") or {}
@@ -299,6 +383,65 @@ class Build:
             raise StepFailed(
                 f"requirement(s) {', '.join(failing)} not answered as expected", detail
             )
+        return detail
+
+    def _clock_failed(self, clock: dict[str, Any], detail: dict[str, Any]) -> StepFailed:
+        origin = clock_origin(self.manifest)
+        log.error("the twin's clock cannot be read", clock=self.manifest.runtime.clock)
+        return StepFailed(
+            f"the twin's clock cannot be read; it is read from {origin} "
+            f"(runtime.clock: {self.manifest.runtime.clock})",
+            {**detail, "clock": clock, "clock_origin": origin},
+        )
+
+    def sync(self) -> dict[str, Any]:
+        if not self.live:
+            raise Skipped("contract.tier is static: the twin does not sync")
+        self.stack.up(SCHEDULER_SERVICE)
+        with TwinApi(self.manifest, self.env) as client:
+            try:
+                started = start_run(client, {})
+            except ApiRefused as exc:
+                busy = (exc.detail.get("job") or {}).get("id")
+                if exc.code != BUSY or not busy:
+                    raise
+                # Another kind of run (a replay, a run of some sources) holds the twin.
+                log.warn("another sync run is in progress; waiting for it, then asking again")
+                wait_job(client, busy)
+                started = start_run(client, {})
+            job = wait_job(client, started.job["id"])
+            found = verdict(job)
+            detail: dict[str, Any] = {
+                **run_summary(job),
+                "job_created": started.created,
+                "failing_sources": found.failing,
+            }
+            if found.code == CLOCK_UNAVAILABLE:
+                raise self._clock_failed({"available": False}, {**detail, "code": found.code})
+            if not found.ok:
+                log.error("the build's sync run did not sync every source", code=found.code)
+                raise StepFailed(str(found.message), {**detail, "code": found.code})
+            health = read_json(client, HEALTH_PATH)
+        clock = health.get("clock") or {}
+        state = health.get("sync") or {}
+        detail["clock"] = {"kind": clock.get("kind"), "available": clock.get("available")}
+        detail["freshness"] = {
+            "freshness_s": state.get("freshness_s"),
+            "staleness": state.get("staleness"),
+            "fresh": state.get("fresh"),
+        }
+        if not clock.get("available"):
+            raise self._clock_failed(detail["clock"], detail)
+        row = next((r for r in self.stack.services() if r["service"] == SCHEDULER_SERVICE), None)
+        detail["scheduler"] = {"state": row["state"] if row else None}
+        if row is None or row["state"] != RUNNING:
+            raise StepFailed("the scheduler is not running after it was started", detail)
+        log.info(
+            "the live twin is in step with its sources",
+            run=detail["run"],
+            versions_written=detail["versions_written"],
+            fresh=state.get("fresh"),
+        )
         return detail
 
     def ui(self) -> dict[str, Any]:
@@ -394,9 +537,12 @@ def _refuse_unless_ready(ctx: typer.Context, workspace: Workspace, manifest: Man
 def _text(outcomes: list[dict[str, Any]]) -> str:
     lines = []
     for entry in outcomes:
-        took = f"{entry['duration_ms'] / 1000:.1f} s" if entry.get("action") == "ran" else ""
+        if entry.get("action") == "ran":
+            note = f"{entry['duration_ms'] / 1000:.1f} s"
+        else:
+            note = str(entry.get("reason") or "")
         lines.append(
-            f"{entry['step']:<9} {entry['action']:<7} {entry['status']:<8} {took}".rstrip()
+            f"{entry['step']:<9} {entry['action']:<7} {entry['status']!s:<8} {note}".rstrip()
         )
     return "\n".join(lines)
 
@@ -428,11 +574,10 @@ def build(
         for name in STEPS:
             keep, why = run.reusable(name)
             if keep:
-                entry = run.recorded(name) or {}
+                # A live twin's load is left out on what install found, not on the record.
+                status = OK if run.live else (run.recorded(name) or {}).get("status")
                 log.info("build step not repeated", step=name, reason=why)
-                outcomes.append(
-                    {"step": name, "action": "reused", "status": entry.get("status"), "reason": why}
-                )
+                outcomes.append({"step": name, "action": "reused", "status": status, "reason": why})
                 continue
             try:
                 outcomes.append(run.run_step(name))
