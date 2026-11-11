@@ -81,6 +81,9 @@ _BOUNDED = (Kind.float, Kind.integer)
 _INTEGRAL_TOLERANCE = 1e-9
 _LAMBDA = "__dta_e"
 _EXAMPLES = 5
+# Up to this many events in a run, the stored ones are looked up by identity;
+# beyond it the whole type is read once, which is then the cheaper of the two.
+_EVENT_LOOKUP_MAX = 5000
 
 
 def _literal(text: str) -> str:
@@ -843,25 +846,53 @@ class _Mapper:
 
     # -- what is stored ---------------------------------------------------------
 
+    def _named(self, mappings: list[MappingPlan]) -> list[str] | None:
+        """The identities the run's rows of an event type name; None to read every stored one.
+
+        Events accumulate without end, and a run that reads on from a cursor
+        brings few of them. Only the stored events of the same identities are
+        then needed to tell which are new and which were corrected.
+        """
+        if not all(mapping.event for mapping in mappings):
+            return None
+        parts = [f"SELECT uid FROM __dta_m{mapping.index} WHERE NOT bad" for mapping in mappings]
+        found = self.session.rows(
+            "SELECT DISTINCT uid FROM ("
+            + " UNION ALL ".join(parts)
+            + f") LIMIT {_EVENT_LOOKUP_MAX + 1}"
+        )
+        if len(found) > _EVENT_LOOKUP_MAX:
+            return None
+        return [row[0] for row in found]
+
     def read_stored(self) -> None:
         """The head state of every type a mapping writes: one read per type."""
         names: dict[str, set[str]] = {}
         types: dict[str, ObjectType] = {}
+        writers: dict[str, list[MappingPlan]] = {}
         for mapping in self.active:
             types[mapping.object_type.name] = mapping.object_type
+            writers.setdefault(mapping.object_type.name, []).append(mapping)
             names.setdefault(mapping.object_type.name, set()).update(
                 prop.name for prop in mapping.properties
             )
         for position, (type_name, object_type) in enumerate(sorted(types.items())):
             fields = [f for f in object_type.fields if f.name in names[type_name]]
             started = time.perf_counter()
-            table = self.store.table(type_name, columns=[f.name for f in fields], at=self.head)
+            named = self._named(writers[type_name])
+            table = self.store.table(
+                type_name,
+                columns=[f.name for f in fields],
+                filter={UID_FIELD: named} if named is not None else None,
+                at=self.head,
+            )
             self.stored[type_name] = self.session.register(table)
             self.slots[type_name] = [Slot(index, f) for index, f in enumerate(fields)]
             log.debug(
                 "stored state read",
                 type=type_name,
                 objects=table.num_rows,
+                looked_up=len(named) if named is not None else None,
                 properties=len(fields),
                 position=position,
                 elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),

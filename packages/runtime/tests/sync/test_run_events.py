@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import pytest
 from dta_runtime.clock import FixedClock
 from dta_runtime.sync import Replay, ReplayUnsupported, SyncError
+from dta_runtime.sync import mapper as mapper_module
 from dta_runtime.twin import Twin
 from live_testkit import (
     LIVE,
@@ -224,6 +226,46 @@ def test_of_several_revisions_of_one_event_the_latest_stands(
     reading = twin.store.get("reading:R1")
     assert (reading.values["value"], reading.values["sequence"]) == (3.25, 3)
     assert report.sources["lab"].datasets["readings"].cursor == "3"
+
+
+@pytest.mark.parametrize(("lookup", "held", "looked_up"), [(5000, 1, 2), (0, 3, None)])
+def test_stored_events_are_looked_up_by_identity_when_a_run_brings_few(
+    sync_twin: MakeTwin,
+    tick: Tick,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    lookup: int,
+    held: int,
+    looked_up: int | None,
+):
+    # With the limit at nothing, every stored event is read, as when a run brings many.
+    monkeypatch.setattr(mapper_module, "_EVENT_LOOKUP_MAX", lookup)
+    rows = [("R1", "S7", at(5), 3.0, 1), ("R2", "S7", at(8), 3.5, 2), ("R3", "S7", at(12), 4.0, 3)]
+    _, folder, sources = lab(tmp_path, rows, cursor="rev")
+    twin = sync_twin(sources, sync=LIVE)
+    store = twin.store
+    clock = FixedClock(at(16))
+    tick(twin, clock)
+
+    folder.append("readings", [("R2", "S7", at(8), 3.75, 4), ("R4", "S7", at(20), 4.5, 5)])
+    clock.set(at(31))
+    caplog.set_level(logging.DEBUG, logger="dta")
+    report = tick(twin, clock)
+
+    (read,) = [
+        found.data
+        for found in caplog.records
+        if found.getMessage() == "stored state read" and found.data["type"] == "Reading"
+    ]
+    # Of the three stored events, only the one the run's rows name is read.
+    assert (read["objects"], read["looked_up"]) == (held, looked_up)
+    # Either way the correction and the new event are told apart from the rest.
+    assert (report.status, report.rows_written) == ("succeeded", 2)
+    assert changes_of(store, "reading:R2", "value") == [(at(15), 3.5), (at(30), 3.75)]
+    assert changes_of(store, "reading:R4", "value") == [(at(30), 4.5)]
+    assert changes_of(store, "reading:R1", "value") == [(at(15), 3.0)]
+    assert len(objects(store, "Reading")) == 4
 
 
 def test_a_replay_of_an_event_dataset_writes_only_what_differs(
