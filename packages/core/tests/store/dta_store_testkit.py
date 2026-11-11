@@ -3,10 +3,15 @@ evolving graph with its ground truth, and small helpers for raw SQL."""
 
 from __future__ import annotations
 
+import dataclasses
+import os
 import random
+import subprocess
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pymysql
@@ -63,6 +68,54 @@ def sql(connection: Any, statement: str, parameters: Any = None) -> tuple[tuple[
     with connection.cursor() as cursor:
         cursor.execute(statement, parameters)
         return cursor.fetchall()
+
+
+def database_state(settings: StoreSettings, branch: str = "main") -> dict[str, Any]:
+    """Head, working set and every row of every table of a branch, read behind the store."""
+    connection = raw_connection(settings, branch)
+    try:
+        state: dict[str, Any] = {
+            "head": sql(connection, "SELECT HASHOF('HEAD')")[0][0],
+            "status": sql(connection, "SELECT * FROM `dolt_status`"),
+            "commits": sql(connection, "SELECT COUNT(*) FROM `dolt_log`")[0][0],
+        }
+        for (table,) in sql(connection, "SHOW TABLES"):
+            state[table] = sql(connection, f"SELECT * FROM `{table}`")
+        return state
+    finally:
+        connection.close()
+
+
+def branch_names(settings: StoreSettings) -> list[str]:
+    connection = raw_connection(settings)
+    try:
+        return [name for (name,) in sql(connection, "SELECT `name` FROM `dolt_branches`")]
+    finally:
+        connection.close()
+
+
+def run_worker(*arguments: str, timeout: float = 120.0) -> subprocess.CompletedProcess[str]:
+    """Run `store_worker.py` in a process of its own, with the environment of the tests."""
+    script = Path(__file__).with_name("store_worker.py")
+    return subprocess.run(
+        [sys.executable, str(script), *arguments],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=dict(os.environ),
+        check=False,
+    )
+
+
+def start_worker(*arguments: str) -> subprocess.Popen[str]:
+    script = Path(__file__).with_name("store_worker.py")
+    return subprocess.Popen(
+        [sys.executable, str(script), *arguments],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=dict(os.environ),
+    )
 
 
 # -- ontologies ----------------------------------------------------------------
@@ -129,6 +182,47 @@ def water_ontology() -> Ontology:
             "TwinRunStatus": ("running", "succeeded", "failed"),
         },
         source="classes: {}\n",
+    )
+
+
+def water_ontology_v2() -> Ontology:
+    """The water network with additions only: a type, an optional property, an
+    enum value and a check that stored rows satisfy."""
+    base = water_ontology()
+    tank, junction = base.type("Tank"), base.type("Junction")
+    wider_tank = dataclasses.replace(
+        tank,
+        fields=(
+            *tank.fields,
+            Field("material", Kind.string),
+            Field("vent", Kind.ref, target="Valve"),
+        ),
+        checks=(*tank.checks, ("capacity_sane", "capacity < 1000000")),
+    )
+    wider_junction = dataclasses.replace(
+        junction,
+        fields=(*junction.fields, Field("pressure", Kind.float, role=Role.state, minimum=0)),
+    )
+    valve = ObjectType(
+        "Valve",
+        (
+            Field("name", Kind.string, required=True),
+            Field("setting", Kind.enum, target="ValveSetting"),
+            Field("on_pipe", Kind.ref, target="Pipe"),
+        ),
+    )
+    types = tuple(
+        {"Tank": wider_tank, "Junction": wider_junction}.get(t.name, t) for t in base.types
+    )
+    return Ontology(
+        types=(*types[:4], valve, types[4]),
+        abstract=base.abstract,
+        enums={
+            **base.enums,
+            "TankStatus": ("ok", "flooded", "low", "out of service"),
+            "ValveSetting": ("open", "closed"),
+        },
+        source="classes: {Valve: {}}\n",
     )
 
 
