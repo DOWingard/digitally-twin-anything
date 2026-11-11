@@ -1,0 +1,244 @@
+/* Plain, local styles: no external fonts or stylesheets, so the page works offline. */
+
+:root {
+  --ink: #1d232a;
+  --muted: #5d6873;
+  --line: #d9dee3;
+  --panel: #f6f8fa;
+  --accent: #0b62a4;
+  --warn-bg: #fff4d6;
+  --warn-ink: #6b4b00;
+  --error-bg: #fde8e8;
+  --error-ink: #8a1c1c;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  color: var(--ink);
+  background: #fff;
+}
+
+.page {
+  padding: 8px 16px 24px;
+}
+
+.header {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
+
+.twin-name {
+  font-size: 20px;
+  margin: 0;
+}
+
+.badge {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1px 8px;
+  color: var(--muted);
+}
+
+.head-label,
+.muted {
+  color: var(--muted);
+}
+
+.slider-label {
+  font-weight: 600;
+}
+
+.slider-box {
+  flex: 1 1 360px;
+  min-width: 260px;
+}
+
+.version-detail {
+  flex: 1 1 320px;
+}
+
+.version-id {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.newer {
+  color: var(--warn-ink);
+  font-weight: 600;
+}
+
+.button {
+  border: 1px solid var(--accent);
+  background: #fff;
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.problem {
+  background: var(--error-bg);
+  color: var(--error-ink);
+  border: 1px solid #f3b9b9;
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin: 6px 0;
+}
+
+.problem-code,
+.problem-trace code {
+  font-size: 12px;
+}
+
+.problem-detail,
+.problem-trace {
+  margin-top: 2px;
+}
+
+.note {
+  margin: 4px 0;
+  color: var(--muted);
+}
+
+.note.warn {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
+.graph-tab {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 360px;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.controls label,
+.filters label,
+.sheet-controls label {
+  display: block;
+  font-weight: 600;
+  margin: 8px 0 2px;
+}
+
+.controls input[type="number"] {
+  width: 100px;
+}
+
+.graph-view {
+  width: 100%;
+  height: 70vh;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.details {
+  max-height: 72vh;
+  overflow: auto;
+}
+
+.details h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 8px 2px 0;
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.status {
+  margin-top: 10px;
+}
+
+.table {
+  border-collapse: collapse;
+  margin: 4px 0 10px;
+}
+
+.table th,
+.table td {
+  border: 1px solid var(--line);
+  padding: 2px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  background: var(--panel);
+}
+
+.change.added {
+  color: #1b6e2a;
+}
+
+.change.removed {
+  color: var(--error-ink);
+}
+
+.sheet-controls {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.sheet-controls .dash-dropdown {
+  min-width: 280px;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 16px;
+  align-items: flex-end;
+  margin-bottom: 6px;
+}
+
+.filters .field {
+  min-width: 200px;
+}
+
+.filters input[type="text"] {
+  width: 200px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.history-tab h2 {
+  font-size: 16px;
+  margin: 16px 0 4px;
+}
+
+.fidelity {
+  margin-top: 8px;
+}

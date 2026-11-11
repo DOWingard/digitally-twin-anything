@@ -1,0 +1,15 @@
+name: dta-m3-ui-dev
+
+services:
+  dolt:
+    image: dolthub/dolt-sql-server:2.7.3
+    environment:
+      DOLT_ROOT_PASSWORD: ${DTA_STORE_PASSWORD:?DTA_STORE_PASSWORD is required}
+      DOLT_ROOT_HOST: "%"
+    ports:
+      - "127.0.0.1:${DTA_STORE_PORT:?DTA_STORE_PORT is required}:3306"
+    volumes:
+      - dolt-data:/var/lib/dolt
+
+volumes:
+  dolt-data: {}
