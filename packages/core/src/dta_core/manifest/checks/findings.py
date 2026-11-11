@@ -8,6 +8,7 @@ function with `@check(...)` in a module imported by this package.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -81,6 +82,7 @@ def check(
 
 def run_checks(manifest: Manifest) -> list[Finding]:
     """Run every registered check; findings sorted by path, then code."""
+    started = time.perf_counter()
     view = ManifestView(manifest)
     findings: list[Finding] = []
     for spec in CHECKS:
@@ -112,6 +114,7 @@ def run_checks(manifest: Manifest) -> list[Finding]:
         checks=len(CHECKS),
         errors=errors,
         warnings=len(findings) - errors,
+        elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
     )
     return findings
 

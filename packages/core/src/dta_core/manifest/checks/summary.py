@@ -8,6 +8,7 @@ same bytes and the summary can be hashed into a signature.
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -36,6 +37,7 @@ def read_ontology_types(path: Path) -> OntologyTypes:
     # Imported lazily: the LinkML runtime is slow to load and only the summary needs it.
     from linkml_runtime.utils.schemaview import SchemaView
 
+    started = time.perf_counter()
     try:
         classes = SchemaView(str(path)).all_classes(imports=False)
     except Exception as exc:
@@ -53,7 +55,13 @@ def read_ontology_types(path: Path) -> OntologyTypes:
         else:
             objects.append(str(name))
     types = OntologyTypes(objects=tuple(sorted(objects)), links=tuple(sorted(links)))
-    log.debug("ontology types read", path=str(path), objects=len(objects), links=len(links))
+    log.debug(
+        "ontology types read",
+        path=str(path),
+        objects=len(objects),
+        links=len(links),
+        elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+    )
     return types
 
 
