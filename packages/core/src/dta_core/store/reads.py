@@ -199,6 +199,18 @@ class Reads:
                     raise invalid("bad_filter", f"filter on {name}: compare with is_null instead")
                 clauses.append(f"{column} {_COMPARISONS[operator]} %s")
                 parameters.append(bind(value))
+            elif operator == "like":
+                # An SQL pattern: `%` stands for any run of characters, `_` for one.
+                textual = field is None or (
+                    field.kind in (Kind.string, Kind.enum, Kind.ref) and not field.multivalued
+                )
+                if not textual or not isinstance(value, str):
+                    raise invalid(
+                        "bad_filter",
+                        f"filter on {name}: 'like' takes a text pattern and a text property",
+                    )
+                clauses.append(f"{column} LIKE %s")
+                parameters.append(value)
             else:
                 raise invalid("bad_filter", f"unknown filter operator {operator!r}")
         if not clauses:
