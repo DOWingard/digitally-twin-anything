@@ -421,6 +421,7 @@ class _Mapper:
         active: Sequence[MappingPlan],
         alone: bool,
         accounted: Mapping[RelationKey, int],
+        resumed: Mapping[RelationKey, datetime],
     ) -> None:
         self.session = session
         self.plan = plan
@@ -433,6 +434,7 @@ class _Mapper:
         # Whether a source that cannot be mapped is left out and the others go on.
         self.alone = alone
         self.accounted = accounted
+        self.resumed = resumed
         self.problems: list[Problem] = []
         self.troubles: dict[str, Trouble] = {}
         self.failed: set[RelationKey] = set()
@@ -745,10 +747,14 @@ class _Mapper:
         bucket = (
             "CAST(0 AS BIGINT)" if interval_us is None else _bucket_sql("epoch_us(vt)", interval_us)
         )
+        # An interval read again from its start holds rows an earlier run took:
+        # they go into the interval's value once more, but are counted only once.
+        counted = self.resumed.get(key) if since is not None else None
+        fresh = taken if counted is None else f"{closed} AND vt > {_cursor_literal(counted)}"
         self.consumed[key] = [
             (int(tk), int(rows))
             for tk, rows in self.session.rows(
-                f"SELECT tk, count(*) FROM (SELECT {bucket} AS tk FROM {base} WHERE {taken}) "
+                f"SELECT tk, count(*) FROM (SELECT {bucket} AS tk FROM {base} WHERE {fresh}) "
                 "GROUP BY tk ORDER BY tk"
             )
         ]
@@ -758,9 +764,13 @@ class _Mapper:
             # that earlier runs took are known only by their number.
             read = self.reads.get(key)
             asked_after = read is not None and read.since is not None
-            late = (
-                found_behind if asked_after else max(0, found_behind - self.accounted.get(key, 0))
-            )
+            known = self.accounted.get(key, 0)
+            if counted is not None and not asked_after:
+                known -= self.session.scalar(
+                    f"SELECT count(*) FROM {base} WHERE vt > {_cursor_literal(since)} "
+                    f"AND vt <= {_cursor_literal(counted)}"
+                )
+            late = found_behind if asked_after else max(0, found_behind - known)
             if late:
                 self.late[key] = int(late)
                 log.warn(
@@ -1195,11 +1205,14 @@ def prepare(
     active: Sequence[MappingPlan] | None = None,
     alone: bool = False,
     accounted: Mapping[RelationKey, int] | None = None,
+    resumed: Mapping[RelationKey, datetime] | None = None,
 ) -> Prepared:
     """Map every dataset read and compare the result with the stored head state.
 
     `active` names the mappings to evaluate, by default all of the plan's.
     `accounted` gives, per dataset or view, the rows earlier runs took from it.
+    `resumed` gives, for a series whose cursor here is the start of an interval
+    that an earlier run had read part of, how far that run had read.
 
     Raises `sync.mapping_invalid`, with every problem found, when a view or a
     mapping cannot be evaluated against the data, or when two mappings claim
@@ -1220,6 +1233,7 @@ def prepare(
             plan.mappings if active is None else active,
             alone,
             accounted or {},
+            resumed or {},
         )
     except BaseException:
         session.close()
@@ -1237,10 +1251,11 @@ def _prepare(
     active: Sequence[MappingPlan],
     alone: bool,
     accounted: Mapping[RelationKey, int],
+    resumed: Mapping[RelationKey, datetime],
 ) -> Prepared:
     started = time.perf_counter()
     mapper = _Mapper(
-        session, plan, reads, store, head, stored_cursors, window, active, alone, accounted
+        session, plan, reads, store, head, stored_cursors, window, active, alone, accounted, resumed
     )
     mapper.register()
     for mapping in list(mapper.active):

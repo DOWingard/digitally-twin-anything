@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from dta_core.store import Store
 from dta_runtime.clock import FixedClock
 from dta_runtime.twin import Twin
@@ -20,6 +21,7 @@ from live_testkit import (
     readings_source,
     registry_source,
     stored,
+    viewed_levels_source,
 )
 from sync_testkit import changes_of, objects, sync_versions
 
@@ -128,9 +130,13 @@ def test_a_loaded_history_equals_the_same_data_arriving_run_by_run(
         tick(live, clock)
 
     assert (following.status, following.kind) == ("succeeded", "incremental")
-    # It read on from where the load had stopped.
+    # It read on from where the load had stopped: for the series, from the
+    # start of the interval the load's last reading lay in.
     asked = {read["dataset"]: read["since"] for read in connect.asked}
-    assert (asked["levels"], asked["readings"]) == (at(55), 3)
+    assert (asked["levels"], asked["readings"]) == (at(45), 3)
+    # The rows of that interval were read again, found equal, and counted once.
+    assert following.mappings["scada.levels"].rows_read == 4
+    assert stored(loaded.store, "TwinDataset", "twin_dataset:scada/levels")["rows_read"] == 11
     (version,) = loaded.store.versions(run=following.run)
     assert (version.t, version.extra) == (at(90), {})
     written = history(loaded.store)
@@ -141,18 +147,35 @@ def test_a_loaded_history_equals_the_same_data_arriving_run_by_run(
     assert following.sources["scada"].datasets["levels"].cursor == "2026-01-05T01:30:00Z"
 
 
-def test_a_run_after_a_load_that_ended_in_an_open_interval_is_not_recorded_behind_it(
-    sync_twin: MakeTwin, run: Callable[..., Any], tick: Tick, tmp_path: Path
+@pytest.mark.parametrize(
+    ("aggregation", "at_load", "wanted", "valid"),
+    [
+        ("last", 2.0, 3.0, at(55)),
+        ("mean", 2.0, 2.5, at(60)),
+        ("max", 2.0, 3.0, at(60)),
+        ("min", 2.0, 2.0, at(60)),
+    ],
+)
+def test_an_interval_a_load_found_open_is_completed_by_the_run_that_follows(
+    sync_twin: MakeTwin,
+    run: Callable[..., Any],
+    tick: Tick,
+    tmp_path: Path,
+    aggregation: str,
+    at_load: float,
+    wanted: float,
+    valid: datetime,
 ):
     scada, _, sources = plant(tmp_path)
     scada.write("levels", LEVELS, [("T1", at(5), 1.0), ("T1", at(50), 2.0)])
-    twin = sync_twin(sources, sync={"interval": 900, "backfill_interval": 900})
+    sync = {"interval": 900, "backfill_interval": 900, "aggregation": aggregation}
+    twin = sync_twin(sources, sync=sync)
     store = twin.store
     run(twin, Connecting())
     head = store.head()
     # A load has no clock: its last version is the end of the interval its
     # latest reading lies in, whether or not that interval has ended.
-    assert head.t == at(60)
+    assert (head.t, objects(store, "Tank")["node:T1"]["level"]) == (at(60), at_load)
 
     # The clock says that interval is still open.
     clock = FixedClock(at(52))
@@ -166,12 +189,45 @@ def test_a_run_after_a_load_that_ended_in_an_open_interval_is_not_recorded_behin
     # The rest of the interval arrives and the interval ends.
     scada.append("levels", [("T1", at(55), 3.0)])
     clock.set(at(61))
-    report = tick(twin, clock)
+    connect = Connecting()
+    report = tick(twin, clock, connect=connect)
 
+    # The interval is read again from its start, so its value comes from all
+    # of its rows and not only from those that arrived after the load.
+    asked = {read["dataset"]: read["since"] for read in connect.asked}
+    assert asked["levels"] == at(45)
     assert [v.t for v in store.versions(run=report.run)] == [at(60)]
-    assert objects(store, "Tank")["node:T1"]["level"] == 3.0
-    assert store.get("node:T1").provenance_of("level").t_valid == at(55)
+    assert objects(store, "Tank")["node:T1"]["level"] == wanted
+    assert store.get("node:T1").provenance_of("level").t_valid == valid
     assert report.sources["scada"].datasets["levels"].cursor == "2026-01-05T01:00:00Z"
+    # Each row is counted once, though one of them was read twice.
+    assert stored(store, "TwinDataset", "twin_dataset:scada/levels")["rows_read"] == 3
+    assert report.rows_late == 0
+
+
+def test_a_late_row_is_still_told_from_the_rows_of_an_interval_read_again(
+    sync_twin: MakeTwin, run: Callable[..., Any], tick: Tick, tmp_path: Path
+):
+    scada = Folder(tmp_path / "scada")
+    sources = {
+        "registry": registry_source(Folder(tmp_path / "registry")),
+        # Mapped through a view: the dataset is read whole every time.
+        "scada": viewed_levels_source(scada, [("T1", at(5), 1.0), ("T1", at(50), 2.0)]),
+    }
+    twin = sync_twin(sources, sync={"interval": 900, "backfill_interval": 900})
+    store = twin.store
+    run(twin, Connecting())
+
+    scada.append("levels", [("T1", at(7), 9.0), ("T1", at(55), 3.0)])
+    report = tick(twin, FixedClock(at(61)))
+
+    # The reading of 00:50 is read again with its interval; the one of 00:07 is late.
+    assert (report.status, report.rows_late) == ("succeeded", 1)
+    assert changes_of(store, "node:T1", "level") == [(at(15), 1.0), (at(60), 2.0), (at(60), 3.0)]
+    assert stored(store, "TwinDataset", "twin_dataset:scada/by_tank")["rows_read"] == 4
+
+    again = tick(twin, FixedClock(at(76)))
+    assert (again.rows_late, again.rows_written) == (0, 0)
 
 
 def test_a_load_still_reads_events_and_reports_as_before(

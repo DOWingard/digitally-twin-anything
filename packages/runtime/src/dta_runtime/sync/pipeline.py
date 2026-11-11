@@ -159,6 +159,8 @@ class _Run:
         self.read_sources: tuple[str, ...] = ()
         # Datasets and views read whole although a cursor is stored for them.
         self.whole: frozenset[RelationKey] = frozenset()
+        # Series read again from the start of an interval, with the cursor they had.
+        self.resumed: dict[RelationKey, datetime] = {}
         self.window = Window()
         self.reads: dict[RelationKey, DatasetRead] = {}
         self.prepared: Prepared | None = None
@@ -324,8 +326,34 @@ class _Run:
         return cursors
 
     def _reading_cursors(self) -> dict[RelationKey, Cursor]:
-        """The cursors the run reads on from: the stored ones, less what is replayed."""
-        return {key: found for key, found in self._known_cursors().items() if key not in self.whole}
+        """The cursors the run reads on from: the stored ones, less what is replayed.
+
+        A run that repeats takes whole intervals. A series last read to a time
+        inside an interval, by a load, which ends wherever its data ends, is
+        read again from the start of that interval: the interval's value then
+        comes from all of its rows, not from those that arrived since.
+        """
+        assert self.plan is not None
+        interval_us = self.plan.interval_us if self.recurring else None
+        cursors: dict[RelationKey, Cursor] = {}
+        for key, found in self._known_cursors().items():
+            if key in self.whole:
+                continue
+            if interval_us and isinstance(found, datetime) and self.plan.cursors[key].time:
+                inside = _micros(found) % interval_us
+                if inside:
+                    if key not in self.resumed:
+                        log.info(
+                            "a series was last read to a time inside an interval; "
+                            "the interval is read again from its start",
+                            source=key[0],
+                            dataset=key[1],
+                            cursor=iso_utc(found),
+                        )
+                    self.resumed[key] = found
+                    found = found - timedelta(microseconds=inside)
+            cursors[key] = found
+        return cursors
 
     def _extract(self) -> None:
         assert self.plan is not None
@@ -377,6 +405,7 @@ class _Run:
             active=self.active,
             alone=self.recurring,
             accounted={key: self.state.rows_read(key) for key in self.plan.cursors},
+            resumed=self.resumed,
         )
         for source_id, trouble in self.prepared.troubles.items():
             self.failing.setdefault(source_id, (trouble.code, trouble.message))
