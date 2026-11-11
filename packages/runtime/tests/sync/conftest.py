@@ -1,4 +1,5 @@
-"""Fixtures of the sync tests: twins whose manifest declares sources, and a way to load them."""
+"""Fixtures of the sync tests: twins whose manifest declares sources, a way to load them
+and a way to run them at the time a clock tells."""
 
 from __future__ import annotations
 
@@ -14,8 +15,10 @@ import pytest
 sys.path.append(str(Path(__file__).parent))
 
 from dta_core.log import trace  # noqa: E402
+from dta_runtime.clock import Clock  # noqa: E402
 from dta_runtime.settings import RuntimeSettings  # noqa: E402
-from dta_runtime.sync import LoadReport, load  # noqa: E402
+from dta_runtime.sync import LoadReport, RunReport, load  # noqa: E402
+from dta_runtime.sync import run as run_once  # noqa: E402
 from dta_runtime.twin import Bundle, Twin  # noqa: E402
 from sync_testkit import T0, TRACE, Sources, runtime_settings, water_manifest  # noqa: E402
 
@@ -55,5 +58,22 @@ def run(settings_of: Callable[[Twin], RuntimeSettings]) -> Callable[..., LoadRep
     def go(twin: Twin, sources: Sources, trace_id: str = TRACE) -> LoadReport:
         with trace(trace_id):
             return load(twin, settings_of(twin), {}, connect=sources)
+
+    return go
+
+
+@pytest.fixture
+def tick(settings_of: Callable[[Twin], RuntimeSettings]) -> Callable[..., RunReport]:
+    """One run of a live twin at the time its clock tells, under a fixed trace."""
+
+    def go(
+        twin: Twin,
+        clock: Clock,
+        trace_id: str = TRACE,
+        env: Mapping[str, str] | None = None,
+        **options: Any,
+    ) -> RunReport:
+        with trace(trace_id):
+            return run_once(twin, settings_of(twin), env or {}, clock, **options)
 
     return go

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import IO, Any
@@ -21,6 +22,7 @@ RULE_UID = "uid"
 RULE_TYPE = "type"
 RULE_VALID_TIME = "valid_time"
 RULE_DUPLICATE = "duplicate"
+RULE_RANGE = "range"
 
 # What is said about a broken rule. The store's own messages may quote the
 # offending value, so they are never copied into the file.
@@ -68,6 +70,8 @@ class Rejects:
         self._file: IO[str] | None = None
         self._started = False
         self.lines = 0
+        # Lines written, by the rule that was broken.
+        self.rules: Counter[str] = Counter()
 
     @property
     def written(self) -> bool:
@@ -117,6 +121,7 @@ class Rejects:
                 detail={"location": self.location},
             ) from exc
         self.lines += 1
+        self.rules[rule] += 1
 
     def add_violations(
         self,

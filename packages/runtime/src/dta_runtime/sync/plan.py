@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from graphlib import CycleError, TopologicalSorter
 from typing import Any
@@ -228,6 +228,9 @@ class MappingPlan:
     filter_sql: str | None
     # Columns of the dataset the mapping mentions anywhere.
     mentioned: frozenset[str]
+    # Column that only grows, from which a mapping of events reads on. Without
+    # it the dataset is read whole and compared with what is stored.
+    cursor: str | None = None
 
     @property
     def label(self) -> str:
@@ -239,11 +242,37 @@ class MappingPlan:
 
     @property
     def timeseries(self) -> bool:
+        """Rows carry the time they were true at: a state series or events."""
         return self.valid_time is not None
+
+    @property
+    def event(self) -> bool:
+        """Rows are things that happened, one object each, keyed by identity."""
+        return self.valid_time is not None and self.object_type.event
+
+    @property
+    def state(self) -> bool:
+        """Rows are successive values of properties that hold the latest one."""
+        return self.valid_time is not None and not self.object_type.event
+
+    @property
+    def cursor_column(self) -> str | None:
+        """Column whose stored value the mapping reads on from; None reads everything."""
+        return self.valid_time if self.state else self.cursor
 
     @property
     def key(self) -> RelationKey:
         return (self.source_id, self.relation)
+
+
+@dataclass(frozen=True)
+class CursorPlan:
+    """How far a dataset or view has been read, and by which column."""
+
+    column: str
+    # The column is the valid time of a state series. The cursor is then a
+    # point in time; another cursor is whatever the column holds.
+    time: bool
 
 
 @dataclass(frozen=True)
@@ -285,13 +314,17 @@ class Plan:
     # In an order in which each can be created.
     views: tuple[ViewPlan, ...]
     datasets: tuple[DatasetPlan, ...]
-    # Width of a backfill interval in microseconds; None loads everything as one version.
+    # Width of an interval in microseconds; None loads everything as one version.
     interval_us: int | None
     aggregation: str
+    # Planned for a run that repeats rather than for a load of existing history.
+    recurring: bool = False
+    # Dataset or view -> the cursor kept for it, for everything not read whole each time.
+    cursors: Mapping[RelationKey, CursorPlan] = field(default_factory=dict)
 
     @property
     def kind(self) -> str:
-        return BACKFILL if self.interval_us else INCREMENTAL
+        return BACKFILL if self.interval_us and not self.recurring else INCREMENTAL
 
     def source_ids(self) -> tuple[str, ...]:
         """Sources the run reads, in the order their datasets are read."""
@@ -300,9 +333,33 @@ class Plan:
             seen.setdefault(dataset.source_id)
         return tuple(seen)
 
-    def series_relations(self) -> dict[RelationKey, str]:
-        """Dataset or view -> its valid-time column, for everything read as a time series."""
+    def valid_times(self) -> dict[RelationKey, str]:
+        """Dataset or view -> its valid-time column, for everything read with one."""
         return {m.key: m.valid_time for m in self.mappings if m.valid_time is not None}
+
+    def view(self, key: RelationKey) -> ViewPlan | None:
+        return next((view for view in self.views if view.key == key), None)
+
+    def depends_on(self, mapping: MappingPlan) -> frozenset[RelationKey]:
+        """Every dataset and view a mapping reads, directly or through views."""
+        found: set[RelationKey] = set()
+        pending = [mapping.key]
+        while pending:
+            key = pending.pop()
+            if key in found:
+                continue
+            found.add(key)
+            view = self.view(key)
+            if view is not None:
+                pending.extend(view.references)
+        return frozenset(found)
+
+    def needed(self, mappings: Iterable[MappingPlan]) -> frozenset[RelationKey]:
+        """Every dataset and view that evaluating `mappings` takes."""
+        found: set[RelationKey] = set()
+        for mapping in mappings:
+            found |= self.depends_on(mapping)
+        return frozenset(found)
 
 
 class _Builder:
@@ -318,17 +375,28 @@ class _Builder:
 
     # -- sync settings --------------------------------------------------------
 
-    def interval(self) -> int | None:
-        width = self.sync.backfill_interval if self.sync else None
+    def interval(self, recurring: bool) -> int | None:
+        """Width of the intervals versions are written in.
+
+        A load of existing history takes `sync.backfill_interval` and writes
+        one version when there is none. A run that repeats takes
+        `sync.interval`, without which it cannot tell which interval has ended.
+        """
+        name = "sync.interval" if recurring else "sync.backfill_interval"
+        width = None
+        if self.sync is not None:
+            width = self.sync.interval if recurring else self.sync.backfill_interval
         if width is None:
+            if recurring:
+                self.problem(name, "a run that repeats needs the time between two runs")
             return None
         micros = width // timedelta(microseconds=1)
         if micros <= 0:
-            self.problem("sync.backfill_interval", "must be longer than zero")
+            self.problem(name, "must be longer than zero")
             return None
         if micros % 1000:
             # Version times keep milliseconds; a finer interval could not be told apart.
-            self.problem("sync.backfill_interval", "must be a whole number of milliseconds")
+            self.problem(name, "must be a whole number of milliseconds")
             return None
         return micros
 
@@ -451,6 +519,7 @@ class _Builder:
                 filter_sql = f"(\n{spec.filter}\n)"
             except SqlProblem as exc:
                 self.problem(f"{where}.filter", str(exc))
+        cursor = None
         if spec.valid_time is None:
             if spec.cursor:
                 log.warn(
@@ -459,7 +528,12 @@ class _Builder:
                 )
         else:
             mentioned.add(spec.valid_time)
-            if spec.cursor and spec.cursor != spec.valid_time:
+            if spec.cursor and object_type is not None and object_type.event:
+                # Events are compared by identity, so they may be read on by any
+                # column that only grows: a revision, the time of the last change.
+                cursor = spec.cursor
+                mentioned.add(spec.cursor)
+            elif spec.cursor and spec.cursor != spec.valid_time:
                 self.problem(
                     f"{where}.cursor",
                     "must be the valid_time column: reading a time series by another "
@@ -489,6 +563,7 @@ class _Builder:
             snapshot=spec.mode == "snapshot",
             filter_sql=filter_sql,
             mentioned=frozenset(mentioned),
+            cursor=cursor,
         )
 
     def mappings(self) -> list[MappingPlan]:
@@ -525,6 +600,32 @@ class _Builder:
                     f"the time-series mappings of {relation} name different valid_time "
                     f"columns ({', '.join(sorted(columns))}); a dataset is read up to one time",
                 )
+        return planned
+
+    def cursors(self, mappings: list[MappingPlan]) -> dict[RelationKey, CursorPlan]:
+        """The one cursor kept for each dataset or view that is not read whole every time."""
+        columns: dict[RelationKey, dict[str, bool]] = {}
+        for mapping in mappings:
+            if mapping.cursor_column is not None:
+                found = columns.setdefault(mapping.key, {})
+                found[mapping.cursor_column] = found.get(mapping.cursor_column, False) or (
+                    mapping.state
+                )
+        planned = {}
+        for key, found in columns.items():
+            if len(found) > 1:
+                times = {m.valid_time for m in mappings if m.key == key and m.timeseries}
+                # Mappings that name different valid_time columns are reported
+                # as such; this is the case that is left.
+                if len(times) == 1:
+                    self.problem(
+                        f"sources.{key[0]}",
+                        f"the mappings of {key[1]} read on from different columns "
+                        f"({', '.join(sorted(found))}); a dataset is read up to one cursor",
+                    )
+                continue
+            ((column, time),) = found.items()
+            planned[key] = CursorPlan(column, time)
         return planned
 
     # -- views ----------------------------------------------------------------
@@ -597,11 +698,11 @@ class _Builder:
         planned = []
         for key in sorted({*direct, *under_views}, key=lambda k: (order[k[0]], k[1])):
             readers = direct.get(key, [])
-            times = {mapping.valid_time for mapping in readers}
+            columns = {mapping.cursor_column for mapping in readers}
             # A view may need rows a time series has already passed, so a dataset
             # under a view is always read whole.
-            incremental = key not in under_views and len(times) == 1 and None not in times
-            planned.append(DatasetPlan(key[0], key[1], times.pop() if incremental else None))
+            incremental = key not in under_views and len(columns) == 1 and None not in columns
+            planned.append(DatasetPlan(key[0], key[1], columns.pop() if incremental else None))
         return planned
 
     def check_names(self, datasets: list[DatasetPlan], mappings: list[MappingPlan]) -> None:
@@ -620,12 +721,17 @@ class _Builder:
                 )
 
 
-def build_plan(manifest: Manifest, ontology: Ontology) -> Plan:
-    """What a run reads, maps and writes; raises with every problem of the manifest."""
+def build_plan(manifest: Manifest, ontology: Ontology, *, recurring: bool = False) -> Plan:
+    """What a run reads, maps and writes; raises with every problem of the manifest.
+
+    `recurring` plans a run that repeats, in intervals of `sync.interval`,
+    rather than a load of existing history.
+    """
     with SqlInspector() as sql:
         builder = _Builder(manifest, ontology, sql)
-        interval_us = builder.interval()
+        interval_us = builder.interval(recurring)
         mappings = builder.mappings()
+        cursors = builder.cursors(mappings)
         views = builder.views(mappings)
         datasets = builder.datasets(mappings, views)
         builder.check_names(datasets, mappings)
@@ -643,8 +749,18 @@ def build_plan(manifest: Manifest, ontology: Ontology) -> Plan:
         datasets=[f"{dataset.source_id}.{dataset.name}" for dataset in datasets],
         interval_us=interval_us,
         aggregation=aggregation,
+        recurring=recurring,
+        cursors={f"{key[0]}.{key[1]}": cursor.column for key, cursor in cursors.items()},
     )
-    return Plan(tuple(mappings), tuple(views), tuple(datasets), interval_us, aggregation)
+    return Plan(
+        tuple(mappings),
+        tuple(views),
+        tuple(datasets),
+        interval_us,
+        aggregation,
+        recurring=recurring,
+        cursors=cursors,
+    )
 
 
 def unmapped_columns(plan: Plan, columns: Mapping[RelationKey, Iterable[str]]) -> list[str]:

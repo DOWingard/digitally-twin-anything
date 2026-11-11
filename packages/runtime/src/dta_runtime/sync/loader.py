@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -88,12 +88,13 @@ def _whole_ms(moment: datetime) -> datetime:
 def version_time(prepared: Prepared, head_t: datetime, key: int | None) -> datetime:
     """The time of the version that takes an interval, given the head it is written on.
 
-    With a backfill interval it is the end of the interval; otherwise the
-    latest valid time read. Data older than the head is recorded at the
-    head's time and keeps its own valid time.
+    When versions are written in intervals it is the end of the interval;
+    otherwise the latest valid time read. Data older than the head is recorded
+    at the head's time and keeps its own valid time: a version's time never
+    goes back.
     """
     interval_us = prepared.plan.interval_us
-    latest = max(prepared.cursors.values(), default=None)
+    latest = max(prepared.latest.values(), default=None)
     if key is not None and prepared.timed:
         moment = EPOCH + timedelta(microseconds=key)
     elif latest is None:
@@ -117,6 +118,7 @@ class Loader:
         rejects: Rejects,
         records: Records,
         must_record: bool,
+        extra: Mapping[str, Any] | None = None,
     ) -> None:
         self.store = store
         self.prepared = prepared
@@ -128,7 +130,8 @@ class Loader:
         # Whether a version is due even when no data is left to write: a cursor
         # moved, or an interrupted run is waiting to be recorded.
         self.must_record = must_record
-        self.extra = {"backfill": True} if self.plan.interval_us else {}
+        # Kept with every version of the run, such as the mark of a load of history.
+        self.extra = dict(extra or {})
         self.versions: list[VersionRef] = []
         self.rows_written = 0
         # Rows of the version being attempted, for the run's own record of itself.
@@ -187,7 +190,7 @@ class Loader:
                             value = json.loads(value)
                         draft.values[name] = value
                         draft.origin[name] = (origin[row], valid[row])
-                        if self._mapping(origin[row]).timeseries:
+                        if self._mapping(origin[row]).state:
                             draft.series[name] = slot.index
                     drafts[uid] = draft
                 bucket.rows[type_name] = drafts
@@ -349,6 +352,13 @@ class Loader:
     def _committed(self, bucket: Bucket, version: VersionRef) -> None:
         self.head = version
         self.versions.append(version)
+        log.debug(
+            "version written",
+            run=self.run_uid,
+            seq=version.seq,
+            t=version.t.isoformat(),
+            rows=bucket.size(),
+        )
         for drafts in bucket.rows.values():
             self.rows_written += len(drafts)
             for draft in drafts.values():
@@ -465,7 +475,7 @@ class Loader:
         }
         if named and all(violation.property in draft.origin for violation in found):
             return named
-        readings = {index for index in everyone if self._mapping(index).timeseries}
+        readings = {index for index in everyone if self._mapping(index).state}
         if readings and readings != everyone:
             return named | readings
         return everyone
@@ -539,9 +549,7 @@ class Loader:
                     draft.series.pop(name, None)
                     contributing = {mapping for mapping, _ in draft.origin.values()}
                     draft.mappings = [
-                        m
-                        for m in draft.mappings
-                        if m in contributing or not self._mapping(m).timeseries
+                        m for m in draft.mappings if m in contributing or not self._mapping(m).state
                     ]
                     if not draft.mappings:
                         del drafts[uid]
@@ -557,21 +565,11 @@ class Loader:
 
     # -- the run ------------------------------------------------------------------
 
-    def _closing_key(self) -> int | None:
-        """The interval of the latest reading, which the run's last version stands for.
-
-        A run ends at the time its data reaches, whether or not the last
-        readings changed anything, so the twin's time does not depend on that.
-        """
-        interval_us = self.plan.interval_us
-        latest = max(self.prepared.cursors.values(), default=None)
-        if latest is None or interval_us is None or not self.prepared.timed:
-            return None
-        return bucket_end_us((latest - EPOCH) // timedelta(microseconds=1), interval_us)
-
     def run(self) -> None:
         keys: list[int | None] = list(self.prepared.keys)
-        closing = self._closing_key()
+        # A run ends at the time it reaches, whether or not the last readings
+        # changed anything, so the twin's time does not depend on that.
+        closing = self.prepared.last_key
         if closing is not None and (not keys or keys[-1] < closing):
             keys.append(closing)
         elif not keys and self.must_record:

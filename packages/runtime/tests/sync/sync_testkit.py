@@ -15,10 +15,13 @@ from typing import Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
+import pytest
 from dta_core.manifest.models import Source
 from dta_core.sources import BATCH_ROWS, Connector, SourceUnavailable, UnknownDataset
 from dta_core.store import Store, StoreSettings
 from dta_runtime.settings import RuntimeSettings
+from dta_runtime.sync import loader as loader_module
+from dta_runtime.twin import Twin
 
 T0 = datetime(2026, 1, 5, tzinfo=UTC)
 MINUTE = timedelta(minutes=1)
@@ -135,6 +138,28 @@ class Sources:
 
     def mend(self, source_id: str) -> None:
         self.connectors[source_id].fail = None
+
+
+class Flaky:
+    """Stands between the pipeline and `store.commit`, failing chosen calls."""
+
+    def __init__(self, twin: Twin, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.real = twin.store.commit
+        self.calls = 0
+        # call number -> ("before" | "after", the error to raise)
+        self.plan: dict[int, tuple[str, BaseException]] = {}
+        monkeypatch.setattr(twin.store, "commit", self)
+        monkeypatch.setattr(loader_module, "_BACKOFF_S", 0.0)
+
+    def __call__(self, changes: Any, meta: Any) -> Any:
+        self.calls += 1
+        when, error = self.plan.get(self.calls, ("", None))
+        if when == "before" and error is not None:
+            raise error
+        version = self.real(changes, meta)
+        if when == "after" and error is not None:
+            raise error
+        return version
 
 
 def table(rows: Sequence[Mapping[str, Any]], **types: pa.DataType) -> pa.Table:
