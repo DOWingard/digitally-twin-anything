@@ -141,7 +141,8 @@ def read_objects(
         parts.append(part)
     table = parts[0] if len(parts) == 1 else pa.concat_tables(parts, promote_options="permissive")
     if by_uid:
-        if len(parts) > 1:
+        # The store orders rows only when it is given a limit.
+        if len(parts) > 1 or fetch is None:
             table = table.take(pc.sort_indices(table, sort_keys=[(UID_FIELD, "ascending")]))
         next_position = None
         if limit is not None and table.num_rows > limit:

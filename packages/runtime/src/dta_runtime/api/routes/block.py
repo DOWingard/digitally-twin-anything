@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from dta_core.schema import UID_FIELD
 from dta_core.store import LIVE_BRANCH, UnknownProperty, UnknownType
 from fastapi import APIRouter, Path, Query, Request
@@ -167,7 +168,10 @@ def edges(
         ontology=ontology,
     )
     following = None
-    if per_page is not None and table.num_rows > per_page:
+    if per_page is None:
+        # The store orders rows only when it is given a limit.
+        table = table.take(pc.sort_indices(table, sort_keys=[(UID_FIELD, "ascending")]))
+    elif table.num_rows > per_page:
         table = table.slice(0, per_page)
         following = table.column(UID_FIELD)[-1].as_py()
     count = table.num_rows
