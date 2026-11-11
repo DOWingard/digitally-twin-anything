@@ -160,6 +160,7 @@ classes:
       curve:
         range: PumpCurvePoint
         multivalued: true
+        inlined_as_list: true
         description: Head delivered at each flow rate.
       speed:
         range: float

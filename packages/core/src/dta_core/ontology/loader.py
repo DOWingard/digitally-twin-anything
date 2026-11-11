@@ -455,6 +455,18 @@ class _Analysis:
     def _descendants(self, name: str) -> set[str]:
         return {c for c, chain in self.chain.items() if name in chain}
 
+    def _inlined(self, slot: SlotDefinition) -> bool:
+        """Whether a slot's class range is stored inline as JSON instead of by uid.
+
+        Only a declared `inlined`/`inlined_as_list` counts. LinkML also inlines a
+        class merely because it lacks an identifier; following it would turn a
+        forgotten uid into a silently missing table.
+        """
+        if slot.inlined or slot.inlined_as_list:
+            return True
+        target = str(slot.range)
+        return self.has_identifier.get(target, False) and self.view.is_inlined(slot)
+
     def _value_types(self) -> set[str]:
         """Classes that only ever appear inlined inside another object's property.
 
@@ -468,7 +480,7 @@ class _Analysis:
             for slot in slots:
                 target = str(slot.range) if slot.range else None
                 if target in self.classes:
-                    (inlined if self.view.is_inlined(slot) else referenced).add(target)
+                    (inlined if self._inlined(slot) else referenced).add(target)
         result = set()
         for name in self.classes:
             if name in self.mixins or self.has_identifier[name] or name in referenced:
@@ -528,7 +540,7 @@ class _Analysis:
         if target in self.classes:
             if str(self.classes[target].class_uri or "") in _ANY_URIS:
                 return None, None, f"range {target!r} (linkml:Any) is not supported"
-            if self.view.is_inlined(slot):
+            if self._inlined(slot):
                 return Kind.json, None, None
             return Kind.ref, target, None
         if target in self.custom_types:
@@ -600,7 +612,8 @@ class _Analysis:
                     "reference.target",
                     where,
                     name,
-                    f"{target} has no uid identifier and cannot be referenced",
+                    f"{target} has no uid identifier: give it one to refer to it, or declare "
+                    "this slot inlined: true to store it as a JSON value",
                 )
                 ok = False
             elif target in self.abstract and not self.abstract[target]:
