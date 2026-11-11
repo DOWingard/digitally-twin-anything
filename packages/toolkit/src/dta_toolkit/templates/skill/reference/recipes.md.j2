@@ -46,10 +46,18 @@ health = get("/meta/health").json()
 version = health["head"]["id"]            # pin this for everything that follows
 schema = get("/meta/schema", at=version).json()
 for t in schema["types"]:
-    print(t["name"], "link" if t.get("link") else "object", [p["name"] for p in t["properties"]])
+    if t["meta"]:
+        continue                          # the twin's own records: sync runs, sources, the manifest
+    print(t["name"], t["kind"], [(p["name"], p["kind"], p["unit"]) for p in t["properties"]])
+print([e["name"] for e in schema["edge_types"]])   # the names `edge_types` parameters accept
 ```
 
-The schema gives, per type: whether it is an object or a link type, its ancestors, for a link its two ends, and for each property its kind, unit, description, whether it is required, and its role (`static`: fixed; `state`: changes with time).
+The schema gives:
+
+- `types`: per type its `kind` (`object` or `link`), its `ancestors`, for a link its two ends (`link.source_type`, `link.target_type`), a `description`, and per property its `kind`, `unit`, `description`, whether it is `required` or `multivalued`, the type it refers to (`target`), and its `role` (`static`: fixed; `state`: changes with time).
+- `abstract`: abstract classes and the concrete types under each.
+- `edge_types`: everything that connects two objects, each with the types at its two ends.
+- `enums`: the allowed values of enumerated properties.
 
 ## 2. Read objects
 
