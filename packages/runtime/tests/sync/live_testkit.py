@@ -316,6 +316,89 @@ def readings_source(
     )
 
 
+# -- telemetry in long form, mapped through views ---------------------------------------
+
+SIGNALS = ("signal", "asset", "quantity")
+TELEMETRY = ("signal", "ts", "value")
+# Which instrument measures what: the register the views join the readings with.
+REGISTER = [
+    ("L1", "T1", "level"),
+    ("L2", "T2", "level"),
+    ("P1", "J1", "pressure"),
+    ("D1", "J1", "demand"),
+    ("P2", "J2", "pressure"),
+    ("D2", "J2", "demand"),
+]
+# A join with a register that is read whole.
+TANK_LEVELS = (
+    'SELECT s.asset AS tank, r.ts, r.value AS level FROM "telemetry"."readings" r '
+    'JOIN "registry"."signals" s ON s.signal = r.signal WHERE s.quantity = \'level\''
+)
+# Several quantities of one time turned into one row.
+JUNCTION_STATE = (
+    "SELECT s.asset AS junction, r.ts, "
+    "max(r.value) FILTER (WHERE s.quantity = 'pressure') AS pressure, "
+    "max(r.value) FILTER (WHERE s.quantity = 'demand') AS demand "
+    'FROM "telemetry"."readings" r JOIN "registry"."signals" s ON s.signal = r.signal '
+    "WHERE s.quantity IN ('pressure', 'demand') GROUP BY s.asset, r.ts"
+)
+TANK_LEVEL_MAPPING = {
+    "dataset": "tank_levels",
+    "object_type": "Tank",
+    "identity": ["tank"],
+    "valid_time": "ts",
+    "properties": columns("level"),
+}
+JUNCTION_STATE_MAPPING = {
+    "dataset": "junction_state",
+    "object_type": "Junction",
+    "identity": ["junction"],
+    "valid_time": "ts",
+    "properties": columns("pressure", "demand"),
+}
+
+
+def register_signals(
+    registry: dict[str, Any], folder: Folder, rows: Sequence[Sequence[Any]] = REGISTER
+) -> dict[str, Any]:
+    """Adds the register of instruments to a registry source; no mapping reads it itself."""
+    folder.write("signals", SIGNALS, rows)
+    registry["options"]["datasets"]["signals"] = {
+        "glob": "signals.csv",
+        "format": "csv",
+        "types": {"signal": "string", "asset": "string", "quantity": "string"},
+    }
+    return registry
+
+
+def telemetry_source(
+    folder: Folder,
+    rows: Sequence[Sequence[Any]] = (),
+    *,
+    declared: bool,
+    mappings: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Readings of every instrument in one dataset, mapped through two views over it.
+
+    `declared` has the manifest say that the dataset is read on by its time.
+    """
+    folder.write("readings", TELEMETRY, rows)
+    document = csv_source(
+        folder,
+        {"readings": {"signal": "string", "ts": TIME, "value": "double"}},
+        mappings or {"levels": TANK_LEVEL_MAPPING, "junctions": JUNCTION_STATE_MAPPING},
+        views={"tank_levels": TANK_LEVELS, "junction_state": JUNCTION_STATE},
+    )
+    if declared:
+        document["incremental"] = {"readings": "ts"}
+    return document
+
+
+def asked_of(connect: Connecting, dataset: str) -> list[Any]:
+    """The `since` of every read of a dataset, in the order they were made."""
+    return [read["since"] for read in connect.asked if read["dataset"] == dataset]
+
+
 # -- what a twin holds ---------------------------------------------------------------
 
 

@@ -763,10 +763,10 @@ class _Mapper:
         ]
         if since is not None:
             # A dataset asked only for rows after its cursor returned these all the
-            # same. One read whole holds every row it ever had: there the rows
-            # that earlier runs took are known only by their number.
+            # same. One read whole, or from further back, also holds rows that
+            # earlier runs took: there they are known only by their number.
             read = self.reads.get(key)
-            asked_after = read is not None and read.since is not None
+            asked_after = read is not None and read.since is not None and read.since == since
             known = self.accounted.get(key, 0)
             if counted is not None and not asked_after:
                 known -= self.session.scalar(

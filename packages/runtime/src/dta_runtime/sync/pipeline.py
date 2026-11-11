@@ -43,7 +43,15 @@ from .errors import (
 from .extract import Connect, DatasetRead, SourceFailure, extract, required_env
 from .loader import Loader, version_time
 from .mapper import Prepared, Window, prepare
-from .plan import MappingPlan, Plan, RelationKey, build_plan, dataset_uid, unmapped_columns
+from .plan import (
+    DatasetPlan,
+    MappingPlan,
+    Plan,
+    RelationKey,
+    build_plan,
+    dataset_uid,
+    unmapped_columns,
+)
 from .records import (
     ACTOR,
     DATASET_TYPE,
@@ -161,6 +169,8 @@ class _Run:
         self.whole: frozenset[RelationKey] = frozenset()
         # Series read again from the start of an interval, with the cursor they had.
         self.resumed: dict[RelationKey, datetime] = {}
+        # Series whose cursor was reached by another valid-time column than they name now.
+        self.recolumned: set[RelationKey] = set()
         self.window = Window()
         self.reads: dict[RelationKey, DatasetRead] = {}
         self.prepared: Prepared | None = None
@@ -319,6 +329,7 @@ class _Run:
                     was=stored,
                     now=planned.column,
                 )
+                self.recolumned.add(key)
             if planned.time and not isinstance(found, datetime):
                 continue
             cursors[key] = found
@@ -355,18 +366,61 @@ class _Run:
             cursors[key] = found
         return cursors
 
+    def _since(self) -> tuple[dict[RelationKey, Cursor], dict[RelationKey, str]]:
+        """Where each dataset that is read on is read from, and why one of them is not.
+
+        A dataset read by its own time series is read on from their cursor. One
+        the manifest declares as read on is taken through views as well, each
+        with a cursor of its own: it is read from the least of the cursors of
+        what its rows are taken through in this run, so that none of them
+        misses a row. Until each of those has a cursor it is read whole.
+        """
+        assert self.plan is not None
+        reading = self._reading_cursors()
+        engaged = {mapping.key for mapping in self.active}
+        since: dict[RelationKey, Cursor] = {}
+        whole: dict[RelationKey, str] = {}
+        for dataset in self.plan.datasets:
+            if dataset.cursor_column is None:
+                continue
+            if not dataset.decided_by:
+                if dataset.key in reading:
+                    since[dataset.key] = reading[dataset.key]
+                continue
+            deciding = [key for key in dataset.decided_by if key in engaged]
+            unread = [key for key in deciding if not isinstance(reading.get(key), datetime)]
+            # A cursor kept from another column was reached by other times: the
+            # rows after it by the new column are not known to be all there is.
+            moved = [key for key in deciding if key in self.recolumned and key not in unread]
+            if unread:
+                names = ", ".join(f"{key[0]}.{key[1]}" for key in unread)
+                whole[dataset.key] = f"nothing has been taken through {names} yet"
+            elif moved:
+                names = ", ".join(f"{key[0]}.{key[1]}" for key in moved)
+                whole[dataset.key] = f"the valid-time column of {names} changed"
+            elif deciding:
+                since[dataset.key] = min(reading[key] for key in deciding)
+        log.debug(
+            "where the datasets read on are read from",
+            since={f"{key[0]}.{key[1]}": cursor_text(found) for key, found in since.items()},
+            whole={f"{key[0]}.{key[1]}": reason for key, reason in whole.items()},
+        )
+        return since, whole
+
     def _extract(self) -> None:
         assert self.plan is not None
         started = time.perf_counter()
+        since, whole = self._since()
         try:
             extraction = extract(
                 self.plan,
                 self.sources,
                 self.env,
                 self._connector(),
-                self._reading_cursors(),
+                since,
                 wanted=self.plan.needed(self.active),
                 alone=self.recurring,
+                whole=whole,
             )
         except SourceFailure as failure:
             where = failure.source_id + (f".{failure.dataset}" if failure.dataset else "")
@@ -673,24 +727,47 @@ class _Run:
         self._proposed = (len(self.loader.versions), proposed)
         return {DATASET_TYPE: rows}
 
+    @staticmethod
+    def _least(dataset: DatasetPlan, cursors: Mapping[RelationKey, Cursor]) -> datetime | None:
+        """How far a dataset the manifest declares as read on has been read: as far
+        as the least of the series its rows are taken through. None while one of
+        them has no cursor, when the next read is of the whole."""
+        found = [cursors.get(key) for key in dataset.decided_by]
+        times = [cursor for cursor in found if isinstance(cursor, datetime)]
+        if not times or len(times) != len(found):
+            return None
+        return min(times)
+
     def _final(self, t: datetime) -> dict[str, list[dict[str, Any]]]:
         assert self.prepared is not None and self.state is not None and self.loader is not None
         plan = self.prepared.plan
         recorded = {mapping.key for mapping in self.prepared.active if mapping.timeseries}
+        # The record of a dataset read on beneath views names the column it is
+        # read by. How far it has been read stays on the records of what it is
+        # taken through: a cursor on its own record is what a series reading
+        # the dataset itself goes on from, and one that begins later has to be
+        # given every row.
+        read_on = {
+            dataset.key: dataset.cursor_column for dataset in plan.datasets if dataset.decided_by
+        }
         datasets = []
         for key, rows in self.prepared.relation_rows.items():
             if key[0] in self.left_out or not (key in self.reads or key in recorded):
                 continue
             planned = plan.cursors.get(key)
             series = planned is not None and planned.time
+            column = planned.column if planned is not None else read_on.get(key)
             datasets.append(
                 dataset_row(
                     self.state,
                     key,
-                    cursor_column=planned.column if planned is not None else None,
+                    cursor_column=column,
                     cursor=None,
-                    # A state series counts each row once, when it is taken; what
-                    # is read whole every time counts every read.
+                    # Read whole again after it had been declared as read on.
+                    forget_column=column is None,
+                    # A state series counts each row once, when it is taken. Anything
+                    # else counts what every read of it returned: all of it when
+                    # read whole, the rows since the last read when read on.
                     rows_read=self._taken(key, None, True) if series else rows,
                     read_at=t,
                 )
@@ -885,7 +962,10 @@ class _Run:
         failure = self.failing.get(source_id)
         if failure is not None:
             found.error = {"code": failure[0], "message": failure[1]}
-        known = [dataset.key for dataset in self.plan.datasets if dataset.source_id == source_id]
+        datasets = {
+            dataset.key: dataset for dataset in self.plan.datasets if dataset.source_id == source_id
+        }
+        known = list(datasets)
         known += [
             view.key
             for view in self.plan.views
@@ -893,7 +973,12 @@ class _Run:
         ]
         for key in known:
             planned = self.plan.cursors.get(key)
+            column = planned.column if planned is not None else None
             cursor = cursors.get(key)
+            dataset = datasets.get(key)
+            if planned is None and dataset is not None and dataset.decided_by:
+                # Read on beneath views: as far as the least of what reads it.
+                column, cursor = dataset.cursor_column, self._least(dataset, cursors)
             rows = 0
             if key in self.reads:
                 rows = self.reads[key].table.num_rows
@@ -902,7 +987,7 @@ class _Run:
                 rows = self.prepared.relation_rows.get(key, 0)
             found.datasets[key[1]] = DatasetRun(
                 rows_read=rows,
-                cursor_column=planned.column if planned is not None else None,
+                cursor_column=column,
                 cursor=cursor_text(cursor) if cursor is not None else None,
             )
         # As the record of the source holds it once the run is written: a

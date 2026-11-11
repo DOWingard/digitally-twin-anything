@@ -191,10 +191,13 @@ def dataset_row(
     cursor: Cursor | None,
     rows_read: int | None = None,
     read_at: datetime | None = None,
+    forget_column: bool = False,
 ) -> dict[str, Any]:
     """The row of one dataset or view. Fields left out keep what is stored.
 
     `rows_read` is what the run adds to the rows counted so far.
+    `forget_column` clears a stored cursor column that no cursor was ever kept
+    under: what is read whole, with nothing to go on from, names none.
     """
     uid = dataset_uid(*key)
     row: dict[str, Any] = {"uid": uid}
@@ -202,8 +205,11 @@ def dataset_row(
     if stored is None:
         row["source"] = source_uid(key[0])
         row["name"] = key[1]
-    if cursor_column is not None and (stored or {}).get("cursor_column") != cursor_column:
-        row["cursor_column"] = cursor_column
+    if cursor_column is not None:
+        if (stored or {}).get("cursor_column") != cursor_column:
+            row["cursor_column"] = cursor_column
+    elif forget_column and stored and stored.get("cursor_column") and not stored.get("cursor"):
+        row["cursor_column"] = None
     if cursor is not None:
         row["cursor"] = cursor_text(cursor)
     if rows_read is not None:

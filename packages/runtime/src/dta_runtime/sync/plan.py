@@ -299,9 +299,14 @@ class ViewPlan:
 class DatasetPlan:
     source_id: str
     name: str
-    # Set when every reader of the dataset is a time series over this column, so
-    # that a later run can ask the source for newer rows only.
+    # Set when a later run can ask the source for newer rows only: every reader
+    # of the dataset is a time series over this column, or the manifest declares
+    # the dataset as read on by it.
     cursor_column: str | None = None
+    # For a dataset the manifest declares as read on: the datasets and views
+    # its state series read. How far the least of them has been read is how
+    # far the dataset has. Empty for a dataset that is read on from its own cursor.
+    decided_by: tuple[RelationKey, ...] = ()
 
     @property
     def key(self) -> RelationKey:
@@ -687,6 +692,88 @@ class _Builder:
 
     # -- datasets -------------------------------------------------------------
 
+    def _read_on(
+        self,
+        mappings: list[MappingPlan],
+        views: list[ViewPlan],
+        read: set[RelationKey],
+        complete: bool,
+    ) -> dict[RelationKey, tuple[str, tuple[RelationKey, ...]]]:
+        """The datasets the manifest declares as read on: their column, and what decides how far.
+
+        The declaration is the author's word that a view over the dataset needs
+        no row older than the ones it is given. It can be kept only by state
+        series, which take rows after a point in time and nothing else; any
+        other reader is refused here rather than handed a part of the dataset.
+        """
+        by_key = {view.key: view for view in views}
+
+        def reads(mapping: MappingPlan) -> set[RelationKey]:
+            found: set[RelationKey] = set()
+            pending = [mapping.key]
+            while pending:
+                key = pending.pop()
+                if key not in found:
+                    found.add(key)
+                    pending.extend(by_key[key].references if key in by_key else ())
+            return found
+
+        through = {mapping.index: reads(mapping) for mapping in mappings}
+        declared: dict[RelationKey, tuple[str, tuple[RelationKey, ...]]] = {}
+        for source_id, source in self.sources.items():
+            for name, column in (source.incremental or {}).items():
+                key = (source_id, name)
+                where = f"sources.{source_id}.incremental.{name}"
+                before = len(self.problems)
+                if name in (source.views or {}):
+                    self.problem(
+                        where,
+                        f"{name} is a view; only a dataset the source holds can be read on. "
+                        "Declare the datasets the view reads instead",
+                    )
+                    continue
+                if not column:
+                    self.problem(where, "names no column holding the time of the dataset's rows")
+                    continue
+                if key not in read:
+                    # A mapping that could not be planned may be the one that reads it.
+                    if complete:
+                        self.problem(
+                            where,
+                            f"no mapping reads {name}, directly or through a view; map it or "
+                            "remove the declaration",
+                        )
+                    continue
+                readers = [mapping for mapping in mappings if key in through[mapping.index]]
+                for mapping in readers:
+                    via = "" if mapping.key == key else f" through the view {mapping.relation}"
+                    if mapping.event:
+                        self.problem(
+                            where,
+                            f"{mapping.label} maps events from {name}{via}: an event is found "
+                            "again by its identity among all rows of its dataset, so the dataset "
+                            "cannot be read on by time. Give the events a dataset of their own, "
+                            "read on by the mapping's cursor, or remove the declaration",
+                        )
+                    elif not mapping.state:
+                        self.problem(
+                            where,
+                            f"{mapping.label} is a static mapping that reads {name}{via}: it "
+                            "compares everything the source holds with what is stored, and "
+                            "would take the rows that were not read for removed. Map it from a "
+                            "dataset that is read whole, or remove the declaration",
+                        )
+                    elif mapping.key == key and mapping.valid_time != column:
+                        self.problem(
+                            where,
+                            f"{mapping.label} reads {name} by its valid_time "
+                            f"{mapping.valid_time}, but the dataset is declared as read on by "
+                            f"{column}; name the same column in both",
+                        )
+                if len(self.problems) == before:
+                    declared[key] = (column, tuple(sorted({m.key for m in readers})))
+        return declared
+
     def datasets(self, mappings: list[MappingPlan], views: list[ViewPlan]) -> list[DatasetPlan]:
         view_keys = {view.key for view in views}
         under_views = {ref for view in views for ref in view.references if ref not in view_keys}
@@ -694,13 +781,21 @@ class _Builder:
         for mapping in mappings:
             if not mapping.is_view:
                 direct.setdefault(mapping.key, []).append(mapping)
+        specified = sum(len(source.mappings or {}) for source in self.sources.values())
+        declared = self._read_on(
+            mappings, views, {*direct, *under_views}, complete=len(mappings) == specified
+        )
         order = {source_id: position for position, source_id in enumerate(self.sources)}
         planned = []
         for key in sorted({*direct, *under_views}, key=lambda k: (order[k[0]], k[1])):
+            if key in declared:
+                column, decided_by = declared[key]
+                planned.append(DatasetPlan(key[0], key[1], column, decided_by))
+                continue
             readers = direct.get(key, [])
             columns = {mapping.cursor_column for mapping in readers}
             # A view may need rows a time series has already passed, so a dataset
-            # under a view is always read whole.
+            # under a view is read whole unless the manifest says it need not be.
             incremental = key not in under_views and len(columns) == 1 and None not in columns
             planned.append(DatasetPlan(key[0], key[1], columns.pop() if incremental else None))
         return planned
@@ -751,6 +846,11 @@ def build_plan(manifest: Manifest, ontology: Ontology, *, recurring: bool = Fals
         aggregation=aggregation,
         recurring=recurring,
         cursors={f"{key[0]}.{key[1]}": cursor.column for key, cursor in cursors.items()},
+        read_on={
+            f"{dataset.source_id}.{dataset.name}": dataset.cursor_column
+            for dataset in datasets
+            if dataset.cursor_column is not None
+        },
     )
     return Plan(
         tuple(mappings),
