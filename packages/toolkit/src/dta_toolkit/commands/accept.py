@@ -17,10 +17,17 @@ from dta_core.manifest.checks import evaluate_gates, subject_of
 from dta_core.ontology import OntologyError, load_ontology
 
 from ..acceptance import DEFAULT_EXAMPLES, DEFAULT_SEED, render_markdown, run_checks
-from ..envfile import read_env
 from ..output import command, emit, session
+from ..stack import Stack
 from ..workspace import now
-from .common import fail_check, gate_inputs, ontology_path, scrub_values, timed
+from .common import (
+    fail_check,
+    gate_inputs,
+    ontology_path,
+    require_complete_env,
+    scrub_values,
+    timed,
+)
 from .skill import rendered_hash, skill_dir
 
 log = Log("commands.accept")
@@ -82,7 +89,7 @@ def accept(
         raise CheckFailed(
             f"the ontology file cannot be used: {exc.message}", code="ontology.unusable"
         ) from exc
-    values = read_env(workspace.env_path)
+    values = require_complete_env(Stack(workspace, manifest))
     with timed(log, "acceptance", examples=examples, seed=seed):
         run = run_checks(
             manifest,
