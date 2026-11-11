@@ -109,7 +109,34 @@ def gaps(manifest: Manifest) -> list[FieldState]:
     return [state for state in required_fields(manifest) if state.status in OPEN]
 
 
+def _value_at(manifest: Manifest, path: str) -> Any:
+    """The value a dotted path names, through models and keyed collections; None if absent."""
+    node: Any = manifest
+    for part in path.split("."):
+        if isinstance(node, BaseModel):
+            if part not in type(node).model_fields:
+                return None
+            node = getattr(node, part)
+        elif isinstance(node, dict):
+            if part not in node:
+                return None
+            node = node[part]
+        else:
+            return None
+    return node
+
+
 def stale_status_entries(manifest: Manifest) -> list[str]:
-    """Paths in `field_status` that no longer point at a required field with a value."""
+    """Paths in `field_status` that no longer point at anything.
+
+    An entry is live when it names a required field that has a value, or when
+    it marks as derived a value the toolkit computed: such a value need not be
+    a required field (a source's profile, a refresh period on a static twin).
+    """
     live = {state.path for state in required_fields(manifest) if state.status != Status.unknown}
-    return sorted(path for path in manifest.field_status if path not in live)
+    return sorted(
+        path
+        for path, status in manifest.field_status.items()
+        if path not in live
+        and not (status == Status.derived and not _is_empty(_value_at(manifest, path)))
+    )

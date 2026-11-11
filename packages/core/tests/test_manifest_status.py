@@ -111,3 +111,31 @@ def test_round_trip_and_hashes():
         manifest, ["sources.a", "contract"]
     )
     assert subtree_hash(changed, ["sync"]) != subtree_hash(manifest, ["sync"])
+
+
+def test_a_derived_entry_on_a_computed_value_is_not_stale():
+    """A computed value need not be a required field: its entry stays while it has a value."""
+    data = _draft()
+    data["sources"] = {
+        "plant": {
+            "connector": "file",
+            "location": "file:///data",
+            "refresh_period": "PT5M",
+            "profile": {"profiled_at": "2026-03-02T00:00:00+00:00", "datasets": {}},
+        },
+        "empty": {"connector": "file", "location": "file:///other"},
+    }
+    data["field_status"] = {
+        "sources.plant.profile": "derived",
+        "sources.plant.refresh_period": "derived",
+        "sources.empty.profile": "derived",  # no value: nothing to describe
+        "sources.gone.profile": "derived",  # no such source
+        "sources.plant.nothing": "derived",  # no such field
+        "sources.plant.profile.datasets": "confirmed",  # only a derived entry is kept this way
+    }
+    assert stale_status_entries(parse_manifest(data)) == [
+        "sources.empty.profile",
+        "sources.gone.profile",
+        "sources.plant.nothing",
+        "sources.plant.profile.datasets",
+    ]
