@@ -636,6 +636,12 @@ def build_plan(manifest: Manifest, ontology: Ontology) -> Plan:
         )
         raise plan_error(builder.problems)
     aggregation = manifest.sync.aggregation if manifest.sync else "last"
+    if manifest.sync is not None and manifest.sync.max_batch_rows is not None:
+        # A version is one transaction; splitting it would show half an interval.
+        log.warn(
+            "sync.max_batch_rows is not used: each version is written whole",
+            max_batch_rows=manifest.sync.max_batch_rows,
+        )
     log.debug(
         "plan made",
         mappings=[mapping.label for mapping in mappings],
