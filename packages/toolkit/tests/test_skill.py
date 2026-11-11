@@ -96,6 +96,27 @@ def test_questions_come_in_priority_order_with_what_was_agreed():
     assert row.count(" | ") == 5
 
 
+def test_each_question_says_how_its_answer_is_defined():
+    document = manifest(
+        functions={
+            "f_low": {
+                "description": "Objects whose property was below a threshold.",
+                "kind": "builtin",
+                "entry": "below",
+                "params": {"threshold": 20, "property": "Tank.level"},
+            }
+        }
+    )
+    document.contract.questions["q_first"].function = "f_low"
+    body = render(document).files[SKILL_FILE]
+    assert (
+        "- `q_first`: Objects whose property was below a threshold "
+        "(property = Tank.level, threshold = 20)" in body
+    )
+    assert "- `q_late`:" not in body  # no function, nothing claimed about its method
+    assert "How each answer is defined" not in render(manifest()).files[SKILL_FILE]
+
+
 def test_the_marker_records_what_the_skill_was_rendered_from():
     document = manifest()
     skill = render(document)

@@ -86,15 +86,28 @@ def _tolerance(question: Any) -> str | None:
     return f"{metric} ≤ {tolerance.value:g}{unit}"
 
 
+def _method(function: Any) -> str | None:
+    """How a question's answer is defined: the function's description and its settings."""
+    if function is None or not function.description:
+        return None
+    text = _one_line(function.description, 300).rstrip(". ")
+    settings = ", ".join(
+        f"{key} = {value}" for key, value in sorted((function.params or {}).items())
+    )
+    return f"{text} ({settings})" if settings else text
+
+
 def _context(manifest: Manifest, manifest_hash: str) -> dict[str, Any]:
     twin, contract = manifest.twin, manifest.contract
     if twin is None or not twin.id:
         raise SkillError("the manifest names no twin id")
     if contract is None or not contract.purpose or contract.tier is None:
         raise SkillError("the manifest's contract has no purpose or tier")
+    functions = manifest.functions or {}
     questions = [
         {
             "id": qid,
+            "method": _method(functions.get(question.function) if question.function else None),
             # A vertical bar would end the table cell the text is shown in.
             "text": _one_line(question.text, 400).replace("|", "\\|"),
             "kind": question.kind.value if question.kind is not None else None,

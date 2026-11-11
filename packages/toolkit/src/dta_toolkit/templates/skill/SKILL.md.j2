@@ -42,6 +42,14 @@ The questions it was built to answer, each with the accuracy agreed for it:
 {% endfor %}
 {% endif %}
 
+{% if questions | selectattr("method") | list %}
+How each answer is defined. Compute it from the twin's data exactly as stated, with the settings given; do not substitute your own definition or thresholds:
+
+{% for q in questions if q.method %}
+- `{{ q.id }}`: {{ q.method }}
+{% endfor %}
+
+{% endif %}
 - Inside the contract: the questions above. Their answers are held to the stated tolerance.
 - Outside the contract: anything else you compute from the twin's data. The data is real and you may use it, but say plainly that no accuracy was agreed for the result.
 - The fidelity state in `/meta/health` says whether the twin currently keeps its promises:
