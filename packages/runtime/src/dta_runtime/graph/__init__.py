@@ -9,7 +9,7 @@ rustworkx and cached by version.
 from .edges import DIRECTIONS, EDGE_SCHEMA, NODE_SCHEMA, EdgeKind, edge_kinds, select_kinds
 from .local import LINK_SCHEMA, links, resolve_types
 from .local import neighbourhood as local_neighbourhood
-from .queries import MAX_SEARCH_NODES, edge_weights, shortest_paths
+from .queries import MAX_SEARCH_NODES, MAX_SEARCH_WALKS, edge_weights, shortest_paths
 from .queries import neighbourhood as cached_neighbourhood
 from .result import BadWeight, GraphError, Neighbourhood, Path, SearchTooBroad
 from .snapshot import GraphCache, GraphSnapshot, build_snapshot
@@ -23,6 +23,7 @@ __all__ = [
     "LINK_SCHEMA",
     "LOCAL_DEPTH",
     "MAX_SEARCH_NODES",
+    "MAX_SEARCH_WALKS",
     "NODE_SCHEMA",
     "BadWeight",
     "EdgeKind",

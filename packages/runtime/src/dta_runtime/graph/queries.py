@@ -29,6 +29,9 @@ log = Log("graph.query")
 
 # Largest subgraph in which simple paths are enumerated.
 MAX_SEARCH_NODES = 5_000
+# Most walks between the two ends a path search may face; simple paths are
+# among the walks, so this bounds what the enumeration can produce.
+MAX_SEARCH_WALKS = 200_000
 _REVERSE = {"out": "in", "in": "out", "both": "both"}
 
 
@@ -42,6 +45,21 @@ def _distances(graph: rx.PyDiGraph | rx.PyGraph, starts: Sequence[int], limit: i
             break
         found[np.asarray(layer, dtype=np.int64)] = level
     return found
+
+
+def _walks(graph: rx.PyDiGraph | rx.PyGraph, start: int, end: int, hops: int) -> float:
+    """Walks of at most `hops` edges from start to end, an upper bound on the simple paths."""
+    pairs = np.asarray(graph.edge_list(), dtype=np.int64).reshape(-1, 2)
+    tails, heads = pairs[:, 0], pairs[:, 1]
+    if isinstance(graph, rx.PyGraph):
+        tails, heads = np.concatenate([tails, heads]), np.concatenate([heads, tails])
+    counts = np.zeros(graph.num_nodes(), dtype=np.float64)
+    counts[start] = 1.0
+    total = 0.0
+    for _ in range(hops):
+        counts = np.bincount(heads, weights=counts[tails], minlength=graph.num_nodes())
+        total += float(counts[end])
+    return total
 
 
 def neighbourhood(
@@ -155,7 +173,8 @@ def edge_weights(
             rows = np.nonzero(snapshot.type_codes == code)[0]
             table = store.table(kind.holder, columns=[name], at=at, ontology=ontology)
             position = pc.index_in(
-                link_uids.take(pa.array(rows, pa.int64())), value_set=table.column("uid")
+                link_uids.take(pa.array(rows, pa.int64())),
+                value_set=table.column("uid").combine_chunks(),
             )
             values = table.column(name).cast(pa.float64()).take(position)
             found = values.to_numpy(zero_copy_only=False).astype(np.float64)
@@ -244,6 +263,20 @@ def shortest_paths(
         sub = forward.graph.subgraph(allowed.tolist())
         original = sub.nodes()
         position = {node: index for index, node in enumerate(original)}
+        walks = _walks(sub, position[s], position[t], hops)
+        if walks > MAX_SEARCH_WALKS:
+            log.warn(
+                "path search refused: too many walks between the two objects",
+                version=snapshot.version.id,
+                walks=walks,
+                max_walks=MAX_SEARCH_WALKS,
+                hops=hops,
+            )
+            raise SearchTooBroad(
+                f"about {walks:.0f} walks of up to {hops} hops join the two objects, more "
+                f"than {MAX_SEARCH_WALKS}; lower max_depth or name edge_types",
+                detail={"walks": walks, "max_walks": MAX_SEARCH_WALKS},
+            )
         for path in rx.all_simple_paths(sub, position[s], position[t], cutoff=hops + 1):
             found.add(tuple(original[index] for index in path))
         if weights is None and len(found) >= k:
