@@ -390,6 +390,31 @@ def test_a_table_read_takes_columns_filters_and_paging(store: Store):
     assert store.count("Tank", filter={"status": []}) == 0
     assert store.count("Tank", at="#0") == 0
 
+    # A uid is looked up across every type in one read.
+    store.commit(
+        changes({"Junction": [{"uid": "node:j1", "name": "J1", "elevation": 3.0}]}), meta(t=at(2))
+    )
+
+    def found(pattern: str, **more) -> list[tuple[str, str]]:
+        table = store.find(pattern, **more)
+        assert table.schema.names == ["uid", "type"]
+        return [(row["uid"], row["type"]) for row in table.to_pylist()]
+
+    assert found("node:%") == [
+        ("node:j1", "Junction"),
+        ("node:t1", "Tank"),
+        ("node:t2", "Tank"),
+        ("node:t3", "Tank"),
+        ("node:t4", "Tank"),
+    ]
+    assert found("node:t_", limit=2, offset=1) == [("node:t2", "Tank"), ("node:t3", "Tank")]
+    assert found("%1") == [("node:j1", "Junction"), ("node:t1", "Tank")]
+    assert found("%1", types=["Tank"]) == [("node:t1", "Tank")]
+    assert found("%1", types=[]) == []
+    assert found("node:j1", at="#1") == []
+    assert found("nobody%") == []
+    assert found("' OR '1'='1") == []
+
     with_prov = store.table("Tank", columns=["level"], prov=True, limit=1)
     assert with_prov.schema.names == ["uid", "level", "_prov"]
     assert '"k":"observed"' in with_prov.column("_prov").to_pylist()[0]
@@ -416,6 +441,9 @@ def test_a_table_read_takes_columns_filters_and_paging(store: Store):
         (lambda: store.table("Tank", order_by=["level"]), "store.bad_order"),
         (lambda: store.table("Tank", order_by=[("tags", "asc")]), "store.bad_order"),
         (lambda: store.count("Reservoir"), "store.unknown_type"),
+        (lambda: store.find(5), "store.bad_filter"),
+        (lambda: store.find("node:%", limit=-1), "store.bad_filter"),
+        (lambda: store.find("node:%", types="Tank"), "store.bad_filter"),
         (lambda: store.count("Tank", filter={"depth": 1}), "store.unknown_property"),
     ]:
         with pytest.raises((InvalidInput, UnknownType, UnknownProperty)) as caught:
