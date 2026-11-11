@@ -120,7 +120,7 @@ def test_each_run_writes_the_interval_that_just_ended(
     json.dumps(third.as_dict())
 
 
-def test_the_report_is_what_the_brief_of_a_run_asks_for(
+def test_the_report_of_a_run_says_how_it_went_source_by_source(
     sync_twin: MakeTwin, tick: Tick, tmp_path: Path
 ):
     registry, _, sources, sync = plant(tmp_path, [("T1", at(5), 1.0)])
