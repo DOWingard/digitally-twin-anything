@@ -10,7 +10,7 @@ INVALID = "ontology.invalid"
 UNREADABLE = "ontology.unreadable"
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True)
 class Problem:
     """One way in which an ontology file breaks the conventions.
 

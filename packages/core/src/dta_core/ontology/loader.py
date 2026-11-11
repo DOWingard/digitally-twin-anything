@@ -114,7 +114,7 @@ def load_ontology(path: str | Path) -> Ontology:
     except (OSError, UnicodeDecodeError) as exc:
         log.error("ontology file cannot be read", exc=exc, path=str(path))
         raise OntologyError(
-            f"cannot read {path}", code=UNREADABLE, detail={"path": str(path), "reason": str(exc)}
+            f"cannot read {path}", code=UNREADABLE, detail={"origin": str(path), "reason": str(exc)}
         ) from exc
     parsed = parse_ontology(text, origin=str(path))
     ontology = parsed.ontology
@@ -182,7 +182,8 @@ def _read_yaml(text: str, origin: str) -> dict[str, Any]:
 
 
 @cache
-def _meta_model_text() -> str:
+def meta_model_text() -> str:
+    """The shared meta-model's LinkML text, read once per process."""
     return META_MODEL_PATH.read_text(encoding="utf-8")
 
 
@@ -190,7 +191,7 @@ def _meta_model() -> dict[str, Any]:
     """A fresh copy of the meta-model with every slot's range spelled out, so its
     meaning does not depend on the domain file's `default_range`."""
     try:
-        meta = yaml.safe_load(_meta_model_text())
+        meta = yaml.safe_load(meta_model_text())
     except (OSError, yaml.YAMLError) as exc:
         log.error("meta-model cannot be read", exc=exc, path=str(META_MODEL_PATH))
         raise OntologyError(
@@ -402,7 +403,7 @@ class _Analysis:
         self.view = view
         self.meta_classes = meta_classes
         self.default_range = default_range
-        self._problems: dict[tuple, Problem] = {}
+        self._problems: dict[Problem, None] = {}  # insertion-ordered set
         self.classes = {str(name): c for name, c in view.all_classes().items()}
         self.enums = {str(name): e for name, e in view.all_enums().items()}
         self.custom_types = {str(name) for name in view.all_types(imports=False)}
@@ -435,11 +436,10 @@ class _Analysis:
     # -- bookkeeping
 
     def _add(self, rule: str, cls: str | None, slot: str | None, message: str) -> None:
-        problem = Problem(rule, cls, slot, message)
-        self._problems.setdefault((rule, cls, slot, message), problem)
+        self._problems.setdefault(Problem(rule, cls, slot, message))
 
     def problems(self) -> list[Problem]:
-        return list(self._problems.values())
+        return list(self._problems)
 
     def _is_a_chain(self, name: str) -> tuple[str, ...]:
         chain: list[str] = []

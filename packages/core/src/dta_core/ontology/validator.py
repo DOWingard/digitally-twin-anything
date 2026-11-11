@@ -30,7 +30,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from ..log import Log
 from ..schema import UID_FIELD, UID_MAX_LENGTH, ObjectType, Ontology, Violation
 from .errors import OntologyError
-from .loader import META_MODEL_PATH, parse_ontology
+from .loader import meta_model_text, parse_ontology
 
 log = Log("ontology.validator")
 
@@ -297,7 +297,7 @@ def cache_key(ontology: Ontology) -> str:
     document = {
         "format": _FORMAT,
         "ontology": ontology.hash,
-        "meta": hashlib.sha256(META_MODEL_PATH.read_bytes()).hexdigest(),
+        "meta": hashlib.sha256(meta_model_text().encode("utf-8")).hexdigest(),
         "linkml": _version("linkml"),
         "pydantic": _version("pydantic"),
     }
