@@ -142,6 +142,10 @@ def mapping_columns(view: ManifestView) -> Iterator[Issue]:
             base = f"sources.{sid}.mappings.{mid}"
             if mapping.dataset is None:
                 continue
+            if mapping.dataset in (source.views or {}):
+                # A view's columns exist only once its query has run: the profile
+                # measures what the source holds, and the load checks the view.
+                continue
             dataset = datasets.get(mapping.dataset)
             if dataset is None:
                 yield Issue(

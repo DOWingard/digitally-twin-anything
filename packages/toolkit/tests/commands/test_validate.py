@@ -160,6 +160,16 @@ def test_complete_sample_passes_validate_complete(workspace, complete):
     assert workspace.gate("design")["result"] == "passed"
 
 
+def test_a_mapping_may_read_a_view_the_profile_does_not_hold(workspace, complete):
+    """A profile measures what the source holds; a view exists only once its query has run."""
+    put("sources.pumps.views", {"pump_log": 'SELECT * FROM "pumps"."pump_events"'})(complete)
+    put("sources.pumps.mappings.pumps.dataset", "pump_log")(complete)
+    workspace.write_manifest(complete)
+    code, document = workspace.json("manifest", "validate")
+    assert code == 0, document
+    assert document["result"]["findings"] == []
+
+
 def test_every_registered_check_has_a_case():
     assert {case[1] for case in CASES} == {spec.code for spec in CHECKS}
 
