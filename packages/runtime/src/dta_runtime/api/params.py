@@ -63,6 +63,17 @@ EdgeTypes = Annotated[
         "`Type.property` for references; all if absent"
     ),
 ]
+EdgeWhere = Annotated[
+    list[str] | None,
+    Query(
+        description="Follow only the links that pass, repeated: `<LinkType>.<property>:<op>:"
+        "<value>`, the rest written as for `where`. An abstract class stands for every link "
+        "type under it, each of which must have the property. Edges of other link types and "
+        "references are unaffected; combine with `edge_types` to choose which kinds of edge "
+        "are followed",
+        examples=[["Pipe.status:eq:open"]],
+    ),
+]
 TypeName = Annotated[
     str, Path(description="Object or link type; an abstract class for listings", max_length=200)
 ]

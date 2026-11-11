@@ -4,6 +4,10 @@ The clause is split on its first two colons only, so values may hold colons
 (times do). A value is read according to the kind of the property it is
 compared with; `in` takes values separated by commas, `null` and `notnull`
 take none, `like` takes an SQL pattern.
+
+`edge_where=<LinkType>.<property>:<op>:<value>` filters the links a traversal
+follows: the name before the first `.` is a link type, or a class standing for
+every link type under it, and the rest is a `where` clause over its properties.
 """
 
 from __future__ import annotations
@@ -13,9 +17,10 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import Any
 
-from dta_core.schema import UID_FIELD, Field, Kind
-from dta_core.store import InvalidInput, UnknownProperty
+from dta_core.schema import UID_FIELD, Field, Kind, Ontology
+from dta_core.store import InvalidInput, UnknownProperty, UnknownType
 
+from ..graph import BadEdgeFilter, EdgeFilter
 from .services import repair_plus
 
 OPERATORS = {
@@ -108,3 +113,46 @@ def parse_where(
         else:
             triples.append((name, OPERATORS[operator], _value(name, field, text)))
     return triples
+
+
+def parse_edge_where(clauses: Sequence[str] | None, ontology: Ontology) -> EdgeFilter | None:
+    """The edge filter that `edge_where` clauses describe; None when there are none."""
+    if not clauses:
+        return None
+    by_type: dict[str, list[Triple]] = {}
+    for clause in clauses:
+        head = clause.split(":", 1)[0]
+        name = head.split(".", 1)[0].strip()
+        if "." not in head or not name:
+            raise _bad(
+                f"an edge filter is written <LinkType>.<property>:<op>:<value>, got {clause!r}"
+            )
+        rest = clause[clause.index(".") + 1 :]
+        if name in ontology.abstract:
+            members: Sequence[str] = ontology.abstract[name]
+        elif ontology.has_type(name):
+            # A concrete type stands for itself, as it does in `edge_types`.
+            members = (name,)
+        else:
+            raise UnknownType(f"unknown type {name!r}", detail={"type": name})
+        link_types = [
+            member
+            for member in members
+            if ontology.has_type(member) and ontology.type(member).link is not None
+        ]
+        if not link_types:
+            raise BadEdgeFilter(
+                f"{name} is not a link type and has no link type under it; edge_where filters "
+                "the links of link types",
+                detail={"type": name},
+            )
+        for member in link_types:
+            fields = {field.name: field for field in ontology.type(member).fields}
+            by_type.setdefault(member, []).extend(parse_where([rest], fields, member))
+    return EdgeFilter.of(by_type)
+
+
+def edge_where_identity(clauses: Sequence[str] | None) -> tuple[Any, ...]:
+    """What `edge_where` adds to the fingerprint of a paged query: nothing when it is absent,
+    so the cursors of unfiltered queries are what they were."""
+    return (sorted(clauses),) if clauses else ()

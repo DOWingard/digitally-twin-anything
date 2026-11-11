@@ -69,6 +69,7 @@ STATUS_BY_CODE: dict[str, int] = {
     "store.lock_timeout": 503,
     "graph.too_broad": 400,
     "graph.bad_weight": 400,
+    "graph.bad_edge_filter": 400,
     "twin.not_registered": 404,
     "twin.not_live": 409,
     "job.not_found": 404,

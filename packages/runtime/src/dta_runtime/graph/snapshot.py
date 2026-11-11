@@ -29,6 +29,9 @@ log = Log("graph.cache")
 
 # Graphs kept per version for combinations of edge types and direction.
 VIEWS_PER_VERSION = 8
+# Edge masks (which edges a filter lets through) and edge weights kept per version.
+MASKS_PER_VERSION = 16
+WEIGHTS_PER_VERSION = 16
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,63 @@ class GraphView:
     # Rows of the edge projection the graph holds; each edge's payload is its row.
     rows: np.ndarray
     direction: str
+
+
+class Derived:
+    """Arrays computed from one version, the `capacity` most recently used of them.
+
+    A version never changes, so a kept array never goes stale. The keys come
+    from requests (a filter, a default weight), so without the bound one client
+    could grow the snapshot without limit.
+    """
+
+    def __init__(self, kind: str, capacity: int, version: VersionRef) -> None:
+        if capacity < 1:
+            raise ValueError("a store of derived arrays holds at least one")
+        self.kind = kind
+        self.capacity = capacity
+        self._version = version
+        self._entries: OrderedDict[Any, np.ndarray] = OrderedDict()
+        self._lock = threading.Lock()
+        self.computed = 0
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def __contains__(self, key: Any) -> bool:
+        with self._lock:
+            return key in self._entries
+
+    def get(self, key: Any, compute: Callable[[], np.ndarray]) -> np.ndarray:
+        """The array kept under `key`, computed by `compute` when it is not kept."""
+        with self._lock:
+            found = self._entries.get(key)
+            if found is not None:
+                self._entries.move_to_end(key)
+                return found
+        started = time.perf_counter()
+        # Computed outside the lock: it reads the store, and other keys need not wait.
+        value = compute()
+        with self._lock:
+            kept = self._entries.setdefault(key, value)
+            self._entries.move_to_end(key)
+            self.computed += 1
+            evicted = 0
+            while len(self._entries) > self.capacity:
+                self._entries.popitem(last=False)
+                evicted += 1
+            size = len(self._entries)
+        log.debug(
+            "derived array computed",
+            kind=self.kind,
+            version=self._version.id,
+            kept=size,
+            evicted=evicted,
+            capacity=self.capacity,
+            elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
+        )
+        return kept
 
 
 class GraphSnapshot:
@@ -60,7 +120,8 @@ class GraphSnapshot:
         self.type_codes = encoded.indices.to_numpy(zero_copy_only=False).astype(np.int32)
         self.type_names: list[str] = encoded.dictionary.to_pylist()
         self._views: OrderedDict[Any, GraphView] = OrderedDict()
-        self._memo: dict[Any, Any] = {}
+        self.masks = Derived("mask", MASKS_PER_VERSION, version)
+        self.weights = Derived("weight", WEIGHTS_PER_VERSION, version)
         self._lock = threading.Lock()
 
     @property
@@ -119,15 +180,6 @@ class GraphSnapshot:
             while len(self._views) > VIEWS_PER_VERSION:
                 self._views.popitem(last=False)
             return built
-
-    def memo(self, key: Any, compute: Callable[[], Any]) -> Any:
-        """A value derived from this version, computed once."""
-        with self._lock:
-            if key in self._memo:
-                return self._memo[key]
-        value = compute()
-        with self._lock:
-            return self._memo.setdefault(key, value)
 
     def edge_table(self, rows: np.ndarray) -> pa.Table:
         if len(rows) == 0:
