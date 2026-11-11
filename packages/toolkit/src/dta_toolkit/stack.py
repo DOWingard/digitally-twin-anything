@@ -37,6 +37,7 @@ STORE_SERVICE = "store"
 API_SERVICE = "api"
 UI_SERVICE = "ui"
 SCHEDULER_SERVICE = "scheduler"
+WORKER_SERVICE = "worker"
 RUNTIME_COMMAND = "dta-runtime"
 UP_TIMEOUT_S = 300.0
 _COMMAND_TIMEOUT_S = 120.0
@@ -100,13 +101,20 @@ class StackPlan:
     # A live twin has a scheduler; `scheduler_poll_s` is how often it looks at the clock.
     live: bool
     scheduler_poll_s: float
+    # A twin with a model, or with a function supplied as code, has a worker that runs them.
+    worker: bool
+    worker_image: str
+    worker_cpus: float
+    worker_memory_mb: int
+    # Variables the twin's own code declares; the worker hands each to the code that named it.
+    worker_env: tuple[str, ...]
 
     def required_env(self) -> tuple[str, ...]:
         """Every variable the compose file refuses to start without, in a stable order."""
         names = [self.store_password_env, self.token_env, self.api_port_env]
         if self.ui:
             names.append(self.ui_port_env)
-        for name in self.source_env:
+        for name in (*self.source_env, *(self.worker_env if self.worker else ())):
             if name not in names:
                 names.append(name)
         return tuple(names)
@@ -171,6 +179,9 @@ def plan_stack(manifest: Manifest) -> StackPlan:
                 env.setdefault(name)
         if source.connector == ConnectorKind.file and location.startswith(_FILE_SCHEME):
             mounts.setdefault(_mount(source_id, location))
+    functions = manifest.functions or {}
+    code = {fid: found for fid, found in functions.items() if found.kind == "registered"}
+    worker_env = sorted({name for found in code.values() for name in found.env})
     interfaces = manifest.interfaces
     plan = StackPlan(
         twin_id=twin_id,
@@ -188,6 +199,11 @@ def plan_stack(manifest: Manifest) -> StackPlan:
         ui=interfaces.ui,
         live=manifest.contract is not None and manifest.contract.tier == Tier.live,
         scheduler_poll_s=manifest.runtime.scheduler_poll.total_seconds(),
+        worker=bool(code) or bool(manifest.models),
+        worker_image=manifest.runtime.image,
+        worker_cpus=manifest.runtime.worker_cpus,
+        worker_memory_mb=manifest.runtime.worker_memory_mb,
+        worker_env=tuple(worker_env),
     )
     log.debug(
         "stack planned",
@@ -197,6 +213,7 @@ def plan_stack(manifest: Manifest) -> StackPlan:
         mounts=len(plan.source_mounts),
         ui=plan.ui,
         live=plan.live,
+        worker=plan.worker,
     )
     return plan
 
@@ -223,6 +240,11 @@ def render_compose(plan: StackPlan) -> str:
         ui=plan.ui,
         live=plan.live,
         scheduler_poll_s=plan.scheduler_poll_s,
+        worker=plan.worker,
+        worker_image=plan.worker_image,
+        worker_cpus=plan.worker_cpus,
+        worker_memory_mb=plan.worker_memory_mb,
+        worker_env=plan.worker_env,
     )
 
 

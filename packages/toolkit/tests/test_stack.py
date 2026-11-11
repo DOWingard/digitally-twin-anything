@@ -124,6 +124,80 @@ def test_a_live_twin_has_a_scheduler_that_holds_the_token_and_nothing_else():
     assert scheduler["restart"] == "unless-stopped"
 
 
+CODE = {"kind": "registered", "entry": "plant.hydraulics:simulate", "env": ["SOLVER_LICENCE"]}
+
+
+def test_a_twin_with_models_or_its_own_code_has_a_worker_that_reaches_only_the_api():
+    plain = plan_stack(manifest())
+    assert not plain.worker and "worker" not in yaml.safe_load(render_compose(plain))["services"]
+    builtin = plan_stack(manifest(functions={"f": {"kind": "builtin", "entry": "latest"}}))
+    assert not builtin.worker
+    assert plan_stack(manifest(models={"m_level": {"question": "q_level"}})).worker
+
+    plan = plan_stack(
+        manifest(
+            functions={"f_sim": CODE},
+            runtime={"networks": ["plant-net"], "worker_cpus": 2, "worker_memory_mb": 2048},
+        )
+    )
+    assert plan.worker and plan.worker_env == ("SOLVER_LICENCE",)
+    assert "SOLVER_LICENCE" in plan.required_env()
+    document = yaml.safe_load(render_compose(plan))
+    worker = document["services"]["worker"]
+    assert worker["command"] == ["dta-runtime", "worker"]
+    assert worker["image"] == document["services"]["api"]["image"]
+    assert worker["environment"] == {
+        "DTA_API_URL": "http://api:8000",
+        "DTA_API_TOKEN": "${DTA_API_TOKEN:?DTA_API_TOKEN is required}",
+        "DTA_WORKER_CPUS": "2.0",
+        "DTA_WORKER_MEMORY_MB": "2048",
+        "SOLVER_LICENCE": "${SOLVER_LICENCE:?SOLVER_LICENCE is required}",
+    }
+    # Its only network has no way out; it has no port, no volume and no privilege to gain.
+    assert worker["networks"] == ["compute"]
+    assert document["networks"]["compute"] == {"internal": True}
+    assert "ports" not in worker and "volumes" not in worker
+    assert worker["read_only"] is True and worker["cap_drop"] == ["ALL"]
+    assert worker["security_opt"] == ["no-new-privileges:true"]
+    assert (worker["cpus"], worker["mem_limit"]) == (2.0, "2048m")
+    # No source credential, no store password, no source folder.
+    assert not {"REG_PASSWORD", "REG_USER", STORE_PASSWORD_ENV} & set(worker["environment"])
+    # The API alone talks to it; the other services stay where they were.
+    api = document["services"]["api"]
+    assert api["networks"] == ["default", "compute", "plant-net"]
+    assert api["environment"]["DTA_WORKER_URL"] == "http://worker:8100"
+    assert "SOLVER_LICENCE" not in api["environment"]
+    for other in ("store", "ui"):
+        assert "networks" not in document["services"][other]
+    assert (
+        "DTA_WORKER_URL"
+        not in yaml.safe_load(render_compose(plain))["services"]["api"]["environment"]
+    )
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="needs the docker command")
+def test_compose_accepts_a_stack_with_a_worker(tmp_path: Path):
+    plan = plan_stack(manifest(functions={"f_sim": CODE}, contract={"tier": "live"}))
+    (tmp_path / "compose.yaml").write_text(render_compose(plan), encoding="utf-8")
+    env_file = tmp_path / ".env"
+    values = {**ENV, "SOLVER_LICENCE": "licence-0001"}
+
+    def config(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        env_file.write_text("".join(f"{name}={value}\n" for name, value in env.items()))
+        return subprocess.run(
+            [*compose_command(plan, tmp_path, env_file), "config", "--quiet"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path)},
+        )
+
+    accepted = config(values)
+    assert accepted.returncode == 0, accepted.stderr
+    refused = config({k: v for k, v in values.items() if k != "SOLVER_LICENCE"})
+    assert refused.returncode != 0 and "SOLVER_LICENCE" in refused.stderr
+
+
 def test_a_twin_without_the_interface_has_no_ui_service():
     plan = plan_stack(manifest(interfaces={"ui": False}))
     document = yaml.safe_load(render_compose(plan))
