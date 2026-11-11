@@ -512,22 +512,19 @@ def referencing(
     conn: Conn, ontology: Ontology, uids: Sequence[str]
 ) -> list[tuple[str, str, str, str]]:
     """(type, uid, property, target) of every stored row that refers to one of `uids`."""
-    selects = []
+    found: list[tuple[str, str, str, str]] = []
+    # One indexed lookup per reference property. Joined into a single
+    # statement with UNION ALL the database stops using the indexes.
     for object_type in ontology.types:
         for reference in object_type.references():
             column = ddl.quote(reference.name)
-            selects.append(
-                f"SELECT {ddl.literal(object_type.name)}, `{UID_FIELD}`, "
-                f"{ddl.literal(reference.name)}, {column} FROM {ddl.quote(object_type.table)} "
-                f"WHERE {column} IN ({{marks}})"
-            )
-    found: list[tuple[str, str, str, str]] = []
-    if not selects:
-        return found
-    for chunk in _chunks(uids, 500):
-        marks = _marks(len(chunk))
-        sql = " UNION ALL ".join(select.format(marks=marks) for select in selects)
-        found.extend(conn.query(sql, list(chunk) * len(selects)))
+            for chunk in _chunks(uids, 500):
+                rows = conn.query(
+                    f"SELECT `{UID_FIELD}`, {column} FROM {ddl.quote(object_type.table)} "
+                    f"WHERE {column} IN ({_marks(len(chunk))})",
+                    chunk,
+                )
+                found.extend((object_type.name, uid, reference.name, to) for uid, to in rows)
     return found
 
 
