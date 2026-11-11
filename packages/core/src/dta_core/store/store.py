@@ -8,14 +8,16 @@ Guarantees made here and relied on everywhere else:
 - a committed version never changes.
 
 How a version is written. One committer runs at a time, holding a lock in
-the process and a named lock in the database. It opens a transaction, writes
-the rows and calls `DOLT_COMMIT` inside that transaction; the call ends the
-transaction and creates the commit as one step, so other connections see
-either nothing or the complete version, and a process that dies at any point
-before the call leaves no trace. Statements that change table definitions
-cannot be part of a transaction, so installing and migrating build their
-commit on a scratch branch and then move the live branch onto it with a
-fast-forward, which is again a single step.
+the process and a named lock in the database. It never writes to the branch
+it is adding a version to. It resets a private build branch to the head of
+that branch, applies the change there and commits it, then moves the target
+branch onto the new commit with a fast-forward. The fast-forward is a single
+statement that succeeds only if the target is still at the head the commit
+was built on. So the version appears whole or not at all, holds exactly what
+was built, and a process that dies at any step leaves the target branch and
+its working set as they were. Rows are written inside one transaction that
+the commit ends; changes of table definitions, which no transaction can
+hold, take the same route and need nothing more.
 """
 
 from __future__ import annotations
@@ -80,11 +82,12 @@ from .write import apply_changes
 log = Log("store")
 
 BRANCH_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,62}$")
-# Where a change of table definitions is prepared. Not a valid caller-chosen name.
-SCRATCH_BRANCH = "_dta_schema"
+# Where each version is put together before it is published. Not a name a caller can choose.
+BUILD_BRANCH = "_dta_build"
 # Causes written only by the operation of the same name.
 _OWN_OPERATION = {Cause.install: "install", Cause.migration: "migrate", Cause.merge: "merge"}
 _STARTUP_LOCK_WAIT_S = 5
+_STATUS = "SELECT `table_name`, `staged`, `status` FROM `dolt_status`"
 
 
 class Store(Reads):
@@ -186,10 +189,9 @@ class Store(Reads):
                 )
                 return
             try:
-                dirty = conn.query("SELECT `table_name`, `staged`, `status` FROM `dolt_status`")
+                dirty = conn.query(_STATUS)
                 if dirty:
                     self._discard(conn, LIVE_BRANCH, dirty)
-                self._drop_scratch(conn, expected=False)
             finally:
                 self._unlock(conn)
         finally:
@@ -202,8 +204,8 @@ class Store(Reads):
     # -- the single committer ---------------------------------------------------
 
     @contextmanager
-    def _committer(self, branch: str) -> Iterator[Conn]:
-        """A connection on `branch`, held by the only committer of the database."""
+    def _committer(self) -> Iterator[Conn]:
+        """A connection held by the only committer of the database."""
         started = time.perf_counter()
         wait = self._settings.lock_timeout_s
         if not self._commit_lock.acquire(timeout=wait):
@@ -213,7 +215,7 @@ class Store(Reads):
                 detail={"waited_s": wait},
             )
         try:
-            with self._db.connect(branch) as conn:
+            with self._db.connect() as conn:
                 got = conn.scalar("SELECT GET_LOCK(%s, %s)", (self._lock_name, int(wait)))
                 if got != 1:
                     log.warn("timed out waiting for the database commit lock", waited_s=wait)
@@ -244,10 +246,10 @@ class Store(Reads):
             conn.broken = True
 
     def _discard(self, conn: Conn, branch: str, dirty: Any) -> None:
-        """Throw away uncommitted changes found in the working set of `branch`.
+        """Throw away uncommitted changes found in the working set `conn` points at.
 
-        Nothing this layer does leaves any, so they come from a writer that
-        bypassed it or died outside a transaction. They are never committed.
+        Nothing this layer does leaves any on a branch that holds versions, so
+        they come from a writer that bypassed it. They are never committed.
         """
         tables = sorted({row[0] for row in dirty})
         log.warn(
@@ -257,93 +259,142 @@ class Store(Reads):
         )
         conn.call("CALL DOLT_RESET('--hard')")
         conn.call("CALL DOLT_CLEAN()")
-        left = conn.query("SELECT `table_name` FROM `dolt_status`")
+        left = conn.query(_STATUS)
         if left:
-            log.error(
-                "working set is still dirty after recovery", branch=branch, tables=sorted(left)
-            )
+            remaining = sorted({row[0] for row in left})
+            log.error("working set is still dirty after recovery", branch=branch, tables=remaining)
             raise RecoveryFailed(
                 f"uncommitted changes on {branch} could not be discarded",
-                detail={"branch": branch, "tables": sorted(row[0] for row in left)},
+                detail={"branch": branch, "tables": remaining},
             )
         log.info("working set recovered", branch=branch, discarded_tables=tables)
 
-    def _drop_scratch(self, conn: Conn, expected: bool = True) -> None:
-        exists = conn.scalar(
-            "SELECT COUNT(*) FROM `dolt_branches` WHERE `name` = %s", (SCRATCH_BRANCH,)
-        )
-        if not exists:
-            return
-        if not expected:
-            log.warn("removing a scratch branch left by an interrupted schema change")
-        try:
-            conn.call("CALL DOLT_BRANCH('-D', %s)", (SCRATCH_BRANCH,))
-        except pymysql.MySQLError as exc:
-            log.warn("could not remove the scratch branch", error=error_text(exc))
-
     def _begin(self, conn: Conn, branch: str) -> Version:
-        """Open the committer's transaction on a clean working set; return the branch head."""
-        for attempt in (1, 2):
-            conn.begin()
-            dirty = conn.query("SELECT `table_name`, `staged`, `status` FROM `dolt_status`")
-            if not dirty:
-                break
-            conn.rollback()
-            if attempt == 2:
-                raise RecoveryFailed(
-                    f"the working set of {branch} is being changed by another writer",
-                    detail={"branch": branch, "tables": sorted({row[0] for row in dirty})},
-                )
+        """Make sure nothing uncommitted sits on `branch`; return its head."""
+        conn.use(branch)
+        dirty = conn.query(_STATUS)
+        if dirty:
             self._discard(conn, branch, dirty)
-        head = conn.scalar("SELECT HASHOF('HEAD')")
-        return self._index.refresh(conn, branch, head).head
+        return self._index.refresh(conn, branch).head
 
-    def _seal(self, conn: Conn, branch: str, head: Version, meta: CommitMeta) -> Version:
-        """Turn the open transaction into the next version of `branch`."""
-        seen = conn.query("SELECT HASHOF('HEAD'), HASHOF(%s)", (branch,))[0]
-        if seen[0] != head.id or seen[1] != head.id:
-            conn.rollback()
-            log.error(
-                "branch head moved during a commit; nothing was written",
-                branch=branch,
-                read=head.id,
-                found=seen[1],
-            )
-            raise HeadMoved(
-                f"the head of {branch} changed while a version was being written; "
-                "another writer is bypassing the store",
-                detail={"branch": branch, "read": head.id, "found": seen[1], "written": False},
-            )
-        seq = head.seq + 1
+    def _build_on(self, conn: Conn, base: str) -> None:
+        """Point `conn` at the build branch, reset to the commit a version is built on.
+
+        Whatever an interrupted build left there, committed or not, goes.
+        """
+        try:
+            conn.use(BUILD_BRANCH)
+        except UnknownBranch:
+            conn.call("CALL DOLT_BRANCH(%s, %s)", (BUILD_BRANCH, base))
+            conn.use(BUILD_BRANCH)
+        conn.call("CALL DOLT_RESET('--hard', %s)", (base,))
+        if conn.query(_STATUS):
+            # Tables created by an interrupted change of definitions survive a reset.
+            conn.call("CALL DOLT_CLEAN()")
+            left = conn.query(_STATUS)
+            if left:
+                raise RecoveryFailed(
+                    "the build branch could not be cleared",
+                    detail={"branch": BUILD_BRANCH, "tables": sorted({row[0] for row in left})},
+                )
+        self._checkpoint("begun")
+
+    def _publish(self, conn: Conn, branch: str, base: str) -> tuple[Any, ...]:
+        """Move `branch`, which `conn` points at, from `base` onto the build branch.
+
+        The move is refused by the database when the branch is no longer at
+        `base`. It is also refused when uncommitted changes have appeared in
+        the working set since the commit began and touch the same tables;
+        those are discarded like any others and the move is tried once more.
+        Uncommitted changes to other tables do not stop the move and are never
+        part of the version; the next commit discards them.
+        """
+        for attempt in (1, 2):
+            try:
+                return conn.call("CALL DOLT_MERGE('--ff-only', %s)", (BUILD_BRANCH,))
+            except pymysql.MySQLError as exc:
+                dirty = conn.query(_STATUS)
+                found = conn.scalar("SELECT HASHOF('HEAD')")
+                if attempt == 1 and found == base and dirty:
+                    self._discard(conn, branch, dirty)
+                    continue
+                log.error(
+                    "branch changed during a commit; nothing was published",
+                    exc=exc,
+                    branch=branch,
+                    read=base,
+                    found=found,
+                )
+                raise HeadMoved(
+                    f"{branch} changed while a version was being written, so the version was "
+                    f"not published; another writer is bypassing the store ({error_text(exc)})",
+                    detail={"branch": branch, "read": base, "found": found, "written": False},
+                ) from exc
+        raise AssertionError("unreachable")
+
+    def _seal(self, conn: Conn, branch: str, base: str, seq: int, meta: CommitMeta) -> Version:
+        """Commit what was applied on the build branch and publish it as version
+        `seq` of `branch`, which must still be at `base`."""
         written_at = datetime.now(UTC)
         trace = meta.trace or current_trace_id()
         message = commit_message(meta, seq, written_at, trace)
-        self._checkpoint("seal.before")
+        self._checkpoint("written")
         commit = conn.call(
             "CALL DOLT_COMMIT('-A', '--allow-empty', '-m', %s, '--date', %s)",
             (message, iso_utc(meta.t)),
         )[0]
-        self._checkpoint("seal.after")
+        # The commit ended the transaction, but the server goes on treating the
+        # session as inside one, opened by its next statement and never ended,
+        # until told otherwise. Everything after this must see the database as
+        # it is at that moment, not as it was just after the commit.
+        conn.rollback()
+        row = conn.query("SELECT `date` FROM `dolt_log` WHERE `commit_hash` = %s", (commit,))
         parents = tuple(
-            row[0]
-            for row in conn.query(
+            found[0]
+            for found in conn.query(
                 "SELECT `parent_hash` FROM `dolt_commit_ancestors` "
                 "WHERE `commit_hash` = %s ORDER BY `parent_index`",
                 (commit,),
             )
         )
-        if not parents or parents[0] != head.id:
+        if not parents or parents[0] != base:
             log.error(
-                "version was written on top of a commit the store did not make",
+                "the build branch was moved during a commit; nothing was published",
                 branch=branch,
-                commit=commit,
-                read=head.id,
+                base=base,
                 parents=list(parents),
             )
             raise HeadMoved(
-                f"version {commit} of {branch} follows a commit made behind the store's back",
-                detail={"branch": branch, "read": head.id, "commit": commit, "written": True},
+                "the build branch was changed by another writer while a version was being built",
+                detail={"branch": branch, "read": base, "found": list(parents), "written": False},
             )
+        if not row or row[0][0].replace(tzinfo=UTC) != meta.t:
+            recorded = str(row[0][0]) if row else None
+            log.error(
+                "the database returns commit times in another zone than UTC",
+                written=iso_utc(meta.t),
+                read_back=recorded,
+            )
+            raise StoreError(
+                "the database server does not keep commit times in UTC; nothing was published",
+                code="store.server_timezone",
+                detail={"written": iso_utc(meta.t), "read_back": recorded},
+            )
+        self._checkpoint("sealed")
+        conn.use(branch)
+        published = self._publish(conn, branch, base)
+        if not published or published[0] != commit:
+            log.error(
+                "branch is not at the version just published",
+                branch=branch,
+                commit=commit,
+                result=list(published),
+            )
+            raise HeadMoved(
+                f"{branch} is not at the version that was just published",
+                detail={"branch": branch, "read": base, "commit": commit, "written": True},
+            )
+        self._checkpoint("published")
         version = Version(
             id=commit,
             seq=seq,
@@ -594,7 +645,8 @@ class Store(Reads):
         """
         self._ready()
         self._check_write(changes, meta, branch)
-        with self._db.connect(branch) as conn:
+        with self._db.connect() as conn:
+            conn.use(branch)
             conn.begin()
             try:
                 head = self._index.refresh(conn, branch, conn.scalar("SELECT HASHOF('HEAD')")).head
@@ -617,11 +669,12 @@ class Store(Reads):
         self._ready()
         self._check_write(changes, meta, branch)
         started = time.perf_counter()
-        with self._committer(branch) as conn:
+        with self._committer() as conn:
             head = self._begin(conn, branch)
             self._require_ontology(conn, head)
             self._check_time(meta, head)
-            self._checkpoint("commit.begun")
+            self._build_on(conn, head.id)
+            conn.begin()
             applied = apply_changes(
                 conn, self._ontology, self._validator, changes, meta.cause, branch
             )
@@ -639,8 +692,7 @@ class Store(Reads):
                     ],
                 )
                 raise ViolationError(applied.violations, branch=branch)
-            self._checkpoint("commit.rows_written")
-            version = self._seal(conn, branch, head, meta)
+            version = self._seal(conn, branch, head.id, head.seq + 1, meta)
         log.info(
             "version committed",
             branch=branch,
@@ -663,7 +715,7 @@ class Store(Reads):
         self._ready()
         with self._db.connect() as conn:
             rows = conn.query("SELECT `name`, `hash` FROM `dolt_branches` ORDER BY `name`")
-        return [BranchInfo(name, head) for name, head in rows if name != SCRATCH_BRANCH]
+        return [BranchInfo(name, head) for name, head in rows if name != BUILD_BRANCH]
 
     @public
     def branch_create(self, name: str, at: At = "head", source: str = LIVE_BRANCH) -> VersionRef:
@@ -690,7 +742,7 @@ class Store(Reads):
         self._check_branch(name)
         if name == LIVE_BRANCH:
             raise ProtectedBranch(f"{LIVE_BRANCH} is the live branch and cannot be deleted")
-        with self._committer(LIVE_BRANCH) as conn:
+        with self._committer() as conn:
             try:
                 conn.call("CALL DOLT_BRANCH('-D', %s)", (name,))
             except pymysql.MySQLError as exc:
@@ -716,12 +768,14 @@ class Store(Reads):
         if source == into:
             raise invalid("bad_branch_name", "a branch cannot be merged into itself")
         started = time.perf_counter()
-        with self._committer(into) as conn:
+        with self._committer() as conn:
             head = self._begin(conn, into)
             if into == LIVE_BRANCH:
                 self._require_ontology(conn, head)
             self._check_time(meta, head)
             merged = self._index.refresh(conn, source).head
+            self._build_on(conn, head.id)
+            conn.begin()
             try:
                 conn.call("CALL DOLT_MERGE('--no-commit', '--no-ff', %s)", (source,))
             except pymysql.MySQLError as exc:
@@ -780,8 +834,7 @@ class Store(Reads):
                     rules=sorted({violation.rule for violation in violations}),
                 )
                 raise ViolationError(violations, branch=into)
-            self._checkpoint("merge.rows_merged")
-            version = self._seal(conn, into, head, meta)
+            version = self._seal(conn, into, head.id, head.seq + 1, meta)
         if len(version.parents) < 2 or version.parents[1] != merged.id:
             log.warn(
                 "merge commit does not name the source head that was read",
@@ -801,61 +854,6 @@ class Store(Reads):
         return version.ref
 
     # -- table definitions --------------------------------------------------
-
-    def _schema_version(
-        self,
-        conn: Conn,
-        base: str,
-        seq: int,
-        meta: CommitMeta,
-        apply: Callable[[Conn], None],
-    ) -> str:
-        """Build a commit that changes table definitions and move the live branch onto it.
-
-        The work happens on a scratch branch, so the live branch and its
-        working set are untouched until the single step that publishes it.
-        """
-        self._drop_scratch(conn, expected=False)
-        conn.call("CALL DOLT_BRANCH(%s, %s)", (SCRATCH_BRANCH, base))
-        self._checkpoint("schema.branch_created")
-        try:
-            with self._db.connect(SCRATCH_BRANCH) as scratch:
-                apply(scratch)
-                self._checkpoint("schema.applied")
-                written_at = datetime.now(UTC)
-                message = commit_message(meta, seq, written_at, meta.trace or current_trace_id())
-                commit = scratch.call(
-                    "CALL DOLT_COMMIT('-A', '--allow-empty', '-m', %s, '--date', %s)",
-                    (message, iso_utc(meta.t)),
-                )[0]
-                recorded = scratch.scalar(
-                    "SELECT `date` FROM `dolt_log` WHERE `commit_hash` = %s", (commit,)
-                )
-            if recorded is None or recorded.replace(tzinfo=UTC) != meta.t:
-                log.error(
-                    "the database returns commit times in another zone than UTC",
-                    written=iso_utc(meta.t),
-                    read_back=str(recorded),
-                )
-                raise StoreError(
-                    "the database server does not keep commit times in UTC",
-                    code="store.server_timezone",
-                    detail={"written": iso_utc(meta.t), "read_back": str(recorded)},
-                )
-            self._checkpoint("schema.committed")
-            try:
-                conn.call("CALL DOLT_MERGE('--ff-only', %s)", (SCRATCH_BRANCH,))
-            except pymysql.MySQLError as exc:
-                log.error("live branch could not be moved onto the new schema", exc=exc)
-                raise HeadMoved(
-                    f"{LIVE_BRANCH} changed while its schema was being changed: {error_text(exc)}",
-                    detail={"branch": LIVE_BRANCH, "read": base, "written": False},
-                ) from exc
-            self._checkpoint("schema.published")
-        finally:
-            if not conn.broken:
-                self._drop_scratch(conn)
-        return commit
 
     @public
     def install(
@@ -879,7 +877,7 @@ class Store(Reads):
         started = time.perf_counter()
         with self._db.server() as server:
             server.execute(f"CREATE DATABASE IF NOT EXISTS `{self._settings.database}`")
-        with self._committer(LIVE_BRANCH) as conn:
+        with self._committer() as conn:
             base = self._index.head_id(conn, LIVE_BRANCH)
             try:
                 head = self._index.refresh(conn, LIVE_BRANCH, base).head
@@ -889,44 +887,35 @@ class Store(Reads):
                 self._require_ontology(conn, head)
                 log.info("twin is already installed", head_seq=head.seq, head=head.id)
                 return head.ref
-            dirty = conn.query("SELECT `table_name`, `staged`, `status` FROM `dolt_status`")
+            dirty = conn.query(_STATUS)
             if dirty:
                 self._discard(conn, LIVE_BRANCH, dirty)
-
-            def apply(scratch: Conn) -> None:
-                for statement in statements:
-                    try:
-                        scratch.execute(statement)
-                    except pymysql.MySQLError as exc:
-                        subject = statement.split("(", 1)[0].strip()
-                        log.error("table definition refused", exc=exc, statement=subject)
-                        raise InvalidOntology(
-                            f"the database refused {subject}: {error_text(exc)}",
-                            detail={"statement": subject},
-                        ) from exc
-                scratch.execute(
-                    f"INSERT INTO `{ddl.ONTOLOGY_TABLE}` (`id`, `hash`, `descriptor`, `source`) "
-                    "VALUES (1, %s, %s, %s)",
-                    (self._ontology.hash, self._ontology.to_json(), self._ontology.source),
-                )
-                scratch.execute(
-                    f"INSERT INTO `{ddl.META_TABLE}` (`id`, `format`, `twin_id`) "
-                    "VALUES (1, %s, %s)",
-                    (ddl.FORMAT_VERSION, twin_id),
-                )
-                scratch.execute(
-                    "INSERT INTO `dolt_ignore` VALUES (%s, %s)",
-                    (ddl.SCRATCH_TABLE_PREFIX + "%", 1),
-                )
-
-            commit = self._schema_version(conn, base, 0, meta, apply)
-            self._index.forget(LIVE_BRANCH)
-            version = self._index.refresh(conn, LIVE_BRANCH).head
-        if version.id != commit:
-            raise HeadMoved(
-                f"{LIVE_BRANCH} is not at the installed schema",
-                detail={"branch": LIVE_BRANCH, "read": commit, "found": version.id},
+            self._build_on(conn, base)
+            for statement in statements:
+                try:
+                    conn.execute(statement)
+                except pymysql.MySQLError as exc:
+                    subject = statement.split("(", 1)[0].strip()
+                    log.error("table definition refused", exc=exc, statement=subject)
+                    raise InvalidOntology(
+                        f"the database refused {subject}: {error_text(exc)}",
+                        detail={"statement": subject},
+                    ) from exc
+            conn.execute(
+                f"INSERT INTO `{ddl.ONTOLOGY_TABLE}` (`id`, `hash`, `descriptor`, `source`) "
+                "VALUES (1, %s, %s, %s)",
+                (self._ontology.hash, self._ontology.to_json(), self._ontology.source),
             )
+            conn.execute(
+                f"INSERT INTO `{ddl.META_TABLE}` (`id`, `format`, `twin_id`) VALUES (1, %s, %s)",
+                (ddl.FORMAT_VERSION, twin_id),
+            )
+            conn.execute(
+                "INSERT INTO `dolt_ignore` VALUES (%s, %s)", (ddl.SCRATCH_TABLE_PREFIX + "%", 1)
+            )
+            self._index.forget(LIVE_BRANCH)
+            self._seal(conn, LIVE_BRANCH, base, 0, meta)
+            version = self._index.refresh(conn, LIVE_BRANCH).head
         log.info(
             "twin installed",
             database=self._settings.database,
@@ -957,9 +946,8 @@ class Store(Reads):
             raise invalid("invalid_meta", "a migration is recorded with cause migration")
         ddl.check_ontology(ontology)
         started = time.perf_counter()
-        with self._committer(LIVE_BRANCH) as conn:
+        with self._committer() as conn:
             head = self._begin(conn, LIVE_BRANCH)
-            conn.rollback()
             current = self._ontology_of(conn, head)
             if current.hash == ontology.hash:
                 self._adopt(ontology, validator)
@@ -970,33 +958,25 @@ class Store(Reads):
             if plan.reasons:
                 log.warn("migration refused: not additive", reasons=plan.reasons)
                 raise MigrationRequired(plan.reasons)
-
-            def apply(scratch: Conn) -> None:
-                for statement in plan.statements:
-                    scratch.execute(statement)
-                broken = []
-                for description, statement in plan.checks:
-                    try:
-                        scratch.execute(statement)
-                    except pymysql.MySQLError as exc:
-                        broken.append(f"{description} cannot be added: {error_text(exc)}")
-                if broken:
-                    log.warn("migration refused: stored rows break a new check", reasons=broken)
-                    raise MigrationRequired(broken)
-                scratch.execute(
-                    f"UPDATE `{ddl.ONTOLOGY_TABLE}` SET `hash` = %s, `descriptor` = %s, "
-                    "`source` = %s WHERE `id` = 1",
-                    (ontology.hash, ontology.to_json(), ontology.source),
-                )
-
-            commit = self._schema_version(conn, head.id, head.seq + 1, meta, apply)
-            version = self._index.refresh(conn, LIVE_BRANCH).head
-            self._adopt(ontology, validator)
-        if version.id != commit:
-            raise HeadMoved(
-                f"{LIVE_BRANCH} is not at the migrated schema",
-                detail={"branch": LIVE_BRANCH, "read": commit, "found": version.id},
+            self._build_on(conn, head.id)
+            for statement in plan.statements:
+                conn.execute(statement)
+            broken = []
+            for description, statement in plan.checks:
+                try:
+                    conn.execute(statement)
+                except pymysql.MySQLError as exc:
+                    broken.append(f"{description} cannot be added: {error_text(exc)}")
+            if broken:
+                log.warn("migration refused: stored rows break a new check", reasons=broken)
+                raise MigrationRequired(broken)
+            conn.execute(
+                f"UPDATE `{ddl.ONTOLOGY_TABLE}` SET `hash` = %s, `descriptor` = %s, "
+                "`source` = %s WHERE `id` = 1",
+                (ontology.hash, ontology.to_json(), ontology.source),
             )
+            version = self._seal(conn, LIVE_BRANCH, head.id, head.seq + 1, meta)
+            self._adopt(ontology, validator)
         log.info(
             "ontology migrated",
             seq=version.seq,
@@ -1016,4 +996,4 @@ class Store(Reads):
         self._validator = validator or DescriptorValidator(ontology)
 
 
-__all__ = ["BRANCH_NAME", "SCRATCH_BRANCH", "Store"]
+__all__ = ["BRANCH_NAME", "BUILD_BRANCH", "Store"]

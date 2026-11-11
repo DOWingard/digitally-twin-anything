@@ -2,7 +2,8 @@
 
 Pooled connections sit on the live branch. Reads name the commit they want in
 every statement, so they never depend on what a connection is pointed at; a
-write points its connection at the branch being written and puts it back.
+write points its connection at the branch it works on and it is put back
+before anyone else gets it.
 """
 
 from __future__ import annotations
@@ -56,13 +57,15 @@ class Conn:
     `store.unavailable`; an error returned by the server for a statement is
     raised as it is, for the caller to interpret."""
 
-    def __init__(self, raw: Any, slow_ms: float) -> None:
+    def __init__(self, raw: Any, database: str, slow_ms: float) -> None:
         self._raw = raw
+        self._database = database
         self._slow_ms = slow_ms
         self.broken = False
-        # Set once a transaction has been opened, so the connection is rolled
-        # back before it is handed to anyone else.
+        # Set once a transaction has been opened or the connection pointed at
+        # another branch, so that it is put back as it was before anyone else gets it.
         self.transacted = False
+        self.moved = False
 
     def _run(self, sql: str, params: Any, many: bool, fetch: bool) -> Any:
         started = time.perf_counter()
@@ -81,11 +84,31 @@ class Conn:
                     f"the database connection was lost: {error_text(exc)}",
                     detail={"statement": sql[:200]},
                 ) from exc
+            if not self.transacted:
+                self._end_failed_statement(sql)
             raise
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if elapsed_ms > self._slow_ms:
             log.warn("slow statement", elapsed_ms=round(elapsed_ms, 1), statement=sql[:200])
         return result
+
+    def _end_failed_statement(self, sql: str) -> None:
+        """End what a statement that failed outside a transaction leaves open.
+
+        The server keeps the implicit transaction of such a statement, so
+        everything run afterwards would see the data as it was when the
+        statement started rather than as it is.
+        """
+        try:
+            with self._raw.cursor() as cursor:
+                cursor.execute("ROLLBACK")
+        except Exception as exc:
+            self.broken = True
+            log.warn(
+                "could not end a failed statement; closing the connection",
+                error=repr(exc),
+                statement=sql[:200],
+            )
 
     def query(self, sql: str, params: Sequence[Any] | None = None) -> tuple[tuple[Any, ...], ...]:
         return self._run(sql, params, many=False, fetch=True)
@@ -107,12 +130,23 @@ class Conn:
         rows = self._run(sql, params, many=False, fetch=True)
         return rows[0] if rows else ()
 
+    def use(self, branch: str) -> None:
+        """Point the connection at a branch; statements then read and write its working set."""
+        try:
+            self._run(f"USE `{self._database}/{branch}`", None, many=False, fetch=False)
+        except pymysql.MySQLError as exc:
+            if error_code(exc) == ER_UNKNOWN_DATABASE:
+                raise UnknownBranch(f"no branch named {branch}", detail={"branch": branch}) from exc
+            raise
+        self.moved = branch != LIVE_BRANCH
+
     def begin(self) -> None:
         self.transacted = True
         self._run("START TRANSACTION", None, many=False, fetch=False)
 
     def rollback(self) -> None:
         self._run("ROLLBACK", None, many=False, fetch=False)
+        self.transacted = False
 
 
 class Database:
@@ -184,8 +218,8 @@ class Database:
             raise sqlalchemy.exc.DisconnectionError() from exc
 
     @contextmanager
-    def connect(self, branch: str = LIVE_BRANCH) -> Iterator[Conn]:
-        """A pooled connection, pointed at `branch` for the duration of the block."""
+    def connect(self) -> Iterator[Conn]:
+        """A pooled connection on the live branch, put back as it was afterwards."""
         try:
             proxy = self._pool.connect()
         except sqlalchemy.exc.TimeoutError as exc:
@@ -196,21 +230,11 @@ class Database:
                 waited_s=self._settings.pool_timeout_s,
             )
             raise StoreUnavailable(
-                "every database connection is in use", detail={"waited_s": self._pool.timeout()}
+                "every database connection is in use",
+                detail={"waited_s": self._settings.pool_timeout_s},
             ) from exc
-        conn = Conn(proxy, self._settings.slow_ms)
-        moved = False
+        conn = Conn(proxy, self.name, self._settings.slow_ms)
         try:
-            if branch != LIVE_BRANCH:
-                try:
-                    conn.execute(f"USE `{self.name}/{branch}`")
-                except pymysql.MySQLError as exc:
-                    if error_code(exc) == ER_UNKNOWN_DATABASE:
-                        raise UnknownBranch(
-                            f"no branch named {branch}", detail={"branch": branch}
-                        ) from exc
-                    raise
-                moved = True
             yield conn
         except BaseException as exc:
             if not isinstance(exc, Exception):
@@ -218,15 +242,15 @@ class Database:
                 conn.broken = True
             raise
         finally:
-            self._release(proxy, conn, moved)
+            self._release(proxy, conn)
 
-    def _release(self, proxy: Any, conn: Conn, moved: bool) -> None:
-        if not conn.broken and (moved or conn.transacted):
+    def _release(self, proxy: Any, conn: Conn) -> None:
+        if not conn.broken and (conn.moved or conn.transacted):
             try:
                 if conn.transacted:
                     conn.rollback()
-                if moved:
-                    conn.execute(f"USE `{self.name}/{LIVE_BRANCH}`")
+                if conn.moved:
+                    conn.use(LIVE_BRANCH)
             except Exception as exc:
                 log.warn("could not reset a connection, discarding it", error=repr(exc))
                 conn.broken = True
@@ -242,7 +266,7 @@ class Database:
         """A connection to the server with no database selected, outside the pool."""
         raw = self._open(None)
         try:
-            yield Conn(raw, self._settings.slow_ms)
+            yield Conn(raw, self.name, self._settings.slow_ms)
         finally:
             try:
                 raw.close()
