@@ -4,6 +4,8 @@ that stops answering, a run that is cut short."""
 from __future__ import annotations
 
 import logging
+import sys
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -189,6 +191,46 @@ def test_a_source_that_cannot_be_opened_fails_the_run_the_same_way(sync_twin: Ma
         "failing",
         "source.unavailable: no route to registry",
     )
+
+
+def test_sources_are_opened_by_the_toolkit_unless_the_caller_says_how(
+    sync_twin: MakeTwin, settings_of: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
+):
+    twin = sync_twin({"registry": source({"junctions": junction_mapping()})})
+    sources = Sources(registry={"junctions": table(JUNCTIONS)})
+    connectors = types.ModuleType("dta_core.connect")
+    connectors.open_connector = sources  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "dta_core.connect", connectors)
+
+    with trace(TRACE):
+        report = load(twin, settings_of(twin), {})
+
+    assert sources.opened == ["registry"]
+    assert (report.status, report.rows_written) == ("succeeded", 3)
+
+
+def test_without_connectors_nothing_is_read_or_written(
+    sync_twin: MakeTwin, settings_of: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
+):
+    twin = sync_twin({"registry": source({"junctions": junction_mapping()})})
+    # Makes the import fail whether or not the connectors are installed.
+    monkeypatch.setitem(sys.modules, "dta_core.connect", None)
+    head = twin.store.head()
+
+    with pytest.raises(ImportError), trace(TRACE):
+        load(twin, settings_of(twin), {})
+
+    assert twin.store.head() == head
+
+
+def test_a_manifest_that_maps_nothing_loads_nothing(sync_twin: MakeTwin, run: Run):
+    twin = sync_twin({})
+    head = twin.store.head()
+
+    report = run(twin, Sources())
+
+    assert (report.status, report.versions_written, report.run) == ("succeeded", 0, "")
+    assert twin.store.head() == head
 
 
 def test_a_missing_variable_is_named_before_anything_is_read(sync_twin: MakeTwin, run: Run):

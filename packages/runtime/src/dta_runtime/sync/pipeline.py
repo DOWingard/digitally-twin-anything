@@ -48,8 +48,15 @@ log = Log("sync")
 def _default_connect() -> Connect:
     # Imported here so that the pipeline loads without the connectors and their
     # dependencies when a caller brings its own way of opening a source.
-    from dta_core.connect import open_connector
-
+    try:
+        from dta_core.connect import open_connector
+    except ImportError as exc:
+        log.error(
+            "the connectors cannot be imported; nothing was read or written",
+            exc=exc,
+            module="dta_core.connect",
+        )
+        raise
     return open_connector
 
 
@@ -66,7 +73,7 @@ class _Run:
         self.store = twin.store
         self.settings = settings
         self.env = env
-        self.connect = connect
+        self._connect = connect
         self.trace_id = trace_id
         self.clock = time.perf_counter()
         self.sources: Mapping[str, Source] = {}
@@ -89,6 +96,13 @@ class _Run:
         self._proposed: tuple[int, dict[RelationKey, datetime]] | None = None
 
     # -- phases -------------------------------------------------------------------
+
+    def _connector(self) -> Connect:
+        """How a source is opened. Settled once there is something to read and
+        before any of it is, so a run never stops half-way for want of it."""
+        if self._connect is None:
+            self._connect = _default_connect()
+        return self._connect
 
     def _plan(self) -> Plan:
         started = time.perf_counter()
@@ -139,9 +153,10 @@ class _Run:
     def _extract(self) -> None:
         assert self.plan is not None
         started = time.perf_counter()
-        connect = self.connect or _default_connect()
         try:
-            self.reads = extract(self.plan, self.sources, self.env, connect, self._stored_cursors())
+            self.reads = extract(
+                self.plan, self.sources, self.env, self._connector(), self._stored_cursors()
+            )
         except SourceFailure as failure:
             where = failure.source_id + (f".{failure.dataset}" if failure.dataset else "")
             error = SourceFailed(
@@ -529,6 +544,7 @@ class _Run:
         if not plan.mappings:
             log.warn("the manifest maps nothing; there is nothing to load")
             return self._report(SUCCEEDED)
+        self._connector()
         self.state = read_state(self.store)
         try:
             self._extract()
@@ -607,10 +623,10 @@ def prepare_load(
     with trace(current_trace_id()) as trace_id:
         run = _Run(twin, settings, env, connect, trace_id)
         run._plan()
+        opener = run._connector()
         run.state = read_state(run.store)
-        connect = run.connect or _default_connect()
         try:
-            run.reads = extract(run.plan, run.sources, env, connect, run._stored_cursors())
+            run.reads = extract(run.plan, run.sources, env, opener, run._stored_cursors())
         except SourceFailure as failure:
             raise SourceFailed(
                 f"source {failure.source_id} cannot be read: {failure.message}",
