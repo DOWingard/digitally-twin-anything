@@ -4,3 +4,6 @@ CONTEXT/
 __pycache__/
 *.pyc
 spikes/storage/results/*.log
+.claude/worktrees/
+.ruff_cache/
+.pytest_cache/

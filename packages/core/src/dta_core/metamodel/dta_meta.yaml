@@ -1,0 +1,106 @@
+id: https://w3id.org/dta/meta
+name: dta_meta
+description: >-
+  Types present in every twin. They record the twin's own configuration and
+  activity as objects of the graph, so the commit history covers them too.
+  A domain ontology must not define a class whose name starts with Twin.
+prefixes:
+  linkml: https://w3id.org/linkml/
+  dta: https://w3id.org/dta/meta/
+default_prefix: dta
+default_range: string
+imports:
+  - linkml:types
+
+classes:
+  TwinSource:
+    description: A data source the twin reads.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      connector:
+        required: true
+        description: How the source is read (file, sql, http, custom).
+      description: {}
+      status:
+        range: TwinSourceStatus
+        required: true
+        annotations:
+          dta_role: state
+      last_success_at:
+        range: datetime
+        description: Data time of the last successful read.
+        annotations:
+          dta_role: state
+      last_error:
+        annotations:
+          dta_role: state
+          dta_long: true
+
+  TwinSyncRun:
+    description: One execution of the sync pipeline.
+    annotations:
+      dta_event: true
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      started_at:
+        range: datetime
+        required: true
+        description: Data time at which the run began.
+      watermark:
+        range: datetime
+        description: Latest data timestamp the run saw.
+      status:
+        range: TwinRunStatus
+        required: true
+      sources:
+        multivalued: true
+        description: Ids of the sources read in this run.
+      rows_read:
+        range: integer
+        minimum_value: 0
+      rows_written:
+        range: integer
+        minimum_value: 0
+      rows_rejected:
+        range: integer
+        minimum_value: 0
+      error:
+        annotations:
+          dta_long: true
+      trace_id: {}
+
+  TwinArtifact:
+    description: A file kept outside the graph and referenced by its content hash.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      sha256:
+        required: true
+        pattern: "^[0-9a-f]{64}$"
+      media_type:
+        required: true
+      size_bytes:
+        range: integer
+        required: true
+        minimum_value: 0
+      location:
+        required: true
+        description: Path inside the twin's artifact volume.
+      description: {}
+
+enums:
+  TwinSourceStatus:
+    permissible_values:
+      ok: {}
+      failing: {}
+      disabled: {}
+  TwinRunStatus:
+    permissible_values:
+      running: {}
+      succeeded: {}
+      failed: {}
