@@ -21,6 +21,7 @@ ENV_API_TOKEN = "DTA_API_TOKEN"
 ENV_ARTIFACTS_DIR = "DTA_ARTIFACTS_DIR"
 ENV_LOGS_DIR = "DTA_LOGS_DIR"
 ENV_API_URL = "DTA_API_URL"
+ENV_SCHEDULER_POLL_S = "DTA_SCHEDULER_POLL_S"
 
 # A shorter token is refused: it is the only thing between a caller and the twin.
 MIN_TOKEN_LENGTH = 24
@@ -97,3 +98,45 @@ class UiSettings:
                 detail={"name": ENV_API_URL},
             )
         return cls(api_url=url, api_token=_token(values), logs_dir=_directory(values, ENV_LOGS_DIR))
+
+
+@dataclass(frozen=True)
+class SchedulerSettings:
+    """What the scheduler needs: where the API is, the token, and how often to look."""
+
+    api_url: str
+    api_token: str = field(repr=False)
+    logs_dir: Path
+    # Seconds on the wall between two looks at the twin's clock. A twin whose
+    # clock runs faster than the wall needs a shorter one than its sync interval.
+    poll_s: float
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> SchedulerSettings:
+        names = (ENV_API_URL, ENV_API_TOKEN, ENV_LOGS_DIR, ENV_SCHEDULER_POLL_S)
+        values = require_env(names, environ)
+        url = values[ENV_API_URL].rstrip("/")
+        if not url.startswith(("http://", "https://")):
+            log.error("the API address is not an http(s) URL", name=ENV_API_URL)
+            raise ConfigError(
+                f"{ENV_API_URL} must be an http or https URL",
+                code="config.bad_value",
+                detail={"name": ENV_API_URL},
+            )
+        try:
+            poll_s = float(values[ENV_SCHEDULER_POLL_S])
+        except ValueError:
+            poll_s = 0.0
+        if not 0.05 <= poll_s <= 3600:
+            log.error("the scheduler's poll period is out of range", name=ENV_SCHEDULER_POLL_S)
+            raise ConfigError(
+                f"{ENV_SCHEDULER_POLL_S} must be a number of seconds between 0.05 and 3600",
+                code="config.bad_value",
+                detail={"name": ENV_SCHEDULER_POLL_S},
+            )
+        return cls(
+            api_url=url,
+            api_token=_token(values),
+            logs_dir=_directory(values, ENV_LOGS_DIR),
+            poll_s=poll_s,
+        )

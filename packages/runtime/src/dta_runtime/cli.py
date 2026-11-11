@@ -299,6 +299,29 @@ def ui(
 
 
 @app.command()
+def scheduler() -> None:
+    """Start what is due on the twin's clock by calling the API. Holds no twin logic."""
+
+    def work() -> None:
+        import signal
+        import threading
+
+        from .scheduler import Scheduler
+        from .settings import SchedulerSettings
+
+        stop = threading.Event()
+        signal.signal(signal.SIGTERM, lambda *_: stop.set())
+        signal.signal(signal.SIGINT, lambda *_: stop.set())
+        running = Scheduler(SchedulerSettings.from_env())
+        try:
+            running.run(stop)
+        finally:
+            running.close()
+
+    _run("scheduler", work)
+
+
+@app.command()
 def health(
     service: Annotated[str, typer.Argument(help="api or ui")],
     port: Annotated[int | None, typer.Option(help="Port the service listens on")] = None,
