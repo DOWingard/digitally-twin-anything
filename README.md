@@ -21,9 +21,28 @@ Status: under construction. The parts present so far are listed below.
 
 | Path | What it is |
 |---|---|
-| `packages/core` | Shared library: structured logging, environment configuration, the manifest schema |
-| `packages/toolkit` | The `dta` command line tool; each build stage ends in a gate it evaluates |
+| `packages/core` | Shared library: structured logging, environment configuration, the manifest schema and its checks, ontology loading (LinkML), the versioned store, the connector protocol |
+| `packages/toolkit` | The `dta` command line tool; each build stage ends in a gate it evaluates. Also derives a twin's container stack from its manifest |
+| `packages/runtime` | What runs inside a twin's stack: installing and opening a twin, and (as they are added) sync, the HTTP API and the browser UI |
+| `docker/runtime.Dockerfile` | Image of the twin's services: one image, one command per service |
+| `testbed` | A simulated water utility used as the standing test target, with a reference twin definition in `testbed/twin` |
 | `spikes/storage` | Benchmark that selected Dolt as the versioned store |
+
+## The store
+
+A twin's graph lives in a [Dolt](https://github.com/dolthub/dolt) database, one
+table per object or link type, generated from the twin's ontology.
+
+- A version is one commit. Its time is data time (the latest data timestamp the
+  twin had seen), never the wall clock, so history can be replayed exactly.
+- Every stored value carries its provenance: where it came from, whether it
+  was observed, inferred, assumed or simulated, how confident, and when it
+  was true.
+- A change set is validated against the ontology and written whole or not at
+  all. A committed version never changes.
+- Reads take a selector (`head`, a version id, `#<n>`, a time, or a range)
+  and return Arrow tables.
+- Branches hold scenarios; simulated facts cannot reach the live branch.
 
 ## The manifest
 
@@ -45,10 +64,32 @@ Requires [uv](https://docs.astral.sh/uv/) and Docker. Python 3.12 is pinned.
 
 ```sh
 uv sync            # create the environment with every package installed
-uv run pytest      # run the tests
+uv run pytest      # run the tests; those that need a database are skipped
 uv run ruff check packages && uv run ruff format --check packages
 uv run dta --help  # the command line tool
 ```
+
+Tests of the store and of everything built on it run against a real Dolt
+server. Put its settings in a `.env` file at the repository root (never
+committed):
+
+```sh
+DTA_STORE_HOST=127.0.0.1
+DTA_STORE_PORT=13307
+DTA_STORE_USER=root
+DTA_STORE_PASSWORD=<choose one>
+DTA_STORE_DATABASE=dta_test
+```
+
+```sh
+docker compose -p dta-store-dev --env-file .env -f packages/core/tests/store/compose.yaml up -d
+uv run --env-file .env pytest            # the whole suite
+uv run --env-file .env pytest -m scale   # full-size fixtures with performance thresholds
+docker compose -p dta-store-dev --env-file .env -f packages/core/tests/store/compose.yaml down -v
+```
+
+The testbed is a separate project with its own environment; see
+`testbed/README.md`.
 
 Secrets are read only from environment variables. A process that needs a
 variable that is missing stops at startup and names it.
