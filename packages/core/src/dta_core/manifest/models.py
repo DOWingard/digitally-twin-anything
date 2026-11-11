@@ -468,6 +468,14 @@ class Runtime(Base):
         "Existing container networks the twin joins to reach sources running on this machine",
         list,
     )
+    scheduler_poll: timedelta = opt(
+        Owner.agent,
+        "Wall time between two looks of the scheduler at the twin's clock; shorter than the "
+        "sync interval takes on the wall when the clock runs faster than it",
+        timedelta(seconds=1),
+        gt=timedelta(milliseconds=50),
+        le=timedelta(hours=1),
+    )
     worker_cpus: float = opt(Owner.agent, "CPU limit of the worker for registered code", 1.0, gt=0)
     worker_memory_mb: int = opt(Owner.agent, "Memory limit of the worker", 1024, ge=128)
 

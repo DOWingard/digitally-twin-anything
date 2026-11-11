@@ -101,6 +101,29 @@ def test_the_compose_file_holds_three_services_and_no_literal_secret():
                 assert value.startswith("${") and ":?" in value, name
 
 
+def test_a_live_twin_has_a_scheduler_that_holds_the_token_and_nothing_else():
+    static = yaml.safe_load(render_compose(plan_stack(manifest())))
+    assert "scheduler" not in static["services"]
+
+    live = manifest(
+        contract={"tier": "live"}, runtime={"scheduler_poll": "PT0.25S", "networks": ["plant-net"]}
+    )
+    document = yaml.safe_load(render_compose(plan_stack(live)))
+    scheduler = document["services"]["scheduler"]
+    assert scheduler["command"] == ["dta-runtime", "scheduler"]
+    assert scheduler["depends_on"] == {"api": {"condition": "service_healthy"}}
+    assert scheduler["environment"] == {
+        "DTA_API_URL": "http://api:8000",
+        "DTA_API_TOKEN": "${DTA_API_TOKEN:?DTA_API_TOKEN is required}",
+        "DTA_LOGS_DIR": "/var/log/dta",
+        "DTA_SCHEDULER_POLL_S": "0.25",
+    }
+    # It reaches the twin through the API only: no port, no source network, no source folder.
+    assert "ports" not in scheduler and "networks" not in scheduler
+    assert scheduler["volumes"] == ["logs:/var/log/dta"]
+    assert scheduler["restart"] == "unless-stopped"
+
+
 def test_a_twin_without_the_interface_has_no_ui_service():
     plan = plan_stack(manifest(interfaces={"ui": False}))
     document = yaml.safe_load(render_compose(plan))

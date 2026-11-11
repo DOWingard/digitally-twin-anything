@@ -22,7 +22,7 @@ from typing import Any
 from dta_core.errors import DtaError
 from dta_core.log import Log
 from dta_core.manifest import Manifest
-from dta_core.manifest.models import ConnectorKind
+from dta_core.manifest.models import ConnectorKind, Tier
 from dta_core.sources import PLACEHOLDER, placeholders
 from jinja2 import Environment, StrictUndefined
 
@@ -36,6 +36,7 @@ COMPOSE_FILE = "compose.yaml"
 STORE_SERVICE = "store"
 API_SERVICE = "api"
 UI_SERVICE = "ui"
+SCHEDULER_SERVICE = "scheduler"
 RUNTIME_COMMAND = "dta-runtime"
 UP_TIMEOUT_S = 300.0
 _COMMAND_TIMEOUT_S = 120.0
@@ -96,6 +97,9 @@ class StackPlan:
     # Networks created by other stacks on this machine, joined to reach their services.
     networks: tuple[str, ...]
     ui: bool
+    # A live twin has a scheduler; `scheduler_poll_s` is how often it looks at the clock.
+    live: bool
+    scheduler_poll_s: float
 
     def required_env(self) -> tuple[str, ...]:
         """Every variable the compose file refuses to start without, in a stable order."""
@@ -182,6 +186,8 @@ def plan_stack(manifest: Manifest) -> StackPlan:
         source_mounts=tuple(mounts),
         networks=_networks(manifest.runtime.networks),
         ui=interfaces.ui,
+        live=manifest.contract is not None and manifest.contract.tier == Tier.live,
+        scheduler_poll_s=manifest.runtime.scheduler_poll.total_seconds(),
     )
     log.debug(
         "stack planned",
@@ -190,6 +196,7 @@ def plan_stack(manifest: Manifest) -> StackPlan:
         source_env=list(plan.source_env),
         mounts=len(plan.source_mounts),
         ui=plan.ui,
+        live=plan.live,
     )
     return plan
 
@@ -214,6 +221,8 @@ def render_compose(plan: StackPlan) -> str:
         source_mounts=plan.source_mounts,
         networks=plan.networks,
         ui=plan.ui,
+        live=plan.live,
+        scheduler_poll_s=plan.scheduler_poll_s,
     )
 
 
