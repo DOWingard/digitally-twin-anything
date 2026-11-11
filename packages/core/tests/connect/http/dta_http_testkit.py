@@ -78,7 +78,10 @@ class Api:
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._server.daemon_threads = True
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        # A short poll keeps `shutdown` quick at the end of every test.
+        threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        ).start()
 
     @property
     def port(self) -> int:
@@ -240,8 +243,12 @@ def source(datasets: dict[str, Any], **options: Any) -> Source:
     )
 
 
-def connect(api: Api, datasets: dict[str, Any], *, key: str = "k-0", **options: Any) -> Connector:
-    env = {LOCATION_VAR: api.url, KEY_VAR: key}
+def connect(
+    target: Api | str, datasets: dict[str, Any], *, key: str = "k-0", **options: Any
+) -> Connector:
+    """Open the source through the factory; `target` is an interface or a bare address."""
+    url = target if isinstance(target, str) else target.url
+    env = {LOCATION_VAR: url, KEY_VAR: key}
     return open_connector("plant", source(datasets, **options), env)
 
 
