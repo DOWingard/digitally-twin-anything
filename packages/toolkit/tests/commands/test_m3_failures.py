@@ -28,7 +28,7 @@ def test_unreadable_source_fails_the_access_gate_and_names_it(make_twin) -> None
     assert twin.leaked() == []
 
 
-def test_failing_build_step_stops_the_build_and_a_rerun_resumes_there(make_twin) -> None:
+def test_failing_build_step_stops_the_build_and_a_rerun_completes_it(make_twin) -> None:
     twin = make_twin()
     twin.prepare()
     readings = twin.data / "readings.csv"
@@ -53,9 +53,9 @@ def test_failing_build_step_stops_the_build_and_a_rerun_resumes_there(make_twin)
     resumed = twin.ok("build")
     actions = {entry["step"]: (entry["action"], entry["status"]) for entry in resumed["steps"]}
     assert actions == {
-        "scaffold": ("reused", "ok"),
+        "scaffold": ("ran", "ok"),
         "store": ("ran", "ok"),
-        "install": ("reused", "ok"),
+        "install": ("ran", "ok"),
         "load": ("ran", "ok"),
         "api": ("ran", "ok"),
         "contract": ("ran", "ok"),

@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 
 import m3tk_kit as kit
-import pytest
 
 pytestmark = kit.needs_stack
 
@@ -155,15 +154,17 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
 
     again = twin.ok("build")
     actions = {entry["step"]: entry["action"] for entry in again["steps"]}
+    # Every step checks what is there now; only the load is not repeated, because
+    # install found the twin where the last load left it.
     assert actions == {
-        "scaffold": "reused",
+        "scaffold": "ran",
         "store": "ran",
-        "install": "reused",
+        "install": "ran",
         "load": "reused",
         "api": "ran",
-        "contract": "reused",
+        "contract": "ran",
         "ui": "ran",
-        "skill": "reused",
+        "skill": "ran",
     }
     assert twin.gates() == expect(handover="passed")
 
@@ -174,9 +175,20 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
     assert logs["service"] == "api" and logs["logs"]
 
     down = twin.ok("down", "--destroy-data")
-    assert down["volumes_removed"] is True
+    assert down["volumes_removed"] is True and down["gates_reset"] == [6, 7]
     assert kit.leftovers(twin.project) == {"containers": [], "volumes": [], "networks": []}
-    assert twin.gates() == expect(handover="passed")
+    # Without its data the twin is neither built nor accepted; the skill still describes it.
+    assert twin.gates() == expect(build="failed", acceptance="failed", handover="passed")
+
+    # A build on the emptied stack installs and loads again without being told to.
+    rebuilt = twin.ok("build")
+    actions = {entry["step"]: entry["action"] for entry in rebuilt["steps"]}
+    assert actions["install"] == "ran" and actions["load"] == "ran"
+    reloaded = next(entry for entry in rebuilt["steps"] if entry["step"] == "load")["detail"]
+    assert reloaded["versions_written"] == 4
+    assert twin.gates() == expect(build="passed", acceptance="failed", handover="passed")
+    twin.ok("down", "--destroy-data")
+    assert kit.leftovers(twin.project) == {"containers": [], "volumes": [], "networks": []}
 
     flow_s = time.perf_counter() - started
     assert flow_s <= FLOW_LIMIT_S, f"the flow took {flow_s:.1f} s"
@@ -194,10 +206,6 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
     print(f"\nflow {flow_s:.1f} s (limit {FLOW_LIMIT_S:g}), build {build_s:.1f} s")
 
 
-@pytest.mark.xfail(
-    reason="the ui service cannot start until the browser interface is in the runtime image",
-    strict=False,
-)
 def test_twin_with_the_browser_interface_is_accepted(make_twin) -> None:
     twin = make_twin(ui=True)
     twin.prepare()

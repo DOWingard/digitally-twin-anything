@@ -1,11 +1,14 @@
 """`dta build`: from a signed manifest to a running, served twin, step by step.
 
-Each step has a check and a recorded result in `.dta/build.json`. A rerun does
-not repeat a step recorded as done for the same manifest and ontology file,
-except the steps that start services, which always run because starting is
-idempotent and is the check that they still run. `load` is repeated, too, when
-`install` ran in this build and left the twin at another version than the last
-load did. A failing step stops the build; nothing already done is undone.
+Each step has a check and a recorded result in `.dta/build.json`. Every step
+but one changes only what differs and is its own check of what is there now,
+so it runs on every build: a record cannot say whether a container still runs
+or a store still holds the twin. `load` is the exception, because reading the
+sources again is the expensive part: it is not repeated when it is recorded as
+done for the same manifest and ontology file and `install`, which has just
+run, finds the twin at the version that load left it at. A store that was
+emptied or replaced is therefore loaded again without being asked. A failing
+step stops the build; nothing already done is undone.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from collections.abc import Callable
 from typing import Annotated, Any
 
 import typer
+from dta_core.bundle import Bundle
 from dta_core.errors import CheckFailed, DtaError
 from dta_core.log import Log
 from dta_core.manifest import Manifest, manifest_hash
@@ -33,7 +37,8 @@ from .skill import rendered_hash, skill_dir, write_skill
 log = Log("commands.build")
 
 STEPS = ("scaffold", "store", "install", "load", "api", "contract", "ui", "skill")
-SERVICE_STEPS = frozenset({"store", "api", "ui"})
+# The only step whose earlier result may stand in for running it again.
+REUSABLE_STEPS = frozenset({"load"})
 BUILD_STAGE = 6
 LAST_REQUIRED_STAGE = 5
 RECORD_VERSION = 1
@@ -97,7 +102,6 @@ class Build:
         self.record = read_record(workspace)
         self.start = start
         self.force = force
-        self.install_ran = False
         self.install_head: dict[str, Any] | None = None
         self.env: dict[str, str] = {}
         self.steps: dict[str, Callable[[], dict[str, Any]]] = {
@@ -123,8 +127,8 @@ class Build:
             return False, "forced"
         if STEPS.index(name) >= self.start:
             return False, "asked to rerun from an earlier step"
-        if name in SERVICE_STEPS:
-            return False, "starts a service"
+        if name not in REUSABLE_STEPS:
+            return False, "runs on every build"
         entry = self.recorded(name)
         if entry is None:
             return False, "not recorded"
@@ -135,19 +139,15 @@ class Build:
             or entry.get("ontology_sha256") != self.ontology_sha
         ):
             return False, "the manifest or the ontology file changed"
-        if name == "load" and self.install_ran:
-            after = (entry.get("detail") or {}).get("head_after") or {}
-            head = self.install_head or {}
-            if after.get("seq") != head.get("seq") or (
-                after.get("id") and after.get("id") != head.get("id")
-            ):
-                return False, "install left the twin at another version than the last load"
+        after = (entry.get("detail") or {}).get("head_after") or {}
+        head = self.install_head or {}
         if (
-            name == "skill"
-            and rendered_hash(skill_dir(self.workspace, self.manifest)) != self.digest
+            after.get("seq") is None
+            or after.get("seq") != head.get("seq")
+            or (after.get("id") and after.get("id") != head.get("id"))
         ):
-            return False, "the generated skill is gone or from another manifest"
-        return True, "done for this manifest and ontology file"
+            return False, "the twin is at another version than the last load left it at"
+        return True, "done for this manifest and ontology file, and the twin is where it left it"
 
     def save(self, name: str, status: str, duration_ms: float, detail: dict[str, Any]) -> None:
         self.record["version"] = RECORD_VERSION
@@ -185,16 +185,12 @@ class Build:
         return {"state": row["state"], "health": row["health"]}
 
     def install(self) -> dict[str, Any]:
-        # The bundle's format belongs to the runtime; only the bundle class is borrowed from it.
-        from dta_runtime.twin import Bundle
-
         text = self.ontology_file.read_text(encoding="utf-8")
         bundle = Bundle(manifest=self.manifest, ontology_text=text).to_json()
         document = self.stack.runtime("install", input=bundle, timeout=INSTALL_TIMEOUT_S)
         version = document.get("version")
         if not isinstance(version, dict) or "seq" not in version:
             raise StepFailed("install returned no version", {"document_keys": sorted(document)})
-        self.install_ran = True
         self.install_head = {
             "id": version.get("id"),
             "seq": version.get("seq"),
@@ -205,12 +201,6 @@ class Build:
             "version": self.install_head,
             "ontology_hash": document.get("ontology"),
         }
-
-    def _known_head(self) -> dict[str, Any] | None:
-        if self.install_head is not None:
-            return self.install_head
-        entry = self.recorded("install") or {}
-        return (entry.get("detail") or {}).get("version")
 
     def load(self) -> dict[str, Any]:
         report = self.stack.runtime("load", timeout=None)
@@ -254,11 +244,10 @@ class Build:
             raise StepFailed("the twin holds no data version after the load", counts)
         if written:
             counts["head_after"] = {"seq": report.get("last_seq"), "id": None}
-        elif self.install_ran or not previous_detail.get("head_after"):
-            known = self._known_head() or {}
-            counts["head_after"] = {"seq": known.get("seq"), "id": known.get("id")}
         else:
-            counts["head_after"] = previous_detail["head_after"]
+            # Nothing new was written: the twin is still where install found it.
+            known = self.install_head or {}
+            counts["head_after"] = {"seq": known.get("seq"), "id": known.get("id")}
         return counts
 
     def api(self) -> dict[str, Any]:

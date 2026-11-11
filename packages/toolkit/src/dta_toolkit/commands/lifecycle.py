@@ -6,6 +6,7 @@ from typing import Annotated
 
 import typer
 from dta_core.log import Log
+from dta_core.manifest.checks import subject_of
 
 from ..output import command, emit, session
 from ..stack import Stack
@@ -15,6 +16,9 @@ from .common import require_complete_env, timed
 log = Log("commands.lifecycle")
 
 DEFAULT_TAIL = 200
+# What removing the twin's data takes back: there is nothing built, and what was
+# accepted no longer exists. The handed-over skill still describes the manifest.
+GATES_OF_THE_DATA = (6, 7)
 
 
 def _stack(workspace: Workspace) -> Stack:
@@ -57,16 +61,32 @@ def down(
     ] = False,
 ) -> None:
     """Remove the stack's containers; its volumes are kept unless --destroy-data."""
-    stack = _stack(session(ctx).workspace)
+    workspace = session(ctx).workspace
+    stack = _stack(workspace)
     with timed(log, "stack down", volumes=destroy_data):
         stack.down(volumes=destroy_data)
+    gates_reset: list[int] = []
+    if destroy_data:
+        manifest = workspace.load_manifest()
+        state = workspace.load_state()
+        for stage in GATES_OF_THE_DATA:
+            if any(result.stage == stage and result.passed for result in state.gates.values()):
+                workspace.record_gate(
+                    stage,
+                    passed=False,
+                    subject_hash=subject_of(stage, manifest),
+                    detail={"reason": "the twin's data was removed; build and accept again"},
+                )
+                gates_reset.append(stage)
+        log.warn("the twin's data was removed", project=stack.plan.project, gates=gates_reset)
     result = {
         "project": stack.plan.project,
         "containers_removed": True,
         "volumes_removed": destroy_data,
+        "gates_reset": gates_reset,
     }
     text = (
-        f"Stack {stack.plan.project} removed with its data."
+        f"Stack {stack.plan.project} removed with its data; build and accept again to use it."
         if destroy_data
         else f"Stack {stack.plan.project} removed; its volumes are kept."
     )
