@@ -42,7 +42,7 @@ def test_failing_build_step_stops_the_build_and_a_rerun_completes_it(make_twin) 
         ("store", "ok"),
         ("install", "ok"),
     ]
-    assert detail["not_attempted"] == ["api", "contract", "ui", "skill"]
+    assert detail["not_attempted"] == ["api", "contract", "sync", "ui", "skill"]
     assert detail["evidence"]["code"].startswith("sync.")
     record = json.loads((twin.root / ".dta" / "build.json").read_text(encoding="utf-8"))
     assert record["steps"]["load"]["status"] == "failed"
@@ -59,6 +59,7 @@ def test_failing_build_step_stops_the_build_and_a_rerun_completes_it(make_twin) 
         "load": ("ran", "ok"),
         "api": ("ran", "ok"),
         "contract": ("ran", "ok"),
+        "sync": ("ran", "skipped"),
         "ui": ("ran", "skipped"),
         "skill": ("ran", "ok"),
     }

@@ -39,6 +39,11 @@ CHECKS = {
     "data.coverage",
     "ui.reachable",
     "skill.current",
+    "skill.endpoints",
+    "sync.scheduler",
+    "sync.runs",
+    "sync.sources",
+    "sync.freshness",
 }
 
 
@@ -116,6 +121,7 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
         "load": ("ran", "ok"),
         "api": ("ran", "ok"),
         "contract": ("ran", "ok"),
+        "sync": ("ran", "skipped"),
         "ui": ("ran", "skipped"),
         "skill": ("ran", "ok"),
     }
@@ -133,6 +139,12 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
     exercised = [entry["operation"] for entry in contract["evidence"]["per_operation"]]
     assert exercised and all(operation.startswith("GET ") for operation in exercised)
     assert all(not name.startswith("GET ") for name in contract["evidence"]["not_exercised"])
+    # A static twin does not sync; its skill lists only what the API serves.
+    for check in accepted["checks"]:
+        if check["id"].startswith("sync."):
+            assert check["passed"] and check["evidence"]["applicable"] is False
+    endpoints = next(check for check in accepted["checks"] if check["id"] == "skill.endpoints")
+    assert endpoints["passed"] and endpoints["evidence"]["missing"] == []
     reports = twin.root / "reports"
     assert (reports / "acceptance.json").is_file() and (reports / "acceptance.md").is_file()
     assert not (reports / "deficit.json").exists() and not (reports / "deficit.md").exists()
@@ -167,6 +179,7 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
         "load": "reused",
         "api": "ran",
         "contract": "ran",
+        "sync": "ran",
         "ui": "ran",
         "skill": "ran",
     }

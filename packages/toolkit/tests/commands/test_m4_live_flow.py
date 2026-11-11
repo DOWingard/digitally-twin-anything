@@ -49,7 +49,7 @@ def test_live_flow_from_manifest_to_handover_and_on(make_twin, tmp_path: Path) -
     assert [entry["step"] for entry in built["steps"]] == list(live.STEPS)
     load = live.step_detail(built, "load")
     assert load["kind"] == "backfill" and load["rows_rejected"] == 0
-    assert load["writers"]["scheduler"] == "stopped" and load["writers"]["api"] == "not answering"
+    assert load["writers"]["scheduler"] == "stopped" and load["writers"]["api"] == "not running"
     synced = live.step_detail(built, "sync")
     assert synced["status"] == "succeeded" and synced["kind"] == "incremental"
     assert synced["run"] and synced["rows_rejected"] == 0 and synced["failing_sources"] == []

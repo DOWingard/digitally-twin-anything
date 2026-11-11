@@ -5,14 +5,18 @@ The limits are fixed here, before anything is measured.
 
 from __future__ import annotations
 
+import subprocess
 import time
 from datetime import UTC, datetime
 from typing import Any
 
 import m3tk_kit as kit
+from dta_core.log import configure
 from dta_core.manifest import parse_manifest
 from dta_toolkit.acceptance import TwinApi
 from dta_toolkit.envfile import read_env
+from dta_toolkit.stack import Stack
+from dta_toolkit.workspace import Workspace
 
 LIVE_BUILD_LIMIT_S = 180.0
 SYNC_RUN_LIMIT_S = 30.0
@@ -52,26 +56,39 @@ def check(result: dict[str, Any], ident: str) -> dict[str, Any]:
     return next(entry for entry in result["checks"] if entry["id"] == ident)
 
 
-def services(twin: kit.KitTwin) -> dict[str, str]:
-    """State of each container of the twin's stack, as `dta up` with no change would see it."""
-    from dta_toolkit.stack import Stack
-    from dta_toolkit.workspace import Workspace
-
+def _stack(twin: kit.KitTwin) -> Stack:
+    """The twin's stack as the toolkit runs it, from this test's own process."""
+    # A command run through CliRunner leaves the log handler on a stream it has closed.
+    configure()
     workspace = Workspace(twin.root)
-    stack = Stack(workspace, workspace.load_manifest())
-    return {row["service"]: row["state"] for row in stack.services()}
+    return Stack(workspace, workspace.load_manifest())
+
+
+def services(twin: kit.KitTwin) -> dict[str, str]:
+    """State of each container of the twin's stack."""
+    return {row["service"]: row["state"] for row in _stack(twin).services()}
+
+
+def started_at(twin: kit.KitTwin, service: str) -> str:
+    """When the service's container last started, as docker records it."""
+    rows = _stack(twin).services()
+    container = next(row["container"] for row in rows if row["service"] == service)
+    done = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.StartedAt}}", container],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout.strip()
 
 
 def stop_service(twin: kit.KitTwin, service: str) -> None:
-    from dta_toolkit.stack import Stack
-    from dta_toolkit.workspace import Workspace
-
-    workspace = Workspace(twin.root)
-    Stack(workspace, workspace.load_manifest()).stop(service)
+    _stack(twin).stop(service)
 
 
 def api(twin: kit.KitTwin) -> TwinApi:
     """A client of the twin's API, as the toolkit makes one."""
+    configure()
     manifest = parse_manifest(twin.dta.read_manifest())
     return TwinApi(manifest, read_env(twin.env_file))
 
