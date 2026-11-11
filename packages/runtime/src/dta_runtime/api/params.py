@@ -47,8 +47,8 @@ Limit = Annotated[
 Cursor = Annotated[
     str | None,
     Query(
-        description="`next_cursor` of the previous page. A cursor keeps reading the version "
-        "of the first page, whatever `at` and `branch` say",
+        description="`next_cursor` of the previous page. A cursor keeps reading the version, "
+        "or the range of versions, of the first page, whatever `at`, `range` and `branch` say",
         max_length=2_000,
     ),
 ]

@@ -134,7 +134,9 @@ def read_objects(
         )
         if shape.abstract:
             part = part.add_column(
-                1, pa.field(TYPE_COLUMN, pa.string()), pa.array([member] * part.num_rows)
+                1,
+                pa.field(TYPE_COLUMN, pa.string()),
+                pa.array([member] * part.num_rows, pa.string()),
             )
         parts.append(part)
     table = parts[0] if len(parts) == 1 else pa.concat_tables(parts, promote_options="permissive")
@@ -154,8 +156,10 @@ def read_objects(
         )
     order = pc.sort_indices(
         table,
-        sort_keys=[(key, "descending" if descending else "ascending"), (UID_FIELD, "ascending")],
-        null_placement="at_end",
+        sort_keys=[
+            (key, "descending" if descending else "ascending", "at_end"),
+            (UID_FIELD, "ascending", "at_end"),
+        ],
     )
     table = table.take(order)
     if key not in (UID_FIELD, *names):

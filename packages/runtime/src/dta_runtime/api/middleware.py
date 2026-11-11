@@ -91,7 +91,7 @@ class ApiMiddleware:
                         log.warn(
                             "request refused: no valid bearer token",
                             method=scope["method"],
-                            credentials=credentials,
+                            reason=f"token {credentials}",
                         )
                         refusal = problem(
                             401,

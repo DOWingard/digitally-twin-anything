@@ -55,12 +55,11 @@ def ordered_edges(edges: pa.Table) -> pa.Table:
     order = pc.sort_indices(
         edges,
         sort_keys=[
-            ("edge_type", "ascending"),
-            ("src", "ascending"),
-            ("dst", "ascending"),
-            ("link_uid", "ascending"),
+            ("edge_type", "ascending", "at_start"),
+            ("src", "ascending", "at_start"),
+            ("dst", "ascending", "at_start"),
+            ("link_uid", "ascending", "at_start"),
         ],
-        null_placement="at_start",
     )
     return edges.take(order)
 
