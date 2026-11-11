@@ -1,0 +1,178 @@
+"""What the twin is: its identity, manifest and ontology at a version."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from dta_core.manifest import to_plain
+from dta_core.ontology import type_signature
+from dta_core.schema import Ontology
+from dta_core.store import LIVE_BRANCH
+from fastapi import APIRouter
+from starlette.responses import Response
+
+from ...graph import edge_kinds
+from ..deps import ServicesDep
+from ..docs import VERSION_HEADERS, errors, versioned
+from ..formats import json_response
+from ..models import ManifestOut, SchemaOut, TwinHealth
+from ..params import At, Branch
+from ..tables import version_headers, version_json
+
+router = APIRouter(prefix="/meta", tags=["meta"])
+
+FIDELITY_UNKNOWN = "unknown"
+
+
+class YamlResponse(Response):
+    media_type = "text/yaml"
+
+
+def schema_document(ontology: Ontology) -> dict[str, Any]:
+    types = []
+    for object_type in ontology.types:
+        link = None
+        if object_type.link is not None:
+            source, target = object_type.link
+            link = {
+                "source": source,
+                "target": target,
+                "source_type": object_type.field(source).target,
+                "target_type": object_type.field(target).target,
+            }
+        types.append(
+            {
+                "name": object_type.name,
+                "kind": "link" if link else "object",
+                "ancestors": list(object_type.ancestors),
+                "link": link,
+                "meta": object_type.meta,
+                "event": object_type.event,
+                "description": object_type.description,
+                "properties": [
+                    {
+                        "name": field.name,
+                        "kind": field.kind.value,
+                        "required": field.required,
+                        "multivalued": field.multivalued,
+                        "target": field.target,
+                        "role": field.role.value,
+                        "unit": field.unit,
+                        "minimum": field.minimum,
+                        "maximum": field.maximum,
+                        "pattern": field.pattern,
+                        "long_text": field.long_text,
+                        "description": field.description,
+                    }
+                    for field in object_type.fields
+                ],
+                "checks": [
+                    {"name": name, "expression": expression}
+                    for name, expression in object_type.checks
+                ],
+            }
+        )
+    return {
+        "types": types,
+        "abstract": {name: list(members) for name, members in sorted(ontology.abstract.items())},
+        "enums": {name: list(values) for name, values in sorted(ontology.enums.items())},
+        "edge_types": [
+            {
+                "name": kind.name,
+                "kind": "link" if kind.is_link else "reference",
+                "holder": kind.holder,
+                "source_types": sorted(kind.source_types),
+                "target_types": sorted(kind.target_types),
+            }
+            for kind in edge_kinds(ontology).values()
+        ],
+        "hash": ontology.hash,
+        "type_signature": type_signature(ontology),
+    }
+
+
+@router.get(
+    "/health",
+    summary="Identity of the twin and the state of a branch",
+    description="Twin id and name, contract tier, head version, number of versions, fidelity "
+    "state, manifest revision and hash, and the ontology in force at the head.",
+    response_model=TwinHealth,
+    responses=versioned(400, 404),
+)
+def twin_health(services: ServicesDep, branch: Branch = LIVE_BRANCH) -> Response:
+    version = services.resolve("head", branch)
+    ontology = services.ontology(version)
+    record = services.twin.manifest_record(at=version)
+    return json_response(
+        {
+            "twin_id": record.get("twin_id"),
+            "name": record.get("name"),
+            "tier": record.get("tier"),
+            "head": version_json(version),
+            "versions": version.seq + 1,
+            "fidelity": FIDELITY_UNKNOWN,
+            "manifest": {
+                "revision": record.get("revision"),
+                "hash": record.get("manifest_hash"),
+            },
+            "ontology_hash": ontology.hash,
+            "type_signature": type_signature(ontology),
+        },
+        version,
+    )
+
+
+@router.get(
+    "/manifest",
+    summary="The manifest in force at a version",
+    response_model=ManifestOut,
+    responses=versioned(400, 404),
+)
+def manifest(services: ServicesDep, at: At = "head", branch: Branch = LIVE_BRANCH) -> Response:
+    version = services.resolve(at, branch)
+    record = services.twin.manifest_record(at=version)
+    document = to_plain(services.twin.manifest(at=version))
+    return json_response(
+        {
+            "manifest": document,
+            "revision": record.get("revision"),
+            "manifest_hash": record.get("manifest_hash"),
+            "version": version_json(version),
+        },
+        version,
+    )
+
+
+@router.get(
+    "/schema",
+    summary="The ontology in force at a version",
+    description="Object and link types with their ancestors, link ends and properties (kind, "
+    "required, multivalued, target, role, unit, bounds, description), abstract classes with "
+    "their concrete descendants, enums, the edge types of the graph, the ontology's hash and "
+    "the type signature.",
+    response_model=SchemaOut,
+    responses=versioned(400, 404),
+)
+def schema(services: ServicesDep, at: At = "head", branch: Branch = LIVE_BRANCH) -> Response:
+    version = services.resolve(at, branch)
+    document = schema_document(services.ontology(version))
+    document["version"] = version_json(version)
+    return json_response(document, version)
+
+
+@router.get(
+    "/schema/linkml",
+    summary="The LinkML text of the ontology in force at a version",
+    response_class=YamlResponse,
+    responses={
+        200: {
+            "content": {"text/yaml": {"schema": {"type": "string"}}},
+            "description": "The domain ontology as LinkML YAML",
+            "headers": VERSION_HEADERS,
+        },
+        **errors(400, 404),
+    },
+)
+def schema_linkml(services: ServicesDep, at: At = "head", branch: Branch = LIVE_BRANCH) -> Response:
+    version = services.resolve(at, branch)
+    return YamlResponse(content=services.ontology(version).source, headers=version_headers(version))
