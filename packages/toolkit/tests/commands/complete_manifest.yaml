@@ -1,0 +1,211 @@
+# A complete live twin of a small pumping station: two sources, three questions
+# (descriptive, predictive, prescriptive), one supervised control carried out by
+# an executor action, and a control loop. It has no gaps once every user-owned
+# field is confirmed, and no findings. Tests derive every failing case from it by
+# one small change.
+twin:
+  id: pump-station
+  name: Pump Station
+contract:
+  purpose: Keep the reservoir tanks inside their safe band at the lowest pumping energy
+  tier: live
+  questions:
+    q_level:
+      text: What is the current level of each tank?
+      kind: descriptive
+      priority: 1
+      tolerance: {metric: mae, value: 0.05, unit: m}
+      staleness: PT10M
+      targets: [Tank.level]
+      function: f_level
+    q_forecast:
+      text: What will each tank level be in six hours?
+      kind: predictive
+      priority: 2
+      tolerance: {metric: rmse, value: 0.2, unit: m}
+      staleness: PT15M
+      targets: [Tank.level]
+      horizon: PT6H
+      function: f_forecast
+      model: m_forecast
+    q_schedule:
+      text: Which pump speed keeps energy use lowest over the next six hours?
+      kind: prescriptive
+      priority: 3
+      tolerance: {metric: mae, value: 2.0, unit: kW}
+      staleness: PT15M
+      targets: [Pump.power]
+      horizon: PT6H
+      function: f_schedule
+      model: m_schedule
+  controls:
+    c_pump_speed:
+      description: Speed of the main pump
+      target: Pump.speed
+      bounds: {minimum: 0, maximum: 1500, max_step: 100}
+      autonomy: supervised
+      action: set_pump_speed
+  objective:
+    description: Pumping energy
+    direction: minimize
+    kpi: f_energy
+    constraints:
+      min_level:
+        description: Every tank stays above one metre
+        expression: Tank.level >= 1
+  boundary:
+    state: [Tank.level]
+    controls: [Pump.speed]
+    drivers: [Tank.inflow]
+    observations: [Tank.level, Tank.inflow, Pump.speed, Pump.power]
+  notification:
+    kind: webhook
+    webhook_env: ALERT_WEBHOOK_URL
+  addons:
+    executors: true
+ontology:
+  path: ontology/domain.yaml
+  type_signature: 6f1c0de2b7a94d3e8f5a1b2c3d4e5f60
+sources:
+  scada:
+    description: Plant SCADA historian
+    connector: sql
+    location: postgresql://${SCADA_USER}:${SCADA_PASSWORD}@${SCADA_HOST}:5432/plant
+    env: [SCADA_USER, SCADA_PASSWORD, SCADA_HOST]
+    refresh_period: PT1M
+    rate_limit_period: PT30S
+    profile:
+      profiled_at: "2026-01-02T00:00:00Z"
+      datasets:
+        tank_readings:
+          rows: 525600
+          columns:
+            ts: {dtype: datetime, null_fraction: 0, distinct_count: 525600, unique: true}
+            tank_id: {dtype: string, null_fraction: 0, distinct_count: 3}
+            level: {dtype: float, null_fraction: 0, distinct_count: 40000, noise_sigma: 0.01}
+            inflow: {dtype: float, null_fraction: 0, distinct_count: 30000, noise_sigma: 0.1}
+          candidate_keys: [[ts, tank_id]]
+          timestamp_columns: [ts]
+          history_start: "2025-01-01T00:00:00Z"
+          history_end: "2026-01-01T00:00:00Z"
+    mappings:
+      tanks:
+        dataset: tank_readings
+        object_type: Tank
+        identity: [tank_id]
+        valid_time: ts
+        properties:
+          level: {column: level, unit: m}
+          inflow: {column: inflow, unit: "m3/h"}
+  pumps:
+    description: Pump vendor cloud API
+    connector: http
+    location: https://pumps.example.org/api/v1/status?api_key=${PUMPS_API_KEY}
+    env: [PUMPS_API_KEY]
+    refresh_period: PT5M
+    profile:
+      profiled_at: "2026-01-02T00:00:00Z"
+      datasets:
+        pump_status:
+          rows: 61000
+          columns:
+            ts: {dtype: datetime, null_fraction: 0, distinct_count: 61000, unique: true}
+            pump_id: {dtype: string, null_fraction: 0, distinct_count: 1}
+            speed: {dtype: float, null_fraction: 0, distinct_count: 1500, noise_sigma: 5}
+            power: {dtype: float, null_fraction: 0, distinct_count: 9000, noise_sigma: 0.5}
+          timestamp_columns: [ts]
+          history_start: "2025-06-01T00:00:00Z"
+          history_end: "2026-01-01T00:00:00Z"
+    mappings:
+      pumps:
+        dataset: pump_status
+        object_type: Pump
+        identity: [pump_id]
+        valid_time: ts
+        properties:
+          speed: {column: speed, unit: "1/min"}
+          power: {column: power, unit: kW}
+sync:
+  interval: PT5M
+  minimum_interval: PT5M
+  maximum_interval: PT10M
+models:
+  m_forecast:
+    question: q_forecast
+    target: Tank.level
+    candidates:
+      arima: {family: arima}
+      boosted: {family: gradient_boosting}
+    features: [Tank.inflow, Pump.speed]
+    backtest: {initial_window: P30D, step: P1D, min_folds: 3}
+    acceptance: {metric: rmse, threshold: 0.15, baseline: persistence}
+  m_schedule:
+    question: q_schedule
+    target: Pump.power
+    candidates:
+      linear: {family: linear}
+    features: [Pump.speed]
+    backtest: {initial_window: P30D, step: P1D, min_folds: 3}
+    acceptance: {metric: mae, threshold: 1.5}
+    interventional: true
+functions:
+  f_level:
+    kind: builtin
+    entry: latest
+    complexity: O(|V|)
+    latency_budget: PT1S
+  f_forecast:
+    kind: builtin
+    entry: forecast
+    complexity: O(|V|)
+    latency_budget: PT5S
+  f_schedule:
+    kind: registered
+    entry: policies:schedule
+    complexity: O(|V| log |V|)
+    latency_budget: PT10S
+    trigger: interval
+    interval: PT15M
+  f_energy:
+    kind: builtin
+    entry: sum
+    params: {property: Pump.power}
+    complexity: O(|V|)
+    latency_budget: PT1S
+actions:
+  set_pump_speed:
+    description: Set the speed of the main pump
+    control: c_pump_speed
+    object_type: Pump
+    binding: executor
+    executor:
+      kind: http
+      url: ${PUMPS_BASE_URL}/pumps/main/speed
+      env: [PUMPS_CONTROL_TOKEN]
+      headers:
+        Authorization: Bearer ${PUMPS_CONTROL_TOKEN}
+        Content-Type: application/json
+      body: {speed: "{{ speed }}"}
+    parameters:
+      speed: {type: number, unit: "1/min", minimum: 0, maximum: 1500}
+control_loops:
+  loop_pumps:
+    description: Re-plans pump speed every quarter hour
+    controls: [c_pump_speed]
+    policy: f_schedule
+    interval: PT15M
+fidelity:
+  interval: PT1H
+  window: P7D
+env:
+  SCADA_USER: {description: Historian user name, secret: false}
+  SCADA_PASSWORD: {description: Historian password}
+  SCADA_HOST: {description: Historian host name, secret: false}
+  PUMPS_API_KEY: {description: Vendor API key for reading pump status}
+  PUMPS_BASE_URL: {description: Vendor control API address, secret: false}
+  PUMPS_CONTROL_TOKEN: {description: Vendor control API token}
+  ALERT_WEBHOOK_URL: {description: Address failures are posted to}
+  DTA_BASE_URL: {description: Twin API address, secret: false}
+  DTA_API_TOKEN: {description: Twin API token}
+  DTA_API_PORT: {description: Twin API port on the host, secret: false}
+  DTA_UI_PORT: {description: Twin UI port on the host, secret: false}
