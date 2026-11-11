@@ -22,14 +22,33 @@ from dta_core.store import StoreSettings
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parents[1] / "api"))
+# The live twin's sources: folders of CSV files that change between runs.
+sys.path.append(str(Path(__file__).parents[1] / "sync"))
 
+import httpx  # noqa: E402
 from api_testkit import WaterHistory, build_water_history, database_name, with_database  # noqa: E402
 from dta_runtime.api import create_app as create_api  # noqa: E402
 from dta_runtime.settings import RuntimeSettings, UiSettings  # noqa: E402
+from dta_runtime.twin import Bundle, Twin  # noqa: E402
 from dta_runtime.ui import create_app as create_ui  # noqa: E402
+from live_api_testkit import (  # noqa: E402
+    PLANT_ENV,
+    Plant,
+    SwitchedClock,
+    live_manifest,
+    plant,
+    wait_for_job,
+)
+from live_testkit import Folder, at  # noqa: E402
+from sync_testkit import T0  # noqa: E402
 from ui_testkit import (  # noqa: E402
+    DRIVER_AGENT,
     FIRST_RENDER_LIMIT_S,
     FIRST_RENDER_S,
+    FOLLOW_LIMIT_S,
+    FOLLOW_S,
+    RUN_NOW_LIMIT_S,
+    RUN_NOW_S,
     ApiServer,
     RequestLog,
     ResponseLog,
@@ -49,6 +68,17 @@ def pytest_terminal_summary(terminalreporter: Any) -> None:
         measured = ", ".join(f"{tab} {seconds:.2f} s" for tab, seconds in FIRST_RENDER_S.items())
         terminalreporter.write_line(
             f"UI first render (limit {FIRST_RENDER_LIMIT_S:.0f} s each): {measured}"
+        )
+    if FOLLOW_S:
+        terminalreporter.write_line(
+            f"UI new head shown to a following session (limit {FOLLOW_LIMIT_S:.0f} s): "
+            f"{len(FOLLOW_S)} heads, slowest {max(FOLLOW_S):.2f} s, "
+            f"each " + ", ".join(f"{seconds:.2f}" for seconds in FOLLOW_S) + " s"
+        )
+    if RUN_NOW_S:
+        terminalreporter.write_line(
+            f"UI 'Run now' answered (limit {RUN_NOW_LIMIT_S:.0f} s): "
+            f"{len(RUN_NOW_S)} clicks, slowest {max(RUN_NOW_S):.2f} s"
         )
 
 
@@ -152,6 +182,134 @@ def make_stack(
 def stack(make_stack: Callable[[], Stack]) -> Stack:
     """The stack the read-only tests share; tests that write versions start their own."""
     return make_stack()
+
+
+@dataclass
+class LiveStack:
+    """A live twin of a small plant, its API (whose clock the test moves) and its interface.
+
+    Runs are started by the test through the API, as an operator's tool would; no
+    scheduler runs. The test's own calls carry `DRIVER_AGENT` as their user agent.
+    """
+
+    twin: Twin
+    clock: SwitchedClock
+    plant: Plant
+    folders: dict[str, Folder]
+    token: str
+    api_url: str
+    ui_url: str
+    api_requests: RequestLog
+    ui_responses: ResponseLog
+    log_file: Path
+    driver: httpx.Client
+
+    def health(self) -> dict[str, Any]:
+        response = self.driver.get("/api/v1/meta/health")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def head_seq(self) -> int:
+        return int(self.health()["head"]["seq"])
+
+    def start(self) -> str:
+        """Ask for a run of every source; the id of its job."""
+        response = self.driver.post("/api/v1/sync/runs", json={})
+        assert response.status_code == 202, response.text
+        return str(response.json()["job"]["id"])
+
+    def wait(self, job_id: str) -> dict[str, Any]:
+        def read() -> dict[str, Any]:
+            response = self.driver.get(f"/api/v1/lifecycle/jobs/{job_id}")
+            assert response.status_code == 200, response.text
+            return response.json()["data"]
+
+        return wait_for_job(read)
+
+    def run(self) -> dict[str, Any]:
+        """Start a run and wait for its job to end."""
+        return self.wait(self.start())
+
+    def runs(self, **params: Any) -> list[dict[str, Any]]:
+        response = self.driver.get("/api/v1/sync/runs", params={"limit": 1000, **params})
+        assert response.status_code == 200, response.text
+        return response.json()["data"]
+
+
+@pytest.fixture
+def make_live(
+    make_twin: Callable[..., Twin],
+    water_text: str,
+    ui_logs: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Callable[..., LiveStack]]:
+    """Start a live twin over a new database, its API and its interface; the plant's
+    sources (`registry`, `scada`, `lab`) unless others are given, and one run done."""
+    root = tmp_path / "plant"
+    root.mkdir()
+    monkeypatch.setenv(PLANT_ENV, str(root))
+    exits: list[Callable[[], None]] = []
+
+    def make(
+        sources: tuple[dict[str, Any], dict[str, Folder]] | None = None,
+        *,
+        questions: dict[str, Any] | None = None,
+        first_run: bool = True,
+    ) -> LiveStack:
+        chosen, folders = sources or plant(root)
+        manifest = live_manifest(water_text, chosen, questions=questions)
+        twin = make_twin(Bundle(manifest=manifest, ontology_text=water_text), t=T0)
+        token = secrets.token_urlsafe(32)
+        clock = SwitchedClock(at(16))
+        connect = Plant()
+        settings = RuntimeSettings(
+            store=twin.store.settings,
+            api_token=token,
+            artifacts_dir=tmp_path / "artifacts",
+            logs_dir=ui_logs,
+        )
+        api_requests = RequestLog(create_api(settings, twin, clock=clock, connect=connect))
+        api = ApiServer(api_requests, free_port()).__enter__()
+        api_url = f"http://127.0.0.1:{api.port}"
+        ui_app = create_ui(UiSettings(api_url=api_url, api_token=token, logs_dir=ui_logs))
+        ui_responses = ResponseLog(ui_app.server)
+        ui = UiServer(ui_responses, free_port()).__enter__()
+        driver = httpx.Client(
+            base_url=api_url,
+            headers={"Authorization": f"Bearer {token}", "User-Agent": DRIVER_AGENT},
+            timeout=httpx.Timeout(60.0),
+        )
+
+        def stop() -> None:
+            # A run still held at a gate would hold up the API's stop.
+            connect.release()
+            driver.close()
+            ui.__exit__(None, None, None)
+            api.__exit__(None, None, None)
+
+        exits.append(stop)
+        live = LiveStack(
+            twin=twin,
+            clock=clock,
+            plant=connect,
+            folders=folders,
+            token=token,
+            api_url=api_url,
+            ui_url=f"http://127.0.0.1:{ui.port}",
+            api_requests=api_requests,
+            ui_responses=ui_responses,
+            log_file=ui_logs / "stack.jsonl",
+            driver=driver,
+        )
+        if first_run:
+            done = live.run()
+            assert done["state"] == "succeeded", done
+        return live
+
+    yield make
+    for stop in reversed(exits):
+        stop()
 
 
 @pytest.fixture

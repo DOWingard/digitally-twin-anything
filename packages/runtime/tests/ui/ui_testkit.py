@@ -21,12 +21,22 @@ import uvicorn
 from api_testkit import HEAD_SEQ, WaterHistory, node, time_of
 from dta_core.schema import FactKind
 from dta_core.store import ChangeSet, CommitMeta, Provenance
+from dta_runtime.ui.header import POLL_MS
 from waitress.server import create_server
 
 PORTS = range(18720, 18740)
-# Fixed before measuring; the measured times are recorded by the test and printed at the end.
+# Fixed before measuring; the measured times are recorded by the tests and printed at the end.
 FIRST_RENDER_LIMIT_S = 5.0
 FIRST_RENDER_S: dict[str, float] = {}
+# A session following the head shows a new head within one poll and two seconds.
+FOLLOW_LIMIT_S = POLL_MS / 1000.0 + 2.0
+FOLLOW_S: list[float] = []
+# A click on "Run now" disables the button and says a run is in progress within a second.
+RUN_NOW_LIMIT_S = 1.0
+RUN_NOW_S: list[float] = []
+# The tests' own calls to the API (starting runs, waiting for them) carry this user agent,
+# so that what the page asked for can be told apart.
+DRIVER_AGENT = "dta-ui-tests"
 
 # Versions written on top of the water history; readings enough for several sheet blocks
 # and for a neighbourhood larger than the graph's default node limit.
@@ -127,6 +137,9 @@ def free_port() -> int:
             if port in _taken:
                 continue
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                # As the servers bind: a port whose last connections are still closing
+                # (TIME_WAIT) is free to listen on again.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try:
                     probe.bind(("127.0.0.1", port))
                 except OSError:
@@ -156,6 +169,7 @@ class SeenRequest:
     path: str
     query: tuple[tuple[str, str], ...]
     body: bytes = b""
+    agent: str = ""
 
     def json(self) -> Any:
         return json.loads(self.body) if self.body else None
@@ -180,7 +194,9 @@ class RequestLog:
             await self.app(scope, receive, send)
             return
         query = tuple(parse_qsl(scope["query_string"].decode("latin-1"), keep_blank_values=True))
-        seen = SeenRequest(scope["method"], scope["path"], query)
+        headers = dict(scope.get("headers") or [])
+        agent = headers.get(b"user-agent", b"").decode("latin-1")
+        seen = SeenRequest(scope["method"], scope["path"], query, agent=agent)
         self.seen.append(seen)
 
         async def receive_and_keep() -> Any:
@@ -197,6 +213,10 @@ class RequestLog:
     def since(self, mark: int, path: str | None = None) -> list[SeenRequest]:
         found = self.seen[mark:]
         return [request for request in found if path is None or request.path == path]
+
+    def from_page(self, mark: int) -> list[SeenRequest]:
+        """What the interface asked for since `mark`, without the tests' own calls."""
+        return [request for request in self.seen[mark:] if request.agent != DRIVER_AGENT]
 
 
 @dataclass

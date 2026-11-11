@@ -8,7 +8,6 @@ from __future__ import annotations
 import time
 
 from dta_runtime.ui import ids
-from dta_runtime.ui.header import POLL_MS
 from selenium.webdriver.common.by import By
 from ui_page import (
     follow_checkbox,
@@ -20,10 +19,10 @@ from ui_page import (
     wait_for,
     wait_graph_at,
 )
-from ui_testkit import write_version
+from ui_testkit import FOLLOW_LIMIT_S, FOLLOW_S, write_version
 
 # One poll interval, plus the time to read the new head and redraw.
-MOVE_WITHIN_S = POLL_MS / 1000.0 + 3.0
+MOVE_WITHIN_S = FOLLOW_LIMIT_S
 
 
 def test_follow_off_stays_and_counts_then_jump_and_follow_move(make_stack, browser):
@@ -65,6 +64,7 @@ def test_follow_off_stays_and_counts_then_jump_and_follow_move(make_stack, brows
     written = time.monotonic()
     wait_for(browser, lambda: selected_seq(browser) == third, "the page to move", MOVE_WITHIN_S)
     moved_after = time.monotonic() - written
+    FOLLOW_S.append(moved_after)
     assert moved_after <= MOVE_WITHIN_S
     assert text_of(browser, ids.NEWER) == "at head"
     wait_graph_at(browser, third)

@@ -226,6 +226,46 @@ def grid_cells(driver: WebDriver, container_id: str, column: str) -> list[str]:
     return [text for _, text in sorted(found)]
 
 
+def selected_cells(driver: WebDriver, container_id: str, column: str) -> list[str]:
+    """Texts of one column of the rows a grid shows as selected."""
+    return [
+        cell.text
+        for cell in driver.find_elements(
+            By.CSS_SELECTOR,
+            f"#{container_id} .ag-center-cols-container .ag-row-selected "
+            f".ag-cell[col-id='{column}']",
+        )
+    ]
+
+
+def grid_scroll_top(driver: WebDriver, container_id: str) -> int:
+    viewport = driver.find_element(By.CSS_SELECTOR, f"#{container_id} .ag-body-viewport")
+    return int(driver.execute_script("return arguments[0].scrollTop;", viewport))
+
+
+def keep_grid(driver: WebDriver, container_id: str, name: str) -> None:
+    """Remember the grid drawn in a container, to tell later whether it was drawn anew."""
+    driver.execute_script(
+        "window['kept_' + arguments[1]] = document.querySelector("
+        "'#' + arguments[0] + ' .ag-root-wrapper');",
+        container_id,
+        name,
+    )
+
+
+def same_grid(driver: WebDriver, container_id: str, name: str) -> bool:
+    """Whether the grid remembered under `name` is still the one drawn in the container."""
+    return bool(
+        driver.execute_script(
+            "const kept = window['kept_' + arguments[1]];"
+            "return !!kept && kept === document.querySelector("
+            "'#' + arguments[0] + ' .ag-root-wrapper');",
+            container_id,
+            name,
+        )
+    )
+
+
 def grid_headers(driver: WebDriver, container_id: str) -> list[str]:
     return [
         header.get_attribute("col-id")
