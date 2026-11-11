@@ -30,6 +30,18 @@ LOG_BLOCK_ROWS = 100
 DIFF_ROWS = 100
 RUNS_SHOWN = 50
 LOG_LINES = 200
+# The twin's own record of a run: what matters most to an operator comes first.
+RUN_COLUMNS_FIRST = (
+    "status",
+    "kind",
+    "started_at",
+    "finished_at",
+    "rows_read",
+    "rows_written",
+    "rows_rejected",
+    "versions_written",
+    "error",
+)
 
 
 def field(label: str, control: Any) -> html.Div:
@@ -271,18 +283,28 @@ def runs_view(schema: Schema, document: dict[str, Any], version: dict[str, Any])
     rows = document.get("data", [])
     if not rows:
         return [note(f"No sync run is recorded as of #{version['seq']}.")]
-    names = ["uid"] + [prop["name"] for prop in schema.properties(SYNC_RUN_TYPE)]
+    properties = {prop["name"]: prop for prop in schema.properties(SYNC_RUN_TYPE)}
+    first = [name for name in RUN_COLUMNS_FIRST if name in properties]
+    names = ["uid", *first, *(name for name in properties if name not in first)]
+
+    def shown(name: str, value: Any) -> Any:
+        if name in properties and properties[name]["kind"] == "datetime":
+            return time_text(value)
+        return cell(value)
+
     heading = f"{plural(len(rows), 'sync run')} as of #{version['seq']}, latest first"
     if document.get("next_cursor"):
         heading = f"The {len(rows)} latest sync runs as of #{version['seq']}"
     return [
         html.Div(heading, className="muted"),
         dag.AgGrid(
-            id="sync-runs-grid",
-            rowData=[{name: cell(row.get(name)) for name in names} for row in rows],
-            columnDefs=[{"field": name} for name in names],
+            id=ids.RUNS_GRID,
+            rowData=[{name: shown(name, row.get(name)) for name in names} for row in rows],
+            columnDefs=[{"field": name, "headerName": name} for name in names],
             defaultColDef={"resizable": True, "sortable": True, "cellDataType": False},
-            style={"height": f"{min(40 + 42 * len(rows), 360)}px", "width": "100%"},
+            # Few rows and columns: all are drawn, so every value is in the page.
+            dashGridOptions={"suppressColumnVirtualisation": True},
+            style={"height": f"{min(60 + 42 * len(rows), 360)}px", "width": "100%"},
         ),
     ]
 
