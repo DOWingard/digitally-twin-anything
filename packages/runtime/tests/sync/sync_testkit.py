@@ -7,21 +7,51 @@ connector implements.
 
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
 from dta_core.manifest.models import Source
 from dta_core.sources import BATCH_ROWS, Connector, SourceUnavailable, UnknownDataset
-from dta_core.store import Store
+from dta_core.store import Store, StoreSettings
+from dta_runtime.settings import RuntimeSettings
 
 T0 = datetime(2026, 1, 5, tzinfo=UTC)
 MINUTE = timedelta(minutes=1)
 TIME = pa.timestamp("us", tz="UTC")
 # The trace every test run is made under, so that the names of runs repeat.
 TRACE = "0123456789abcdef0123456789abcdef"
+
+
+def _runtime_conftest() -> Any:
+    # The runtime's own conftest holds `water_manifest` and the path of the
+    # ontology. It is loaded by path because several conftest modules share
+    # the bare name.
+    path = Path(__file__).resolve().parents[1] / "conftest.py"
+    spec = importlib.util.spec_from_file_location("dta_runtime_tests_conftest", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_RUNTIME = _runtime_conftest()
+water_manifest = _RUNTIME.water_manifest
+WATER_ONTOLOGY: Path = _RUNTIME.WATER_ONTOLOGY
+
+
+def runtime_settings(store: StoreSettings, directory: Path) -> RuntimeSettings:
+    """Settings of a runtime whose files go under `directory`."""
+    return RuntimeSettings(
+        store=store,
+        api_token="t" * 32,
+        artifacts_dir=directory / "artifacts",
+        logs_dir=directory / "logs",
+    )
 
 
 class MemoryConnector:
