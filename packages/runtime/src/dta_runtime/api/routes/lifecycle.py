@@ -1,18 +1,19 @@
-"""The running stack: the log lines of its services."""
+"""The running stack: the log lines of its services and the jobs of the API."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Path, Query
 from starlette.responses import Response
 
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, errors
 from ..formats import json_response
+from ..jobs import KEEP
 from ..logfiles import LogQuery, read_logs
-from ..models import LogsOut
+from ..models import JobList, JobOne, JobState, LogsOut
 from ..params import split_list
 from ..problems import ApiError
 from ..services import repair_plus
@@ -21,6 +22,46 @@ router = APIRouter(prefix=f"{API_PREFIX}/lifecycle", tags=["lifecycle"])
 
 LOGS_LIMIT_DEFAULT = 200
 LOGS_LIMIT_MAX = 5_000
+JOBS_LIMIT_DEFAULT = 50
+
+
+@router.get(
+    "/jobs",
+    summary="The API's background jobs, newest first",
+    description=f"Jobs live in the memory of the API process; the last {KEEP} are kept, the "
+    "oldest finished ones dropped first. A sync run's durable record is its `TwinSyncRun` "
+    "(`/sync/runs`), not its job.",
+    response_model=JobList,
+    responses=errors(400),
+)
+async def jobs(
+    services: ServicesDep,
+    kind: Annotated[
+        str | None, Query(description="Only jobs of this kind", examples=["sync"], max_length=100)
+    ] = None,
+    state: Annotated[JobState | None, Query(description="Only jobs in this state")] = None,
+    limit: Annotated[
+        int, Query(ge=1, le=KEEP, description="Most jobs returned")
+    ] = JOBS_LIMIT_DEFAULT,
+) -> Response:
+    # A coroutine: it reads memory only, and needs no worker thread.
+    return json_response({"data": services.jobs.list(kind=kind, state=state, limit=limit)})
+
+
+@router.get(
+    "/jobs/{id}",
+    summary="One background job",
+    response_model=JobOne,
+    responses=errors(400, 404, notes={404: "No job with this id is kept (`job.not_found`)"}),
+)
+async def job(
+    services: ServicesDep,
+    id: Annotated[str, Path(description="The job's id", max_length=64, examples=["9f2c" * 8])],
+) -> Response:
+    found = services.jobs.get(id)
+    if found is None:
+        raise ApiError(f"no job {id!r} is kept by this API process", code="job.not_found")
+    return json_response({"data": found})
 
 
 @router.get(

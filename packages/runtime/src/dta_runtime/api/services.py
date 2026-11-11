@@ -7,6 +7,7 @@ new versions arrive.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 from collections import OrderedDict
@@ -19,15 +20,23 @@ from dta_core.store import InvalidInput, Selector, Store, VersionRef
 
 from ..graph import GraphCache
 from ..settings import RuntimeSettings
+from ..sync.extract import Connect
 from ..twin import Twin
 from .context import note_version
+from .jobs import JobRunner
+from .live import Clocks, HeadState, describe_head
 from .problems import ApiError
+from .rejectfile import RejectsReader
+from .syncing import SyncJobs, sync_work
 
 # A `+` left unencoded in a query string arrives as a space; in a time offset
 # it can only have been a plus.
 _OFFSET_AFTER_SPACE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[0-9:.]+) (\d{2}(:?\d{2})?)$")
 
 ONTOLOGIES_KEPT = 256
+# Head versions described for health and the sync routes: a few branches, and the
+# head a poller saw just before the latest one.
+HEADS_KEPT = 8
 
 
 def repair_plus(text: str) -> str:
@@ -44,12 +53,36 @@ class Services:
     twin: Twin
     settings: RuntimeSettings
     graphs: GraphCache
+    jobs: JobRunner = field(default_factory=JobRunner)
+    clocks: Clocks = field(default_factory=lambda: Clocks(None, os.environ))
+    # How a sync run opens a source; None for the real connectors.
+    connect: Connect | None = None
+    rejects: RejectsReader = field(default_factory=RejectsReader)
+    sync_jobs: SyncJobs = field(init=False)
     _ontologies: OrderedDict[str, Ontology] = field(default_factory=OrderedDict)
+    _heads: OrderedDict[str, HeadState] = field(default_factory=OrderedDict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __post_init__(self) -> None:
+        self.sync_jobs = SyncJobs(self.jobs, lambda params: sync_work(self, params))
 
     @property
     def store(self) -> Store:
         return self.twin.store
+
+    def head_state(self, version: VersionRef) -> HeadState:
+        """What is known at a version, read once: a version never changes."""
+        with self._lock:
+            found = self._heads.get(version.id)
+            if found is not None:
+                self._heads.move_to_end(version.id)
+                return found
+        found = describe_head(self.twin, self.ontology(version), version)
+        with self._lock:
+            self._heads[version.id] = found
+            while len(self._heads) > HEADS_KEPT:
+                self._heads.popitem(last=False)
+        return found
 
     def resolve(self, at: str, branch: str) -> VersionRef:
         """The one version a selector names; a range is refused."""

@@ -21,6 +21,7 @@ _DESCRIPTIONS = {
     400: "The request is malformed: a parameter, selector, filter, cursor or limit",
     401: "No valid bearer token was given",
     404: "The version, branch, type, property or object does not exist",
+    409: "The request conflicts with the state of the twin or of its jobs",
     422: "The change breaks a constraint of the ontology",
     500: "The request failed on the server",
     503: "The store cannot be reached",
@@ -41,10 +42,12 @@ VERSION_HEADERS = {
 _BINARY = {"schema": {"type": "string", "format": "binary"}}
 
 
-def errors(*statuses: int) -> dict[int | str, dict[str, Any]]:
-    """Error responses of a route; 401, 500 and 503 apply to every route."""
+def errors(*statuses: int, notes: dict[int, str] | None = None) -> dict[int | str, dict[str, Any]]:
+    """Error responses of a route; 401, 500 and 503 apply to every route. `notes` replaces
+    the general description of a status with what it means on this route."""
     wanted = sorted({*statuses, 401, 500, 503})
-    return {status: {"model": Problem, "description": _DESCRIPTIONS[status]} for status in wanted}
+    described = {**_DESCRIPTIONS, **(notes or {})}
+    return {status: {"model": Problem, "description": described[status]} for status in wanted}
 
 
 def tabular(*statuses: int) -> dict[int | str, dict[str, Any]]:
@@ -68,9 +71,11 @@ def tabular(*statuses: int) -> dict[int | str, dict[str, Any]]:
     }
 
 
-def versioned(*statuses: int) -> dict[int | str, dict[str, Any]]:
+def versioned(
+    *statuses: int, notes: dict[int, str] | None = None
+) -> dict[int | str, dict[str, Any]]:
     """Responses of a route returning JSON about one version."""
-    return {200: {"headers": dict(VERSION_HEADERS)}, **errors(*statuses)}
+    return {200: {"headers": dict(VERSION_HEADERS)}, **errors(*statuses, notes=notes)}
 
 
 def build_openapi(app: FastAPI) -> dict[str, Any]:

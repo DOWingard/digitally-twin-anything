@@ -15,8 +15,10 @@ from ...graph import edge_kinds
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, VERSION_HEADERS, errors, versioned
 from ..formats import json_response
+from ..live import sync_document
 from ..models import ManifestOut, SchemaOut, TwinHealth
 from ..params import At, Branch
+from ..syncing import SYNC_KIND
 from ..tables import version_headers, version_json
 
 router = APIRouter(prefix=f"{API_PREFIX}/meta", tags=["meta"])
@@ -98,14 +100,21 @@ def schema_document(ontology: Ontology) -> dict[str, Any]:
     "/health",
     summary="Identity of the twin and the state of a branch",
     description="Twin id and name, contract tier, head version, number of versions, fidelity "
-    "state, manifest revision and hash, and the ontology in force at the head.",
+    "state, manifest revision and hash, and the ontology in force at the head. `clock` is "
+    "what the twin's clock tells now (`available` false when it cannot be read; the answer "
+    "is still 200). For a live twin, `sync` says how far the twin is behind its sources: "
+    "the freshness of each source on that clock, the largest of them against the "
+    "contract's staleness, the last run that recorded itself and the sync job in progress. "
+    "Meant to be polled: what depends on the head is read once per head version.",
     response_model=TwinHealth,
     responses=versioned(400, 404),
 )
 def twin_health(services: ServicesDep, branch: Branch = LIVE_BRANCH) -> Response:
     version = services.resolve("head", branch)
-    ontology = services.ontology(version)
-    record = services.twin.manifest_record(at=version)
+    state = services.head_state(version)
+    record = state.record
+    reading = services.clocks.read(state.manifest, state.manifest_hash)
+    active = services.jobs.active(SYNC_KIND) if state.live else None
     return json_response(
         {
             "twin_id": record.get("twin_id"),
@@ -118,8 +127,14 @@ def twin_health(services: ServicesDep, branch: Branch = LIVE_BRANCH) -> Response
                 "revision": record.get("revision"),
                 "hash": record.get("manifest_hash"),
             },
-            "ontology_hash": ontology.hash,
-            "type_signature": type_signature(ontology),
+            "ontology_hash": state.ontology.hash,
+            "type_signature": state.type_signature,
+            "clock": reading.document(),
+            "sync": sync_document(
+                state,
+                reading,
+                services.jobs.document(active) if active is not None else None,
+            ),
         },
         version,
     )

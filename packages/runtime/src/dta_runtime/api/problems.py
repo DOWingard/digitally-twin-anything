@@ -25,9 +25,23 @@ INTERNAL = "api.internal"
 
 
 class ApiError(DtaError):
-    """A request the API refuses for a reason of its own."""
+    """A request the API refuses for a reason of its own.
+
+    `extra` holds members added to the problem document beside the standard ones.
+    """
 
     code = "api.error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        detail: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, code=code, detail=detail)
+        self.extra = extra or {}
 
 
 STATUS_BY_CODE: dict[str, int] = {
@@ -56,6 +70,15 @@ STATUS_BY_CODE: dict[str, int] = {
     "graph.too_broad": 400,
     "graph.bad_weight": 400,
     "twin.not_registered": 404,
+    "twin.not_live": 409,
+    "job.not_found": 404,
+    "job.closed": 503,
+    "sync.unknown_source": 400,
+    "sync.replay_unknown": 400,
+    "sync.key_reused": 409,
+    "sync.busy": 409,
+    "sync.run_not_found": 404,
+    "sync.rejects_missing": 404,
 }
 
 # What a server error tells the client; the cause stays in the logs.
@@ -87,6 +110,7 @@ def problem(
     *,
     errors: list[dict[str, Any]] | None = None,
     headers: dict[str, str] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> Response:
     document: dict[str, Any] = {
         "type": f"urn:dta:error:{code}",
@@ -98,6 +122,9 @@ def problem(
     }
     if errors is not None:
         document["errors"] = errors
+    # Members of the problem's own kind, such as the job a refusal is about.
+    for key, value in (extra or {}).items():
+        document.setdefault(key, value)
     return Response(
         content=json.dumps(document, default=str, separators=(",", ":")),
         status_code=status,
@@ -122,7 +149,8 @@ def error_response(error: DtaError) -> Response:
     errors = None
     if isinstance(error, ViolationError):
         errors = [asdict(violation) for violation in error.violations]
-    return problem(status, error.code, error.message, errors=errors)
+    extra = error.extra if isinstance(error, ApiError) else None
+    return problem(status, error.code, error.message, errors=errors, extra=extra)
 
 
 def internal_error_response() -> Response:

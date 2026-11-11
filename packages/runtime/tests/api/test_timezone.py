@@ -6,12 +6,13 @@ import io
 import os
 import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pyarrow as pa
 import pytest
 from api_testkit import TOKEN, WaterHistory
 from dta_runtime.api import create_app
+from dta_runtime.clock import FixedClock
 from dta_runtime.settings import RuntimeSettings
 from starlette.testclient import TestClient
 
@@ -40,9 +41,11 @@ ARROW_READS = [
 
 
 def read_everything(settings: RuntimeSettings, history: WaterHistory) -> dict:
-    """What a fresh API answers; the twin is opened anew, so are its connections."""
+    """What a fresh API answers; the twin is opened anew, so are its connections. Its clock
+    stands still, at a time given with an offset of its own."""
     seen: dict = {}
-    with TestClient(create_app(settings)) as client:
+    clock = FixedClock(datetime(2026, 1, 5, 13, 30, tzinfo=timezone(timedelta(hours=-8))))
+    with TestClient(create_app(settings, clock=clock)) as client:
         for path, params in JSON_READS:
             response = client.get(path, params=params, headers=HEADERS)
             assert response.status_code == 200, (path, response.text)
@@ -90,6 +93,7 @@ def test_times_do_not_depend_on_the_process_time_zone(
 
     health, version_t = there[("/api/v1/meta/health", "{}")]
     assert version_t == "2026-01-05T21:00:00Z" == health["head"]["t"]
+    assert health["clock"]["now"] == "2026-01-05T21:30:00Z"
     versions, _ = there[("/api/v1/history/versions", str({"from": "#2", "to": "#6"}))]
     assert [v["t"] for v in versions["data"]] == [f"2026-01-05T0{h}:00:00Z" for h in range(2, 7)]
     local_selector, _ = there[("/api/v1/history/versions/2026-01-05T05:30:00-08:00", "{}")]
