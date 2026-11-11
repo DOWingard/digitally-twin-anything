@@ -264,10 +264,13 @@ class VersionIndex:
             line = None
         if line is None:
             return self._rewritten(conn, chain, head)
+        # Set before the versions are added, and as a new set: a reader in
+        # another thread then never sees a merge without the forks that came
+        # with it, nor a set that changes while it is being read.
+        chain.forked = chain.forked | _side_parents(rows, line)
         for offset, (commit, date, message, parents) in enumerate(line):
             position = known.seq + 1 + offset
             chain.add(parse_version(chain.branch, position, commit, date, message, parents))
-        chain.forked |= _side_parents(rows, line)
         log.debug("version index extended", branch=chain.branch, added=len(line))
         return chain
 
