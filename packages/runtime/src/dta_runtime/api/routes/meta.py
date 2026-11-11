@@ -103,8 +103,9 @@ def schema_document(ontology: Ontology) -> dict[str, Any]:
     "state, manifest revision and hash, and the ontology in force at the head. `clock` is "
     "what the twin's clock tells now (`available` false when it cannot be read; the answer "
     "is still 200). For a live twin, `sync` says how far the twin is behind its sources: "
-    "the freshness of each source on that clock, the largest of them against the "
-    "contract's staleness, the last run that recorded itself and the sync job in progress. "
+    "the freshness of each source on that clock, each question that states a staleness "
+    "against the sources it is answered from, the last run that recorded itself and the "
+    "sync job in progress. "
     "Meant to be polled: what depends on the head is read once per head version.",
     response_model=TwinHealth,
     responses=versioned(400, 404),

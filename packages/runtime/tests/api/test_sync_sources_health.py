@@ -7,9 +7,19 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from dta_core.schema import FactKind
+from dta_core.store import ChangeSet, CommitMeta, Provenance
 from dta_runtime.api.live import Clocks
+from dta_runtime.sync.records import ACTOR
 from dta_runtime.twin import Bundle, install_twin
-from live_api_testkit import PLANT_ENV, LiveApi, live_manifest, plant, records
+from live_api_testkit import (
+    PLANT_ENV,
+    LiveApi,
+    SwitchedClock,
+    live_manifest,
+    plant,
+    records,
+)
 from live_testkit import at
 from runtime_testkit import water_manifest
 
@@ -206,6 +216,101 @@ def test_health_tells_how_fresh_the_twin_is_on_its_clock(
         if found["message"] == "head described" and found["data"]["head_seq"] == head.seq
     ]
     assert len(described) == 1
+
+
+def test_a_question_is_held_only_against_the_sources_it_is_answered_from(
+    live_api: MakeLive, plant_dir: Path
+):
+    sources, _ = plant(plant_dir)
+    clock = SwitchedClock(at(16))
+    live = live_api(
+        sources,
+        clock=clock,
+        questions={
+            # Tank levels come from `scada` (newest at minute 7), readings from `lab` (minute 9).
+            "levels": {"text": "How full?", "staleness": 600, "targets": ["Tank.level"]},
+            "readings": {"text": "What was read?", "staleness": 450, "targets": ["Reading.value"]},
+            "anything": {"text": "Whatever the twin holds", "staleness": 7200},
+            "unbounded": {"text": "No limit asked"},
+        },
+    )
+    before = live.health()["sync"]
+    assert {found["id"] for found in before["questions"]} == {"levels", "readings", "anything"}
+    assert all(
+        (found["freshness_s"], found["fresh"], found["source"]) == (None, None, None)
+        for found in before["questions"]
+    )
+    # Nothing can be measured yet: the shortest staleness is what the twin is held to.
+    assert (before["staleness"], before["freshness_s"], before["fresh"]) == ("PT7M30S", None, None)
+
+    live.run({})
+    sync = live.health()["sync"]
+    ages = {found["id"]: found["freshness_s"] for found in sync["sources"]}
+    assert (ages["scada"], ages["lab"]) == (540.0, 420.0)
+    by_id = {found["id"]: found for found in sync["questions"]}
+    assert by_id["levels"] == {
+        "id": "levels",
+        "staleness": "PT10M",
+        "freshness_s": 540.0,
+        "fresh": True,
+        "source": "scada",
+    }
+    assert (by_id["readings"]["freshness_s"], by_id["readings"]["source"]) == (420.0, "lab")
+    # Targets that lead to no source: every source counts, the one furthest behind decides.
+    behind = max(ages, key=lambda source: ages[source])
+    assert (by_id["anything"]["freshness_s"], by_id["anything"]["source"]) == (
+        ages[behind],
+        behind,
+    )
+    # The question nearest its limit speaks for the twin: readings, 30 s inside it.
+    assert (sync["staleness"], sync["freshness_s"], sync["fresh"]) == ("PT7M30S", 420.0, True)
+
+    # `lab` falls behind its question; the question answered from `scada` stays fresh.
+    clock.set(at(16) + timedelta(seconds=31))
+    late = live.health()["sync"]
+    by_id = {found["id"]: found for found in late["questions"]}
+    assert (by_id["readings"]["freshness_s"], by_id["readings"]["fresh"]) == (451.0, False)
+    assert (by_id["levels"]["freshness_s"], by_id["levels"]["fresh"]) == (571.0, True)
+    assert (late["staleness"], late["freshness_s"], late["fresh"]) == ("PT7M30S", 451.0, False)
+
+    # A clock that cannot be read: nothing is measured, nothing is called stale.
+    clock.down = True
+    blind = live.health()
+    assert blind["clock"]["available"] is False
+    assert (blind["sync"]["freshness_s"], blind["sync"]["fresh"]) == (None, None)
+    assert all(found["fresh"] is None for found in blind["sync"]["questions"])
+
+
+def test_without_a_staleness_the_age_of_the_twin_is_told_and_not_judged(
+    live_api: MakeLive, plant_dir: Path
+):
+    sources, _ = plant(plant_dir)
+    live = live_api(sources, questions={"open": {"text": "No limit asked"}})
+    live.run({})
+    sync = live.health()["sync"]
+    assert sync["questions"] == []
+    assert sync["staleness"] is None and sync["fresh"] is None
+    assert sync["freshness_s"] == max(found["freshness_s"] for found in sync["sources"])
+
+
+def test_the_last_run_is_the_newest_that_recorded_itself(live_api: MakeLive, plant_dir: Path):
+    sources, _ = plant(plant_dir)
+    live = live_api(sources)
+    report = live.run({})["result"]
+    store = live.twin.store
+    head = store.head()
+    # What a run leaves when it is stopped half-way: a version of its own and no record.
+    tank = store.table("Tank", limit=1).to_pylist()[0]
+    store.commit(
+        ChangeSet(
+            upserts={"Tank": [{**tank, "level": 1.5}]},
+            provenance=Provenance(source="scada", kind=FactKind.observed, t_valid=head.t),
+        ),
+        CommitMeta(cause="sync", actor=ACTOR, t=head.t, run="twin_sync_run:stopped-half-way"),
+    )
+    assert store.head().seq == head.seq + 1
+    last = live.health()["sync"]["last_run"]
+    assert (last["uid"], last["status"]) == (report["run"], "succeeded")
 
 
 def test_the_clock_is_built_from_the_manifest_and_rebuilt_when_it_changes(water_text: str):

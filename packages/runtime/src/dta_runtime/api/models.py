@@ -191,19 +191,40 @@ class ActiveJob(BaseModel):
     state: Literal["queued", "running"]
 
 
+class QuestionFreshness(BaseModel):
+    """One question that states a staleness, against the sources it is answered from."""
+
+    id: str
+    staleness: str = Field(description="The oldest its data may be, ISO 8601", examples=["PT1H"])
+    freshness_s: float | None = Field(
+        description="The largest freshness among the sources that map the question's targets "
+        "(all sources when its targets lead to none); null when the clock cannot be read or "
+        "none of them has a watermark"
+    )
+    fresh: bool | None = Field(description="Whether `freshness_s` is within `staleness`")
+    source: str | None = Field(description="The source that `freshness_s` is the freshness of")
+
+
 class SyncHealth(BaseModel):
     """How far a live twin is behind its sources."""
 
     interval: str = Field(description="Time between sync runs, ISO 8601", examples=["PT15M"])
     staleness: str | None = Field(
-        description="The shortest staleness the contract's questions allow, ISO 8601",
+        description="The staleness of the question nearest its limit, ISO 8601; the shortest "
+        "of the contract when none can be measured; null when no question states one",
         examples=["PT1H"],
     )
     freshness_s: float | None = Field(
-        description="The largest freshness of the sources; null when the clock cannot be read "
-        "or no source has a watermark"
+        description="The freshness of the question nearest its limit. When no question states "
+        "a staleness: the largest freshness of the sources. Null when it cannot be measured"
     )
-    fresh: bool | None = Field(description="Whether `freshness_s` is within `staleness`")
+    fresh: bool | None = Field(
+        description="False when a question's data is older than its staleness, true when "
+        "every question that can be measured is within it, null when none can"
+    )
+    questions: list[QuestionFreshness] = Field(
+        description="The questions that state a staleness, in the contract's order"
+    )
     sources: list[SourceFreshness] = Field(description="The manifest's sources")
     last_run: LastRun | None = Field(description="The latest run that recorded itself")
     job: ActiveJob | None = Field(description="The sync job queued or running, if any")

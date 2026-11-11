@@ -59,9 +59,10 @@ def live_manifest(
     *,
     sync: Mapping[str, Any] | None = LIVE,
     tier: str = "live",
+    questions: Mapping[str, Any] | None = None,
 ) -> Manifest:
     sections: dict[str, Any] = {
-        "contract": {"tier": tier, "questions": QUESTIONS},
+        "contract": {"tier": tier, "questions": dict(questions or QUESTIONS)},
         "sources": dict(sources),
     }
     if sync is not None:

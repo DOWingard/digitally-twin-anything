@@ -17,6 +17,7 @@ from typing import Any
 from dta_core.errors import DtaError
 from dta_core.log import Log
 from dta_core.manifest import Manifest
+from dta_core.manifest.checks import ManifestView
 from dta_core.ontology import type_signature
 from dta_core.schema import Ontology
 from dta_core.store import VersionRef
@@ -33,9 +34,6 @@ log = Log("api.live")
 # A clock that cannot be read is reported at most this often, in seconds on the wall:
 # health is polled every second or so.
 CLOCK_WARN_EVERY_S = 30.0
-# How many runs back the last finished run is looked for; a run in progress or
-# one that was interrupted has versions but no record of its own.
-LAST_RUN_LOOKBACK = 10
 DISABLED = "disabled"
 SOURCE_COLUMNS = [
     "connector",
@@ -211,6 +209,16 @@ class SourceState:
 
 
 @dataclass(frozen=True)
+class QuestionLimit:
+    """How old the data a question is answered from may be, and where that data comes from."""
+
+    id: str
+    staleness: timedelta
+    # Sources that map one of the question's targets; every source when none is known.
+    sources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class HeadState:
     version: VersionRef
     record: Mapping[str, Any]
@@ -219,7 +227,10 @@ class HeadState:
     ontology: Ontology
     type_signature: str
     interval: timedelta | None
+    # The shortest staleness any question allows.
     staleness: timedelta | None
+    # One per question that states a staleness, in the contract's order.
+    limits: tuple[QuestionLimit, ...]
     # The manifest's sources in its order, then those it no longer names.
     sources: tuple[SourceState, ...]
     last_run: dict[str, Any] | None
@@ -239,10 +250,20 @@ def _mapping_kind(ontology: Ontology, object_type: str | None, valid_time: str |
     return "state"
 
 
-def _staleness(manifest: Manifest) -> timedelta | None:
-    questions = (manifest.contract.questions if manifest.contract else None) or {}
-    found = [q.staleness for q in questions.values() if q.staleness is not None]
-    return min(found) if found else None
+def _limits(manifest: Manifest) -> tuple[QuestionLimit, ...]:
+    """What each question with a staleness depends on.
+
+    A question is answered from the sources that map its targets, so a source
+    that is slow by nature does not make a question stale that never reads it.
+    A question whose targets lead to no source is held against all of them.
+    """
+    view = ManifestView(manifest)
+    everything = tuple(view.sources)
+    return tuple(
+        QuestionLimit(qid, question.staleness, tuple(view.dependencies(question)) or everything)
+        for qid, question in view.questions.items()
+        if question.staleness is not None
+    )
 
 
 def _sources(
@@ -323,35 +344,42 @@ def _sources(
 def _runs(
     twin: Twin, ontology: Ontology, version: VersionRef, live: bool
 ) -> tuple[dict[str, Any] | None, datetime | None]:
-    """The last run that recorded itself, found as the pipeline finds it (the newest
-    version a run wrote, then that run), and the time of the oldest such version."""
+    """The last run that recorded itself, and the time of the oldest version a run wrote.
+
+    Each is found with a read of one row, however long the twin's history is.
+    """
     store = twin.store
-    written = store.versions(
-        f"#0..{version.id}", version.branch, cause="sync", actor=ACTOR, newest_first=True
-    )
-    first = written[-1].t if written else None
-    if not live or not ontology.has_type(RUN_TYPE):
+    selector = f"#0..{version.id}"
+    oldest = store.versions(selector, version.branch, cause="sync", actor=ACTOR, limit=1)
+    first = oldest[0].t if oldest else None
+    if not live or not oldest or not ontology.has_type(RUN_TYPE):
         return None, first
-    looked: set[str] = set()
-    for found in written:
-        uid = found.run
-        if not uid or not uid.startswith(f"{RUN_SCOPE}:") or uid in looked:
-            continue
-        looked.add(uid)
+    newest = store.versions(
+        selector, version.branch, cause="sync", actor=ACTOR, limit=1, newest_first=True
+    )
+    uid = newest[0].run if newest else None
+    if uid and uid.startswith(f"{RUN_SCOPE}:"):
         stored = store.get(uid, at=version, ontology=ontology)
         if stored is not None and stored.type == RUN_TYPE:
             return {
                 "uid": uid,
                 **{name: stored.values.get(name) for name in LAST_RUN_FIELDS},
             }, first
-        if len(looked) >= LAST_RUN_LOOKBACK:
-            log.warn(
-                "no recorded run among the latest runs that wrote versions",
-                runs=len(looked),
-                head_seq=version.seq,
-            )
-            break
-    return None, first
+    # The newest version belongs to a run that has no record: it is in progress or was
+    # interrupted. The last one that finished is the newest record.
+    table = store.table(
+        RUN_TYPE,
+        columns=list(LAST_RUN_FIELDS),
+        order_by=[("started_at", "desc")],
+        limit=1,
+        at=version,
+        ontology=ontology,
+    )
+    rows = table.to_pylist()
+    if not rows:
+        return None, first
+    log.debug("the newest version's run has no record; the newest record is taken", run=uid)
+    return dict(rows[0]), first
 
 
 def describe_head(twin: Twin, ontology: Ontology, version: VersionRef) -> HeadState:
@@ -361,6 +389,7 @@ def describe_head(twin: Twin, ontology: Ontology, version: VersionRef) -> HeadSt
     manifest = twin.manifest(at=version, branch=version.branch)
     interval = manifest.sync.interval if manifest.sync else None
     sources = _sources(twin, manifest, ontology, version)
+    limits = _limits(manifest)
     last_run, first_sync_t = _runs(twin, ontology, version, interval is not None)
     state = HeadState(
         version=version,
@@ -370,7 +399,8 @@ def describe_head(twin: Twin, ontology: Ontology, version: VersionRef) -> HeadSt
         ontology=ontology,
         type_signature=type_signature(ontology),
         interval=interval,
-        staleness=_staleness(manifest),
+        staleness=min((limit.staleness for limit in limits), default=None),
+        limits=limits,
         sources=sources,
         last_run=last_run,
         first_sync_t=first_sync_t,
@@ -411,6 +441,21 @@ def source_document(source: SourceState, now: datetime | None) -> dict[str, Any]
     }
 
 
+def _question_document(limit: QuestionLimit, ages: Mapping[str, float | None]) -> dict[str, Any]:
+    """How old the data of one question is: that of the source it waits for longest."""
+    known = [(age, source) for source in limit.sources if (age := ages.get(source)) is not None]
+    age, behind = max(known) if known else (None, None)
+    allowed = limit.staleness.total_seconds()
+    return {
+        "id": limit.id,
+        "staleness": duration_text(limit.staleness),
+        "freshness_s": age,
+        "fresh": None if age is None else age <= allowed,
+        "source": behind,
+        "margin_s": None if age is None else allowed - age,
+    }
+
+
 def sync_document(
     state: HeadState, reading: ClockReading, job: Mapping[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -428,11 +473,23 @@ def sync_document(
         for source in state.sources
         if source.in_manifest and source.status != DISABLED
     ]
-    known = [source["freshness_s"] for source in sources if source["freshness_s"] is not None]
-    worst = max(known) if known else None
-    fresh = None
-    if worst is not None and state.staleness is not None:
-        fresh = worst <= state.staleness.total_seconds()
+    ages = {source["id"]: source["freshness_s"] for source in sources}
+    questions = [_question_document(limit, ages) for limit in state.limits]
+    measured = [found for found in questions if found["fresh"] is not None]
+    staleness = duration_text(state.staleness)
+    if measured:
+        # The question nearest its limit, or furthest beyond it, speaks for the twin.
+        nearest = min(measured, key=lambda found: (found["margin_s"], found["id"]))
+        worst, staleness = nearest["freshness_s"], nearest["staleness"]
+        fresh: bool | None = all(found["fresh"] for found in measured)
+    elif state.limits:
+        worst, fresh = None, None
+    else:
+        # No question sets a limit: the age of the source furthest behind is still told.
+        known = [age for age in ages.values() if age is not None]
+        worst, fresh = (max(known) if known else None), None
+    for found in questions:
+        del found["margin_s"]
     last_run = None
     if state.last_run is not None:
         last_run = {
@@ -441,9 +498,10 @@ def sync_document(
         }
     return {
         "interval": duration_text(state.interval),
-        "staleness": duration_text(state.staleness),
+        "staleness": staleness,
         "freshness_s": worst,
         "fresh": fresh,
+        "questions": questions,
         "sources": sources,
         "last_run": last_run,
         # The job may have ended since it was found; then there is none in progress.

@@ -156,8 +156,9 @@ def live_api(
         tier: str = "live",
         clock: FixedClock | None = None,
         served: bool = False,
+        questions: Mapping[str, Any] | None = None,
     ) -> LiveApi:
-        manifest = live_manifest(water_text, sources, sync=sync, tier=tier)
+        manifest = live_manifest(water_text, sources, sync=sync, tier=tier, questions=questions)
         twin = make_twin(Bundle(manifest=manifest, ontology_text=water_text), t=T0)
         settings = RuntimeSettings(
             store=twin.store.settings,
