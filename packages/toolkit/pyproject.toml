@@ -1,0 +1,23 @@
+[project]
+name = "dta-toolkit"
+version = "0.1.0"
+description = "Command line tool that gates each stage of a twin build"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "dta-core",
+    "typer>=0.15",
+    "filelock>=3.16",
+]
+
+[project.scripts]
+dta = "dta_toolkit.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dta_toolkit"]
+
+[tool.uv.sources]
+dta-core = { workspace = true }

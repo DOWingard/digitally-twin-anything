@@ -1,0 +1,36 @@
+[project]
+name = "digitally-twin-anything"
+version = "0.1.0"
+description = "Build, run and manage digital twins from a manifest"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+    "dta-core",
+    "dta-toolkit",
+]
+
+[tool.uv.sources]
+dta-core = { workspace = true }
+dta-toolkit = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]
+addopts = "-q --import-mode=importlib"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["spikes"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
