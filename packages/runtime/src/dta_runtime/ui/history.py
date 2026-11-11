@@ -1,9 +1,12 @@
-"""The history tab: the commit log, what the selected version changed, sync runs, fidelity and logs.
+"""The history tab: the commit log, what the selected version changed, sync, fidelity and logs.
 
 Clicking a row of the commit log selects that version for the whole page,
-as the header's slider does. The changes shown are those of the selected
-version against the one before it. Sync runs are the twin's own
-`TwinSyncRun` records as of the selected version.
+as the header's slider does. The commit log ends at a head of the page's
+own: it moves on when the selected version goes past it (following the head,
+or jumping to it), and the grid then reads its rows again where it stands,
+keeping its scroll position. A new head the page does not move to reads
+nothing. The changes shown are those of the selected version against the one
+before it. The sync section shows the twin at its head (see `sync`).
 """
 
 from __future__ import annotations
@@ -12,40 +15,22 @@ import json
 from typing import Any
 
 import dash_ag_grid as dag
-from dash import MATCH, Dash, Input, Output, State, ctx, dcc, html, set_props
+from dash import ALL, MATCH, ClientsideFunction, Dash, Input, Output, State, ctx, dcc, html
 from dash.exceptions import PreventUpdate
-from dta_core.log import Log, new_trace_id, trace
+from dta_core.log import Log
 
-from . import ids
+from . import ids, sync
 from .backend import Backend
-from .client import ApiProblem
-from .feedback import guarded, internal_problem, note, problem_box
+from .feedback import block_response, guarded, note
+from .parts import field
 from .schema import Schema
-from .text import cell, plural, time_text, value_text, with_unit
+from .text import plural, time_text, value_text, with_unit
 
 log = Log("ui.history")
 
-SYNC_RUN_TYPE = "TwinSyncRun"
 LOG_BLOCK_ROWS = 100
 DIFF_ROWS = 100
-RUNS_SHOWN = 50
 LOG_LINES = 200
-# The twin's own record of a run: what matters most to an operator comes first.
-RUN_COLUMNS_FIRST = (
-    "status",
-    "kind",
-    "started_at",
-    "finished_at",
-    "rows_read",
-    "rows_written",
-    "rows_rejected",
-    "versions_written",
-    "error",
-)
-
-
-def field(label: str, control: Any) -> html.Div:
-    return html.Div([html.Label(label, htmlFor=control.id), control], className="field")
 
 
 def layout() -> html.Div:
@@ -74,14 +59,13 @@ def layout() -> html.Div:
                 ],
                 className="filters",
             ),
+            dcc.Store(id=ids.LOG_HEAD),
             html.Div(id=ids.LOG_FEEDBACK),
             html.Div(id=ids.LOG_BOX),
             html.H2("Changes in the selected version"),
             html.Div(id=ids.DIFF_FEEDBACK),
             html.Div(id=ids.DIFF),
-            html.H2("Sync runs"),
-            html.Div(id=ids.RUNS_FEEDBACK),
-            html.Div(id=ids.RUNS),
+            sync.layout(),
             html.H2("Logs"),
             html.Div(
                 [
@@ -282,34 +266,38 @@ def diff_view(
     return parts
 
 
-def runs_view(schema: Schema, document: dict[str, Any], version: dict[str, Any]) -> list[Any]:
-    rows = document.get("data", [])
-    if not rows:
-        return [note(f"No sync run is recorded as of #{version['seq']}.")]
-    properties = {prop["name"]: prop for prop in schema.properties(SYNC_RUN_TYPE)}
-    first = [name for name in RUN_COLUMNS_FIRST if name in properties]
-    names = ["uid", *first, *(name for name in properties if name not in first)]
+def log_query(
+    cause: str | None, actor: str | None, first: str | None, last: str | None
+) -> dict[str, Any]:
+    """The commit log's filters as the API takes them; an open end is the log's own head."""
+    return {
+        "from": (first or "").strip() or "#0",
+        "to": (last or "").strip() or None,
+        "cause": cause or None,
+        "actor": (actor or "").strip() or None,
+        "order": "desc",
+    }
 
-    def shown(name: str, value: Any) -> Any:
-        if name in properties and properties[name]["kind"] == "datetime":
-            return time_text(value)
-        return cell(value)
 
-    heading = f"{plural(len(rows), 'sync run')} as of #{version['seq']}, latest first"
-    if document.get("next_cursor"):
-        heading = f"The {len(rows)} latest sync runs as of #{version['seq']}"
-    return [
-        html.Div(heading, className="muted"),
-        dag.AgGrid(
-            id=ids.RUNS_GRID,
-            rowData=[{name: shown(name, row.get(name)) for name in names} for row in rows],
-            columnDefs=[{"field": name, "headerName": name} for name in names],
-            defaultColDef={"resizable": True, "sortable": True, "cellDataType": False},
-            # Few rows and columns: all are drawn, so every value is in the page.
-            dashGridOptions={"suppressColumnVirtualisation": True},
-            style={"height": f"{min(60 + 42 * len(rows), 360)}px", "width": "100%"},
-        ),
-    ]
+def next_log_head(
+    health: dict[str, Any] | None, version: dict[str, Any] | None, known: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The head the commit log ends at, or None when it stays where it is.
+
+    It moves to the twin's head when the selected version goes past it, which
+    is what following the head and jumping to it do; a new head the page stays
+    away from leaves it, and the grid, where they are.
+    """
+    if not health:
+        return None
+    head = {"id": health["head"]["id"], "seq": int(health["head"]["seq"])}
+    if known == head:
+        return None
+    if known is None or head["seq"] < int(known["seq"]):
+        return head
+    if version and int(version["seq"]) > int(known["seq"]):
+        return head
+    return None
 
 
 def register(app: Dash, backend: Backend) -> None:
@@ -336,60 +324,92 @@ def register(app: Dash, backend: Backend) -> None:
         return causes, levels
 
     @app.callback(
+        Output(ids.LOG_HEAD, "data"),
+        Input(ids.HEALTH, "data"),
+        Input(ids.VERSION, "data"),
+        State(ids.LOG_HEAD, "data"),
+    )
+    def log_head(
+        health: dict[str, Any] | None,
+        version: dict[str, Any] | None,
+        known: dict[str, Any] | None,
+    ) -> Any:
+        found = next_log_head(health, version, known)
+        if found is None:
+            raise PreventUpdate
+        log.debug("the commit log moves to a new head", head_seq=found["seq"])
+        return found
+
+    @app.callback(
         Output(ids.LOG_BOX, "children"),
         Output(ids.LOG_FEEDBACK, "children"),
-        Input(ids.HEALTH, "data"),
+        Input(ids.LOG_HEAD, "data"),
         Input(ids.LOG_CAUSE, "value"),
         Input(ids.LOG_ACTOR, "value"),
         Input(ids.LOG_FROM, "value"),
         Input(ids.LOG_TO, "value"),
+        State({"role": ids.COMMIT_LOG, "query": ALL}, "id"),
     )
     @guarded(1)
     def commit_log(
-        health: dict[str, Any] | None,
+        head: dict[str, Any] | None,
         cause: str | None,
         actor: str | None,
         first: str | None,
         last: str | None,
+        present: list[dict[str, Any]] | None,
     ) -> Any:
-        if not health:
+        """The commit log's grid, made again when its filters change. When only its head
+        moves, the grid stays and reads its rows again (in the browser, below)."""
+        if not head:
             raise PreventUpdate
-        query = {
-            "from": (first or "").strip() or "#0",
-            # The log ends at the head the page knows, so that it matches the slider.
-            "to": (last or "").strip() or health["head"]["id"],
-            "cause": cause or None,
-            "actor": (actor or "").strip() or None,
-            "order": "desc",
-        }
+        query = log_query(cause, actor, first, last)
+        if {"role": ids.COMMIT_LOG, "query": json.dumps(query, sort_keys=True)} in (present or []):
+            raise PreventUpdate
         return log_grid(query)
+
+    app.clientside_callback(
+        ClientsideFunction(namespace="dta", function_name="refreshGrids"),
+        Output(ids.GRIDS_REFRESHED, "data", allow_duplicate=True),
+        Input(ids.LOG_HEAD, "data"),
+        State({"role": ids.COMMIT_LOG, "query": ALL}, "id"),
+        prevent_initial_call=True,
+    )
 
     @app.callback(
         Output({"role": ids.COMMIT_LOG, "query": MATCH}, "getRowsResponse"),
         Input({"role": ids.COMMIT_LOG, "query": MATCH}, "getRowsRequest"),
+        State(ids.LOG_HEAD, "data"),
     )
-    def log_rows(request: dict[str, Any] | None) -> Any:
+    def log_rows(request: dict[str, Any] | None, head: dict[str, Any] | None) -> Any:
         grid_id = ctx.triggered_id
-        if not request or not isinstance(grid_id, dict):
+        if not request or not head or not isinstance(grid_id, dict):
             raise PreventUpdate
         start = int(request.get("startRow", 0))
-        end = int(request.get("endRow", LOG_BLOCK_ROWS))
-        with trace(new_trace_id()) as trace_id:
-            try:
-                params = json.loads(grid_id["query"])
-                block = backend.pages.block(
-                    "/history/versions", path=None, params=params, start=start, end=end
-                )
-            except ApiProblem as problem:
-                log.warn("the commit log cannot be shown", code=problem.code, start=start)
-                set_props(ids.LOG_FEEDBACK, {"children": problem_box(problem)})
-                return {"rowData": [], "rowCount": start}
-            except Exception as exc:
-                log.error("the commit log failed", exc=exc, start=start)
-                set_props(ids.LOG_FEEDBACK, {"children": problem_box(internal_problem(trace_id))})
-                return {"rowData": [], "rowCount": start}
-        set_props(ids.LOG_FEEDBACK, {"children": None})
-        return {"rowData": [version_row(entry) for entry in block.rows], "rowCount": block.last_row}
+        end = int(request.get("endRow", start + LOG_BLOCK_ROWS))
+
+        def read() -> tuple[list[dict[str, Any]], int | None]:
+            params = json.loads(grid_id["query"])
+            # Without an end of its own, the log ends at its head, so that the rows of one
+            # head are read with cursors issued for that head.
+            params["to"] = params.get("to") or head["id"]
+            block = backend.pages.block(
+                "/history/versions", path=None, params=params, start=start, end=end
+            )
+            return [version_row(entry) for entry in block.rows], block.last_row
+
+        return block_response(ids.LOG_FEEDBACK, "a block of the commit log", read, start)
+
+    @app.callback(
+        Output({"role": ids.COMMIT_LOG, "query": ALL}, "selectedRows"),
+        Input(ids.VERSION, "data"),
+        State({"role": ids.COMMIT_LOG, "query": ALL}, "id"),
+    )
+    def mark_selected(version: dict[str, Any] | None, present: list[Any] | None) -> Any:
+        """The selected version's row is the commit log's selected row, once it is loaded."""
+        if not version or not present:
+            raise PreventUpdate
+        return [{"ids": [str(version["seq"])]} for _ in present]
 
     @app.callback(
         Output(ids.DIFF, "children"),
@@ -411,26 +431,6 @@ def register(app: Dash, backend: Backend) -> None:
         schema = backend.schema(version["id"])
         label = f"#{document.get('from', {}).get('seq', int(version['seq']) - 1)}"
         return diff_view(schema, document, version, label)
-
-    @app.callback(
-        Output(ids.RUNS, "children"),
-        Output(ids.RUNS_FEEDBACK, "children"),
-        Input(ids.VERSION, "data"),
-    )
-    @guarded(1, fallback=(None,))
-    def sync_runs(version: dict[str, Any] | None) -> Any:
-        if not version:
-            raise PreventUpdate
-        schema = backend.schema(version["id"])
-        if not schema.has(SYNC_RUN_TYPE):
-            return note("This twin keeps no sync runs.")
-        sort = "-started_at" if schema.property(SYNC_RUN_TYPE, "started_at") else None
-        document = backend.client.get(
-            "/objects/{type}",
-            path={"type": SYNC_RUN_TYPE},
-            params={"at": version["id"], "sort": sort, "limit": RUNS_SHOWN},
-        )
-        return runs_view(schema, document, version)
 
     @app.callback(
         Output(ids.LOGS_GRID, "rowData"),

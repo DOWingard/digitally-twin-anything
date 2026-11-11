@@ -3,24 +3,39 @@
 The grid uses AG Grid's infinite row model. Each block it asks for becomes
 one listing request with the version, sort and filters translated into the
 API's `at`, `sort` and `where`; the API pages, sorts and filters, and only
-the block asked for reaches the browser. The grid is re-created for each
-sheet and version; its id carries both, so a block request names exactly
-what it reads.
+the block asked for reaches the browser. The grid is made for a sheet and its
+columns, which its id carries; when another version is selected and the
+columns stay the same, the grid stays, with the operator's sort, filters and
+scroll position, and is asked to read its rows again at that version.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import dash_ag_grid as dag
-from dash import MATCH, Dash, Input, Output, State, ctx, dcc, html, no_update, set_props
+from dash import (
+    ALL,
+    MATCH,
+    ClientsideFunction,
+    Dash,
+    Input,
+    Output,
+    State,
+    ctx,
+    dcc,
+    html,
+    no_update,
+)
 from dash.exceptions import PreventUpdate
-from dta_core.log import Log, new_trace_id, trace
+from dta_core.log import Log
 
 from . import ids
 from .backend import Backend
 from .client import ApiProblem
-from .feedback import guarded, internal_problem, problem_box
+from .feedback import block_response, guarded
 from .schema import NUMERIC_KINDS, Schema, filterable
 from .text import cell
 
@@ -175,9 +190,23 @@ def column_defs(schema: Schema, type_name: str) -> list[dict[str, Any]]:
     return columns
 
 
-def grid(schema: Schema, type_name: str, version: dict[str, Any]) -> dag.AgGrid:
+def columns_digest(columns: list[dict[str, Any]]) -> str:
+    """A short name for a sheet's columns: the grid is made again only when they change."""
+    text = json.dumps(columns, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def grid_id(schema: Schema, type_name: str) -> dict[str, str]:
+    return {
+        "role": ids.SHEET_GRID,
+        "sheet": type_name,
+        "columns": columns_digest(column_defs(schema, type_name)),
+    }
+
+
+def grid(schema: Schema, type_name: str) -> dag.AgGrid:
     return dag.AgGrid(
-        id={"role": ids.SHEET_GRID, "sheet": type_name, "version": version["id"]},
+        id=grid_id(schema, type_name),
         rowModelType="infinite",
         columnDefs=column_defs(schema, type_name),
         defaultColDef={
@@ -214,6 +243,7 @@ def layout() -> html.Div:
                 className="sheet-controls",
             ),
             html.Div(id=ids.SHEET_FEEDBACK),
+            dcc.Store(id=ids.SHEET_REFRESH),
             html.Div(id=ids.SHEET_BOX),
         ],
         className="sheet-tab",
@@ -243,12 +273,18 @@ def register(app: Dash, backend: Backend) -> None:
     @app.callback(
         Output(ids.SHEET_BOX, "children"),
         Output(ids.SHEET_STATUS, "children"),
+        Output(ids.SHEET_REFRESH, "data"),
         Output(ids.SHEET_FEEDBACK, "children"),
         Input(ids.SHEET_TYPE, "value"),
         Input(ids.VERSION, "data"),
+        State({"role": ids.SHEET_GRID, "sheet": ALL, "columns": ALL}, "id"),
     )
-    @guarded(2)
-    def make_sheet(type_name: str | None, version: dict[str, Any] | None) -> Any:
+    @guarded(3)
+    def make_sheet(
+        type_name: str | None, version: dict[str, Any] | None, present: list[dict[str, Any]]
+    ) -> Any:
+        """The sheet's grid, made again only when the sheet or its columns change; a grid
+        that stays is asked to read its rows again at the selected version."""
         if not version or not type_name:
             raise PreventUpdate
         schema = backend.schema(version["id"])
@@ -258,43 +294,51 @@ def register(app: Dash, backend: Backend) -> None:
             f"{type_name} at #{version['seq']}: sorted, filtered and paged by the API, "
             f"{BLOCK_ROWS} rows at a time"
         )
-        return grid(schema, type_name, version), status
+        if grid_id(schema, type_name) in (present or []):
+            log.debug("the sheet's grid stays; its rows are read again", sheet=type_name)
+            return no_update, status, version["id"]
+        log.debug("the sheet's grid is made", sheet=type_name, version=version["id"])
+        return grid(schema, type_name), status, no_update
+
+    app.clientside_callback(
+        ClientsideFunction(namespace="dta", function_name="refreshGrids"),
+        Output(ids.GRIDS_REFRESHED, "data", allow_duplicate=True),
+        Input(ids.SHEET_REFRESH, "data"),
+        State({"role": ids.SHEET_GRID, "sheet": ALL, "columns": ALL}, "id"),
+        prevent_initial_call=True,
+    )
 
     @app.callback(
-        Output({"role": ids.SHEET_GRID, "sheet": MATCH, "version": MATCH}, "getRowsResponse"),
-        Input({"role": ids.SHEET_GRID, "sheet": MATCH, "version": MATCH}, "getRowsRequest"),
+        Output({"role": ids.SHEET_GRID, "sheet": MATCH, "columns": MATCH}, "getRowsResponse"),
+        Input({"role": ids.SHEET_GRID, "sheet": MATCH, "columns": MATCH}, "getRowsRequest"),
+        State(ids.VERSION, "data"),
     )
-    def sheet_rows(request: dict[str, Any] | None) -> Any:
-        if not request:
+    def sheet_rows(request: dict[str, Any] | None, version: dict[str, Any] | None) -> Any:
+        if not request or not version:
             raise PreventUpdate
         grid_id = ctx.triggered_id
         if not isinstance(grid_id, dict):
             raise PreventUpdate
         start, end = int(request.get("startRow", 0)), int(request.get("endRow", BLOCK_ROWS))
-        with trace(new_trace_id()) as trace_id:
-            try:
-                rows, last_row = read_block(backend, grid_id, request, start, end)
-            except ApiProblem as problem:
-                log.warn(
-                    "a block of a sheet cannot be shown",
-                    sheet=grid_id.get("sheet"),
-                    code=problem.code,
-                    start=start,
-                )
-                set_props(ids.SHEET_FEEDBACK, {"children": problem_box(problem)})
-                return {"rowData": [], "rowCount": start}
-            except Exception as exc:
-                log.error("a block of a sheet failed", exc=exc, sheet=grid_id.get("sheet"))
-                set_props(ids.SHEET_FEEDBACK, {"children": problem_box(internal_problem(trace_id))})
-                return {"rowData": [], "rowCount": start}
-        set_props(ids.SHEET_FEEDBACK, {"children": None})
-        return {"rowData": rows, "rowCount": last_row}
+        return block_response(
+            ids.SHEET_FEEDBACK,
+            "a block of a sheet",
+            lambda: read_block(backend, grid_id, version, request, start, end),
+            start,
+            sheet=grid_id.get("sheet"),
+        )
 
 
 def read_block(
-    backend: Backend, grid_id: dict[str, Any], request: dict[str, Any], start: int, end: int
+    backend: Backend,
+    grid_id: dict[str, Any],
+    version: dict[str, Any],
+    request: dict[str, Any],
+    start: int,
+    end: int,
 ) -> tuple[list[dict[str, Any]], int | None]:
-    type_name, version_id = str(grid_id["sheet"]), str(grid_id["version"])
+    """A block of the sheet a grid shows, at the selected version."""
+    type_name, version_id = str(grid_id["sheet"]), str(version["id"])
     schema = backend.schema(version_id)
     if not schema.has(type_name):
         raise ApiProblem(
@@ -302,6 +346,11 @@ def read_block(
             title="No such sheet at this version",
             detail=f"{type_name} is not a type at this version",
         )
+    if grid_id.get("columns") != columns_digest(column_defs(schema, type_name)):
+        # The columns changed with the version: this grid is being replaced by one with
+        # the new columns, which reads its own rows.
+        log.debug("a block asked for by a grid being replaced", sheet=type_name)
+        raise PreventUpdate
     kinds = {"uid": "string"} | {
         prop["name"]: prop["kind"] for prop in schema.properties(type_name)
     }
