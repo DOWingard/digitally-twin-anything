@@ -353,6 +353,76 @@ def test_a_value_lost_with_a_refused_row_is_written_when_it_is_next_reported(
     assert store.head() == head
 
 
+def test_a_bad_first_reading_does_not_keep_its_object_out_of_the_twin(
+    sync_twin: MakeTwin, run: Run, tmp_path: Path
+):
+    rows = [
+        # The tank's first reading is beyond its bounds, in the very interval in
+        # which the registry describes the tank. The check that fails names no
+        # property, so it cannot be told from it which of the two is wrong.
+        ("T1.level", T0 + 10 * MINUTE, 9.5),
+        ("T1.level", T0 + 20 * MINUTE, 1.0),
+        ("J1.demand", T0 + 10 * MINUTE, 5.0),
+    ]
+    twin = sync_twin(network_sources(), sync=BACKFILL)
+    report = run(twin, Sources(**network_tables(rows)))
+    store = twin.store
+
+    assert report.status == "succeeded"
+    # The reading is set aside; the tank itself, and the pipes that end at it, go in.
+    tank = objects(store, "Tank")["node:T1"]
+    assert (tank["name"], tank["max_level"], tank["level"]) == ("Hill tank", 6.0, 1.0)
+    assert set(objects(store, "Pipe")) == {"link:P1", "link:P2", "link:P3"}
+    assert changes_of(store, "node:T1", "level") == [
+        (T0 + 15 * MINUTE, None),
+        (T0 + 30 * MINUTE, 1.0),
+    ]
+    counts = {
+        label: (count.rows_written, count.rows_rejected) for label, count in report.mappings.items()
+    }
+    assert counts["registry.tanks"] == (1, 0)
+    assert counts["scada.levels"] == (1, 1)
+    assert report.rows_rejected == 1
+    _, lines = rejects_of(tmp_path, report.rejects_location)
+    assert [(line["mapping"], line["uid"], line["rule"], line["t"]) for line in lines] == [
+        ("scada.levels", "node:T1", "check", "2026-01-05T00:15:00Z")
+    ]
+
+
+def test_a_broken_rule_that_names_a_property_is_laid_on_the_mapping_that_wrote_it(
+    sync_twin: MakeTwin, run: Run, tmp_path: Path
+):
+    states = [
+        # Beyond the pump's range, in the interval in which the registry describes the pump.
+        (T0 + 10 * MINUTE, "open", 5.0),
+        (T0 + 20 * MINUTE, "open", 1.0),
+    ]
+    tables = {
+        "registry": {
+            "junctions": table(JUNCTIONS),
+            "pumps": table([{"id": "PU1", "from_node": "J1", "to_node": "J2"}]),
+        },
+        "plant": {"pump_state": pump_state(states)},
+    }
+    twin = sync_twin(pump_sources(), sync=BACKFILL)
+    report = run(twin, Sources(**tables))
+    store = twin.store
+
+    pump = objects(store, "Pump")["link:PU1"]
+    assert (pump["start_node"], pump["status"], pump["speed"]) == ("node:J1", "open", 1.0)
+    # The first row of the feed went as a whole: its status too is first seen later.
+    assert changes_of(store, "link:PU1", "status") == [
+        (T0 + 15 * MINUTE, None),
+        (T0 + 30 * MINUTE, "open"),
+    ]
+    assert report.mappings["registry.pumps"].rows_rejected == 0
+    assert report.mappings["plant.pump_state"].rows_rejected == 1
+    _, lines = rejects_of(tmp_path, report.rejects_location)
+    assert [(line["mapping"], line["property"], line["rule"]) for line in lines] == [
+        ("plant.pump_state", "speed", "range")
+    ]
+
+
 def test_a_reading_of_an_object_the_twin_does_not_have_is_set_aside(
     sync_twin: MakeTwin, run: Run, tmp_path: Path
 ):

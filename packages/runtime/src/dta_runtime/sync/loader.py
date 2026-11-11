@@ -380,19 +380,25 @@ class Loader:
             else:
                 loose.append(violation)
         for (type_name, uid), found in by_row.items():
-            draft = bucket.rows[type_name].pop(uid)
-            for index in draft.mappings:
+            draft = bucket.rows[type_name][uid]
+            at_fault = self._at_fault(draft, found)
+            for index in sorted(at_fault):
                 mapping = self._mapping(index)
                 self.dropped[index] += 1
+                own = [
+                    violation
+                    for violation in found
+                    if draft.origin.get(violation.property or "", (index, None))[0] == index
+                ]
                 self.rejects.add_violations(
                     mapping=mapping.label,
                     source=mapping.source_id,
                     type_name=type_name,
                     uid=uid,
-                    violations=found,
+                    violations=own or found,
                     t=t,
                 )
-            self._unsettle(type_name, draft, bucket.key)
+            self._withdraw(bucket, type_name, draft, at_fault)
         for (type_name, uid), found in by_delete.items():
             bucket.deletes[type_name].remove(uid)
             self._refuse_delete(type_name, uid, found, t)
@@ -431,6 +437,41 @@ class Loader:
                 },
             )
 
+    def _at_fault(self, draft: Draft, found: list[Violation]) -> set[int]:
+        """The mappings whose part of a refused row is set aside.
+
+        An object's row in a version can hold what several mappings say about
+        it. A broken rule that names a property is laid at the door of the
+        mapping that wrote it. One that names none, or a property nobody
+        wrote, cannot be: then the readings go first and what describes the
+        object itself is tried again, so that one bad reading does not keep
+        its object, and with it every later reading, out of the twin.
+        """
+        everyone = set(draft.mappings)
+        named = {
+            draft.origin[violation.property][0]
+            for violation in found
+            if violation.property in draft.origin
+        }
+        if named and all(violation.property in draft.origin for violation in found):
+            return named
+        readings = {index for index in everyone if self._mapping(index).timeseries}
+        if readings and readings != everyone:
+            return named | readings
+        return everyone
+
+    def _withdraw(self, bucket: Bucket, type_name: str, draft: Draft, at_fault: set[int]) -> None:
+        """Take what the mappings at fault wrote out of a row; the rest is committed again."""
+        withdrawn = [name for name, (index, _) in draft.origin.items() if index in at_fault]
+        slots = [draft.series[name] for name in withdrawn if name in draft.series]
+        for name in withdrawn:
+            del draft.values[name], draft.origin[name]
+            draft.series.pop(name, None)
+        draft.mappings = [index for index in draft.mappings if index not in at_fault]
+        if not draft.mappings:
+            del bucket.rows[type_name][draft.uid]
+        self._unsettle(type_name, draft.uid, slots, bucket.key)
+
     def _refuse_delete(self, type_name: str, uid: str, found: list[Violation], t: datetime) -> None:
         index = self.prepared.batches[type_name].delete_mapping
         if index is None:
@@ -453,14 +494,14 @@ class Loader:
     # what it held before that row, so the next row of the series has to be
     # compared with that instead.
 
-    def _unsettle(self, type_name: str, draft: Draft, key: int | None) -> None:
+    def _unsettle(self, type_name: str, uid: str, slots: list[int], key: int | None) -> None:
         if key is None:
             return
-        for slot in draft.series.values():
-            slot_key = (type_name, draft.uid, slot)
+        for slot in slots:
+            slot_key = (type_name, uid, slot)
             if slot_key not in self._baselines:
-                self._baselines[slot_key] = self.prepared.previous(type_name, slot, draft.uid, key)
-            following = self.prepared.following(type_name, slot, draft.uid, key)
+                self._baselines[slot_key] = self.prepared.previous(type_name, slot, uid, key)
+            following = self.prepared.following(type_name, slot, uid, key)
             if following is None:
                 self._baselines.pop(slot_key, None)
             else:
