@@ -34,7 +34,34 @@ def wait_for[T](driver: WebDriver, check: Callable[[], T], what: str, timeout: f
         if last:
             return last
         time.sleep(0.05)
-    raise AssertionError(f"timed out after {timeout} s waiting for {what}; last saw {last!r}")
+    raise AssertionError(
+        f"timed out after {timeout} s waiting for {what}; last saw {last!r}\n{page_report(driver)}"
+    )
+
+
+def page_report(driver: WebDriver) -> str:
+    """What the browser logged and which callback requests it made, for a failure message."""
+    lines: list[str] = []
+    try:
+        for entry in driver.get_log("browser"):
+            lines.append(f"console {entry.get('level')}: {str(entry.get('message'))[:300]}")
+        sent: dict[str, str] = {}
+        answered: dict[str, int] = {}
+        for entry in driver.get_log("performance"):
+            message = json.loads(entry["message"])["message"]
+            params = message.get("params", {})
+            if message["method"] == "Network.requestWillBeSent":
+                request = params.get("request", {})
+                if "_dash-update-component" in request.get("url", ""):
+                    body = json.loads(request.get("postData") or "{}")
+                    sent[params["requestId"]] = str(body.get("output"))[:120]
+            elif message["method"] == "Network.responseReceived":
+                answered[params["requestId"]] = params.get("response", {}).get("status")
+        for request_id, output in sent.items():
+            lines.append(f"callback {output}: {answered.get(request_id, 'no answer')}")
+    except (WebDriverException, ValueError, KeyError) as exc:
+        lines.append(f"no report: {exc!r}")
+    return "\n".join(lines[-80:]) or "the browser logged nothing"
 
 
 def text_of(driver: WebDriver, element_id: str) -> str:

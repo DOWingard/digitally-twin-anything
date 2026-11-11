@@ -41,9 +41,9 @@ def test_each_tab_renders_within_the_limit(make_stack, browser):
         lambda: (
             grid_cells(browser, ids.LOG_BOX, "seq")
             and f"#{head} against" in text_of(browser, ids.DIFF)
-            and "sync run" in text_of(browser, ids.RUNS)
+            and "static" in text_of(browser, ids.SYNC_STATIC)
         ),
-        "the commit log, the changes and the sync runs",
+        "the commit log, the changes and the sync section",
         timeout=FIRST_RENDER_LIMIT_S * 3,
     )
     FIRST_RENDER_S["history"] = time.monotonic() - started
