@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,11 @@ import yaml
 from dta_core.manifest import Owner, Status, parse_manifest, required_fields
 from dta_toolkit.cli import app
 from typer.testing import CliRunner, Result
+
+# Helper modules next to this file are imported by name from the tests.
+sys.path.insert(0, str(Path(__file__).parent))
+
+from m3tk_kit import KitTwin  # noqa: E402
 
 _SAMPLE = Path(__file__).with_name("complete_manifest.yaml")
 
@@ -85,3 +92,36 @@ def workspace(dta: Dta) -> Dta:
     result = dta.run("init")
     assert result.exit_code == 0, result.output
     return dta
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """HOME inside the test's directory, so nothing is ever written to the real one."""
+    path = tmp_path / "home"
+    path.mkdir()
+    monkeypatch.setenv("HOME", str(path))
+    return path
+
+
+@pytest.fixture
+def make_twin(tmp_path: Path, home: Path) -> Iterator[Callable[..., KitTwin]]:
+    """Creates small test twins; each one's stack is removed with its data afterwards."""
+    made: list[KitTwin] = []
+
+    def make(*, ui: bool = False, bad_row: bool = False) -> KitTwin:
+        base = tmp_path / f"twin{len(made)}"
+        base.mkdir()
+        twin = KitTwin(Dta(base / "ws"), base, ui=ui, bad_row=bad_row)
+        made.append(twin)
+        return twin
+
+    try:
+        yield make
+    finally:
+        problems = []
+        for twin in made:
+            try:
+                twin.teardown()
+            except AssertionError as exc:
+                problems.append(f"{twin.project}: {exc}")
+        assert not problems, problems
