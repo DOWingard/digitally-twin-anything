@@ -110,6 +110,9 @@ class Chain:
         self.by_id: dict[str, int] = {}
         self.times: list[datetime] = []
         self.boundaries: list[int] = []
+        # Commits that a commit off this line has as a parent: the points
+        # where another line of history, since merged in, left this one.
+        self.forked: set[str] = set()
 
     @property
     def head(self) -> Version:
@@ -117,6 +120,20 @@ class Chain:
 
     def parent_of(self, seq: int) -> str:
         return self.entries[seq - 1].id if seq > 0 else self.root
+
+    def after_fork(self, seq: int) -> bool:
+        """Whether the version before `seq` has a second child in the history of the head.
+
+        The per-row change log of the database reports the changes of only
+        one child of such a commit, so what version `seq` changed has to be
+        read another way.
+        """
+        return seq > 0 and self.entries[seq - 1].id in self.forked
+
+    def after_forks(self, last: int) -> list[int]:
+        """Positions, up to `last`, of the versions that come right after a fork."""
+        found = (self.by_id[commit] + 1 for commit in self.forked if commit in self.by_id)
+        return sorted(seq for seq in found if seq <= last)
 
     def add(self, version: Version) -> None:
         if self.times and version.t < self.times[-1]:
@@ -155,6 +172,18 @@ def _first_parent_line(
         current = parents[0]
     line.reverse()
     return line
+
+
+def _side_parents(
+    rows: tuple[tuple[Any, ...], ...], line: list[tuple[str, datetime, str, tuple[str, ...]]]
+) -> set[str]:
+    """Parents of the commits among `rows` that are not on `line`."""
+    on_line = {entry[0] for entry in line}
+    found: set[str] = set()
+    for row in rows:
+        if row[0] not in on_line:
+            found.update(_COMMIT_ID.findall(row[3] or ""))
+    return found
 
 
 class VersionIndex:
@@ -196,8 +225,9 @@ class VersionIndex:
         """Record a version this process has just committed."""
         with self._lock:
             chain = self._chains.get(version.branch)
-            if chain is None or not version.parents or chain.head.id != version.parents[0]:
-                # The next refresh reads it from the database instead.
+            if chain is None or len(version.parents) != 1 or chain.head.id != version.parents[0]:
+                # The next refresh reads it from the database instead; for a
+                # merge that also finds the commits it brought in.
                 return
             chain.add(version)
 
@@ -219,6 +249,7 @@ class VersionIndex:
         chain = Chain(branch, root[0])
         for position, (commit, date, message, parents) in enumerate(versions):
             chain.add(parse_version(branch, position, commit, date, message, parents))
+        chain.forked = _side_parents(rows, line)
         log.debug("version index loaded", branch=branch, versions=len(chain.entries))
         return chain
 
@@ -236,6 +267,7 @@ class VersionIndex:
         for offset, (commit, date, message, parents) in enumerate(line):
             position = known.seq + 1 + offset
             chain.add(parse_version(chain.branch, position, commit, date, message, parents))
+        chain.forked |= _side_parents(rows, line)
         log.debug("version index extended", branch=chain.branch, added=len(line))
         return chain
 

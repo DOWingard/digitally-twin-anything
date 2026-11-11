@@ -366,7 +366,62 @@ class Reads:
             seq = chain.by_id.get(commit)
             if seq is not None and (latest is None or seq > latest[0]):
                 latest = (seq, type_name)
+        # Removals the change log cannot be relied on to report.
+        for seq in reversed(chain.after_forks(last.seq)):
+            if latest is not None and latest[0] >= seq:
+                break
+            before = self._registered_type(conn, chain.entries[seq - 1], uid)
+            if before is not None and self._registered_type(conn, chain.entries[seq], uid) is None:
+                latest = (seq, before)
+                break
         return latest[1] if latest else None
+
+    def _registered_type(self, conn: Conn, version: Version, uid: str) -> str | None:
+        return conn.scalar(
+            f"SELECT `type` FROM `{ddl.OBJECT_TABLE}` AS OF %s WHERE `{UID_FIELD}` = %s",
+            (version.id, uid),
+        )
+
+    def _row_at(
+        self, conn: Conn, version: Version, type_name: str, present: Sequence[str], uid: str
+    ) -> tuple[Any, ...] | None:
+        """Provenance text and the cells of `present` of one object at one version."""
+        ontology = self._ontology_of(conn, version)
+        if not ontology.has_type(type_name):
+            return None
+        stored = ontology.type(type_name)
+        cells = [f"`{name}`" if stored.has_field(name) else "NULL" for name in present]
+        rows = conn.query(
+            f"SELECT {', '.join([f'`{PROV_COLUMN}`', *cells])} FROM `{stored.table}` AS OF %s "
+            f"WHERE `{UID_FIELD}` = %s",
+            (version.id, uid),
+        )
+        return rows[0] if rows else None
+
+    def _change_at(
+        self,
+        conn: Conn,
+        chain: Chain,
+        seq: int,
+        type_name: str,
+        present: Sequence[str],
+        uid: str,
+        selected: bool,
+        prov: bool,
+    ) -> tuple[Any, ...] | None:
+        """What version `seq` did to one object, found by reading it before and after."""
+        version = chain.entries[seq]
+        after = self._row_at(conn, version, type_name, present, uid)
+        before = self._row_at(conn, chain.entries[seq - 1], type_name, present, uid)
+        if after is None:
+            if before is None:
+                return None
+            return (version, REMOVED, uid, *([None] * len(present)), None)
+        if before is None:
+            return (version, ADDED, uid, *after[1:], after[0])
+        if not self._changed(present, after[1:], before[1:], after[0], before[0], selected, prov):
+            return None
+        return (version, MODIFIED, uid, *after[1:], after[0])
 
     @public
     def history(
@@ -417,9 +472,21 @@ class Reads:
             width = len(present)
             records: list[tuple[Any, ...]] = []
             additions = 0
+            # Versions whose changes the change log may leave out are read directly.
+            forked = chain.after_forks(last.seq)
+            for seq in forked:
+                record = self._change_at(
+                    conn, chain, seq, type_name, present, uid, properties is not None, prov
+                )
+                if record is None:
+                    continue
+                additions += record[1] == ADDED
+                if seq in wanted:
+                    records.append(record)
+            skipped = set(forked)
             for row in rows:
                 seq = chain.by_id.get(row[0])
-                if seq is None or row[1] != chain.parent_of(seq):
+                if seq is None or seq in skipped or row[1] != chain.parent_of(seq):
                     continue
                 additions += row[2] == ADDED
                 if seq not in wanted:
@@ -432,7 +499,7 @@ class Reads:
                 records.append((chain.entries[seq], row[2], uid, *after, row[3]))
             # The object was removed at some point if it was added more than
             # once, or if it has a past and is absent at the end of the range.
-            if additions > 1 or (rows and type_at_end != type_name):
+            if additions > 1 or ((rows or records) and type_at_end != type_name):
                 removals = conn.query(
                     f"SELECT `to_commit`, `from_commit` FROM {source} "
                     f"WHERE `from_{UID_FIELD}` = %s AND `diff_type` = %s",
@@ -440,7 +507,9 @@ class Reads:
                 )
                 for commit, parent in removals:
                     seq = chain.by_id.get(commit)
-                    if seq is not None and seq in wanted and parent == chain.parent_of(seq):
+                    if seq is None or seq in skipped or seq not in wanted:
+                        continue
+                    if parent == chain.parent_of(seq):
                         records.append((chain.entries[seq], REMOVED, uid, *([None] * width), None))
         return self._change_table(schema, requested, names, present, prov, records)
 
@@ -507,12 +576,21 @@ class Reads:
                 "`to__prov`" if prov else "NULL",
             ]
             select.extend(f"`to_{name}`" for name in present)
-            where, parameters = "", []
-            if len(versions) <= _NAMED_COMMITS:
-                where = f" WHERE `to_commit` IN ({', '.join(['%s'] * len(versions))})"
-                parameters = [version.id for version in versions]
-            rows = conn.query(f"SELECT {', '.join(select)} FROM {source}{where}", parameters)
-            wanted = {version.seq for version in versions}
+            # The change log may leave out what the first version after a fork
+            # changed, so those versions are compared with the one before instead.
+            forked = {v.seq for v in versions if chain.after_fork(v.seq)}
+            logged = [v.id for v in versions if v.seq not in forked]
+            if not logged:
+                rows = ()
+            elif len(logged) <= _NAMED_COMMITS:
+                rows = conn.query(
+                    f"SELECT {', '.join(select)} FROM {source} "
+                    f"WHERE `to_commit` IN ({', '.join(['%s'] * len(logged))})",
+                    logged,
+                )
+            else:
+                rows = conn.query(f"SELECT {', '.join(select)} FROM {source}")
+            wanted = {version.seq for version in versions} - forked
             kept = []
             merged: set[str] = set()
             for row in rows:
@@ -534,7 +612,60 @@ class Reads:
                     continue
                 uid = row[4] if row[2] == REMOVED else row[3]
                 records.append((chain.entries[seq], row[2], uid, *row[6:], row[5]))
+            for seq in sorted(forked):
+                records.extend(self._changes_at(conn, chain, seq, type, present, prov))
         return self._change_table(schema, requested, names, present, prov, records)
+
+    def _changes_at(
+        self,
+        conn: Conn,
+        chain: Chain,
+        seq: int,
+        type_name: str,
+        present: Sequence[str],
+        prov: bool,
+    ) -> list[tuple[Any, ...]]:
+        """What version `seq` changed in one type, from comparing it with the version before."""
+        version, previous = chain.entries[seq], chain.entries[seq - 1]
+        after_ontology = self._ontology_of(conn, version)
+        if not after_ontology.has_type(type_name):
+            return []
+        stored = after_ontology.type(type_name)
+        before_ontology = self._ontology_of(conn, previous)
+        in_before = before_ontology.has_type(type_name)
+        after_names = [f.name for f in stored.fields]
+        shared = [
+            name
+            for name in after_names
+            if in_before and before_ontology.type(type_name).has_field(name)
+        ]
+        # A side on which the table does not exist has no columns to name.
+        select = ["`diff_type`", f"`to_{UID_FIELD}`", "`to__prov`"]
+        select.append(f"`from_{UID_FIELD}`" if in_before else "NULL")
+        select.append("`from__prov`" if in_before else "NULL")
+        select.extend(f"`to_{name}`" for name in after_names)
+        select.extend(f"`from_{name}`" for name in shared)
+        rows = conn.query(
+            f"SELECT {', '.join(select)} FROM DOLT_DIFF(%s, %s, %s)",
+            (previous.id, version.id, stored.table),
+        )
+        split = 5 + len(after_names)
+        position = {name: 5 + index for index, name in enumerate(after_names)}
+        new_columns = [position[name] for name in after_names if name not in shared]
+        records = []
+        for row in rows:
+            if (
+                row[0] == MODIFIED
+                and row[2] == row[4]
+                and all(row[position[name]] == row[split + i] for i, name in enumerate(shared))
+                and all(row[index] is None for index in new_columns)
+            ):
+                # Rewritten by a change of table definition, with nothing changed.
+                continue
+            uid = row[3] if row[0] == REMOVED else row[1]
+            cells = [row[position[name]] if name in position else None for name in present]
+            records.append((version, row[0], uid, *cells, row[2] if prov else None))
+        return records
 
     def _modified_by_merge(
         self, conn: Conn, source: str, stored: ObjectType, chain: Chain, commits: set[str]
