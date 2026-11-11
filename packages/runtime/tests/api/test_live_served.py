@@ -102,6 +102,9 @@ def test_a_post_answers_at_once_whatever_the_run_takes(live_api: MakeLive, plant
     sources, _ = plant(plant_dir)
     live = live_api(sources, served=True)
     gate = live.plant.hold("lab")
+    # What is measured is that a POST does not wait for the run, not what the first
+    # request of a process costs (its connection, the first read of the store).
+    assert live.get(HEALTH).status_code == 200
 
     started = time.perf_counter()
     made = live.post(RUNS, json={})
