@@ -7,6 +7,7 @@ when every check passed, otherwise the deficit report.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -16,7 +17,14 @@ from dta_core.manifest import manifest_hash
 from dta_core.manifest.checks import evaluate_gates, subject_of
 from dta_core.ontology import OntologyError, load_ontology
 
-from ..acceptance import DEFAULT_EXAMPLES, DEFAULT_SEED, render_markdown, run_checks
+from ..acceptance import (
+    DEFAULT_EXAMPLES,
+    DEFAULT_SEED,
+    SKILL_API_FILE,
+    SkillText,
+    render_markdown,
+    run_checks,
+)
 from ..output import command, emit, session
 from ..stack import Stack
 from ..workspace import now
@@ -37,6 +45,22 @@ ACCEPTANCE_STAGE = 7
 REPORTS = "reports"
 _PASSED = ("acceptance.json", "acceptance.md")
 _FAILED = ("deficit.json", "deficit.md")
+
+
+def _skill_text(root: Path, generated: Path) -> SkillText:
+    """The generated skill's API reference, or no text when no skill was generated."""
+    path = generated / SKILL_API_FILE
+    where = str(path.relative_to(root))
+    if not path.is_file():
+        log.info("no generated skill; its endpoints are not checked", path=where)
+        return SkillText(api_reference=None, where=where)
+    try:
+        return SkillText(api_reference=path.read_text(encoding="utf-8"), where=where)
+    except (OSError, UnicodeDecodeError) as exc:
+        log.error("the skill's API reference cannot be read", exc=exc, path=where)
+        raise DtaError(
+            f"{where} cannot be read: {type(exc).__name__}", code="skill.unreadable"
+        ) from exc
 
 
 def _text(document: dict[str, Any], report: str) -> str:
@@ -91,13 +115,16 @@ def accept(
         ) from exc
     stack = Stack(workspace, manifest)
     values = require_complete_env(stack)
+    generated = skill_dir(workspace, manifest)
     with timed(log, "acceptance", examples=examples, seed=seed):
         run = run_checks(
             manifest,
             ontology,
             values,
             manifest_hash=digest,
-            rendered_skill_hash=rendered_hash(skill_dir(workspace, manifest)),
+            rendered_skill_hash=rendered_hash(generated),
+            skill=_skill_text(workspace.root, generated),
+            services=stack.services,
             examples=examples,
             seed=seed,
         )

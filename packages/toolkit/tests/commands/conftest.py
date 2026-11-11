@@ -6,6 +6,7 @@ import copy
 import json
 import sys
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -108,10 +109,23 @@ def make_twin(tmp_path: Path, home: Path) -> Iterator[Callable[..., KitTwin]]:
     """Creates small test twins; each one's stack is removed with its data afterwards."""
     made: list[KitTwin] = []
 
-    def make(*, ui: bool = False, bad_row: bool = False) -> KitTwin:
+    def make(
+        *,
+        ui: bool = False,
+        bad_row: bool = False,
+        live: bool = False,
+        readings_end: datetime | None = None,
+    ) -> KitTwin:
         base = tmp_path / f"twin{len(made)}"
         base.mkdir()
-        twin = KitTwin(Dta(base / "ws"), base, ui=ui, bad_row=bad_row)
+        twin = KitTwin(
+            Dta(base / "ws"),
+            base,
+            ui=ui,
+            bad_row=bad_row,
+            live=live,
+            readings_end=readings_end,
+        )
         made.append(twin)
         return twin
 

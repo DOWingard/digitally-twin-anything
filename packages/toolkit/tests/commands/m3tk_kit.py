@@ -2,16 +2,22 @@
 
 The twin's ids start with `m3tk-` and its host ports lie in 18800-18899, so its
 stack never collides with another one on this machine.
+
+A live variant reads one reading per sensor and minute, for the last three
+hours before the test starts; the test data is made from the wall clock, the
+twin itself only ever reads the times in the data.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import secrets
 import shutil
 import socket
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -97,12 +103,56 @@ def readings(bad_row: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_sources(folder: Path, bad_row: bool = False) -> Path:
+def write_sources(folder: Path, bad_row: bool = False, *, text: str | None = None) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "sites.csv").write_text(SITES, encoding="utf-8")
     (folder / "sensors.csv").write_text(SENSORS, encoding="utf-8")
-    (folder / "readings.csv").write_text(readings(bad_row), encoding="utf-8")
+    (folder / "readings.csv").write_text(
+        text if text is not None else readings(bad_row), encoding="utf-8"
+    )
     return folder
+
+
+# -- the live variant ---------------------------------------------------------------
+
+LIVE_MINUTES = 180
+STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def minute_floor(moment: datetime) -> datetime:
+    return moment.replace(second=0, microsecond=0)
+
+
+def _live_level(sensor: str, step: int) -> float:
+    # A level that swings every minute: profiling measures a change time of one
+    # reading, so the derived interval is the source's minute. The slow rise makes
+    # each hour's last reading differ from the one before, so the hourly versions of
+    # the load hold a history.
+    return round(_LEVELS[sensor][0] + (0.3 if step % 2 else 0.0) + 0.001 * step, 3)
+
+
+def live_readings(end: datetime, minutes: int = LIVE_MINUTES) -> str:
+    """One reading per sensor and minute for the `minutes` minutes before `end`."""
+    start = minute_floor(end) - timedelta(minutes=minutes)
+    lines = ["sensor_id,timestamp,level"]
+    for step in range(minutes):
+        at = start + timedelta(minutes=step)
+        for sensor in _LEVELS:
+            lines.append(f"{sensor},{at.strftime(STAMP)},{_live_level(sensor, step)}")
+    return "\n".join(lines) + "\n"
+
+
+def live_manifest(twin_id: str, *, ui: bool = False) -> dict[str, Any]:
+    """The kit's twin, kept in step with its readings; `sync.interval` is derived later."""
+    data = copy.deepcopy(manifest(twin_id, ui=ui))
+    contract = data["contract"]
+    contract["tier"] = "live"
+    contract["notification"] = {"kind": "log"}
+    contract["questions"]["q_level"]["staleness"] = "PT1H"
+    # Above the noise floor profiling measures in a level that swings every minute.
+    contract["questions"]["q_level"]["tolerance"]["value"] = 1.0
+    data["fidelity"] = {"interval": "PT1H", "window": "P1D"}
+    return data
 
 
 def new_twin_id() -> str:
@@ -267,14 +317,35 @@ class KitTwin:
     end that no value of `.env` ever reached the output.
     """
 
-    def __init__(self, dta: Runner, base: Path, *, ui: bool = False, bad_row: bool = False):
+    def __init__(
+        self,
+        dta: Runner,
+        base: Path,
+        *,
+        ui: bool = False,
+        bad_row: bool = False,
+        live: bool = False,
+        readings_end: datetime | None = None,
+    ):
         self.dta = dta
         self.root = dta.root
         self.id = new_twin_id()
         self.project = f"dta-{self.id}"  # the stack's compose project
         self.ui = ui
-        self.data = write_sources(base / "data", bad_row=bad_row)
+        self.live = live
+        text = None
+        if live:
+            text = live_readings(readings_end or datetime.now(UTC))
+        self.data = write_sources(base / "data", bad_row=bad_row, text=text)
         self.outputs: list[str] = []
+
+    def append_readings(self, at: datetime) -> str:
+        """One more reading per sensor at `at`, as the plant's export would add them."""
+        stamp = at.astimezone(UTC).replace(microsecond=0).strftime(STAMP)
+        rows = "".join(f"{sensor},{stamp},1.234\n" for sensor in _LEVELS)
+        with (self.data / "readings.csv").open("a", encoding="utf-8") as handle:
+            handle.write(rows)
+        return stamp
 
     @property
     def env_file(self) -> Path:
@@ -305,8 +376,9 @@ class KitTwin:
         self.ok("init", "--id", self.id)
         (self.root / "ontology").mkdir(exist_ok=True)
         (self.root / "ontology" / "plant.yaml").write_text(ONTOLOGY, encoding="utf-8")
+        written = live_manifest(self.id, ui=self.ui) if self.live else manifest(self.id, ui=self.ui)
         (self.root / "manifest.yaml").write_text(
-            yaml.safe_dump(manifest(self.id, ui=self.ui), sort_keys=False), encoding="utf-8"
+            yaml.safe_dump(written, sort_keys=False), encoding="utf-8"
         )
 
     def fill_env(self) -> int:
@@ -348,6 +420,8 @@ class KitTwin:
         self.fill_env()
         self.ok("source", "probe")
         self.ok("profile")
+        if self.live:
+            self.ok("sync", "derive", "--write")
         self.ok("manifest", "validate")
         self.ok("manifest", "confirm", "--all-user")
         self.ok("manifest", "validate")
