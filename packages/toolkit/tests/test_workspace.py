@@ -69,15 +69,46 @@ def test_missing_workspace_is_reported(tmp_path):
     assert caught.value.code == "workspace.missing"
 
 
-def test_gate_recording_and_fingerprint(tmp_path):
+def test_gate_recording(tmp_path):
     workspace = _make(tmp_path)
     state = workspace.record_gate(0, True, subject_hash="abc", detail={"sources": 1})
     assert state.gates["intake"].passed and workspace.load_state().gates["intake"].stage == 0
 
-    before = workspace.fingerprint()
-    assert set(before) == {"manifest.yaml", ".dta/state.json"}
-    (workspace.root / "tasks" / "t1" / "output").mkdir(parents=True)
-    (workspace.root / "tasks" / "t1" / "output" / "result.json").write_text("{}")
-    assert workspace.fingerprint() == before
+
+def test_ledger_separates_sanctioned_from_foreign_changes(tmp_path):
+    workspace = _make(tmp_path)
+    assert workspace.foreign_changes() == []  # no ledger yet, nothing is watched
+
+    with workspace.exclusive():
+        baseline = workspace.rebase_ledger()
+    assert set(baseline) == {"manifest.yaml", ".dta/state.json"}
+    assert workspace.foreign_changes() == []
+
+    # Sanctioned: writes and deletes through the workspace, and anything in a task directory.
+    workspace.record_gate(0, True)
+    with workspace.exclusive():
+        workspace.atomic_write(workspace.stack_dir / "compose.yaml", "services: {}\n")
+        workspace.atomic_write(workspace.root / "scratch.txt", "x")
+        workspace.remove(workspace.root / "scratch.txt")
+    private = workspace.tasks_dir / "t1" / "output"
+    private.mkdir(parents=True)
+    (private / "result.json").write_text("{}")
+    assert workspace.foreign_changes() == []
+
+    # Foreign: a direct edit, a new file and a deletion.
     workspace.manifest_path.write_text(workspace.manifest_path.read_text() + "# edited\n")
-    assert workspace.fingerprint()["manifest.yaml"] != before["manifest.yaml"]
+    (workspace.ontology_dir).mkdir()
+    (workspace.ontology_dir / "domain.yaml").write_text("classes: {}\n")
+    (workspace.stack_dir / "compose.yaml").unlink()
+    assert workspace.foreign_changes() == [
+        {"path": "manifest.yaml", "change": "modified"},
+        {"path": "ontology/domain.yaml", "change": "added"},
+        {"path": "stack/compose.yaml", "change": "removed"},
+    ]
+
+    with workspace.exclusive():
+        workspace.rebase_ledger()
+        assert workspace.foreign_changes() == []
+        workspace.drop_ledger()
+    with pytest.raises(WorkspaceError):
+        workspace.rebase_ledger()

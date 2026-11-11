@@ -5,12 +5,18 @@ the environment files) have exactly one writer at a time. Every write goes
 through `Workspace.exclusive()` and `Workspace.atomic_write()`: a cross-process
 lock, then a temporary file renamed over the target, so a reader never sees a
 partial file and two writers never interleave.
+
+Every such write is also entered in a ledger of content hashes. Comparing the
+ledger with the files on disk reveals any change that did not come through this
+class, which is how work delegated to other agents is kept out of shared files:
+everything outside the private task directories is watched.
 """
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import tempfile
 from collections.abc import Iterator
@@ -60,6 +66,10 @@ class Signature(BaseModel):
     contract_hash: str
     summary_hash: str
     signed_at: datetime
+    # "interactive": a person typed the approval at a terminal.
+    # "non_interactive": recorded by a caller on someone's behalf; always shown as such.
+    mode: Literal["interactive", "non_interactive"]
+    approved_by: str | None = None
 
 
 class State(BaseModel):
@@ -100,6 +110,7 @@ class Workspace:
         self.state_path = self.meta_dir / "state.json"
         self.tasks_state_path = self.meta_dir / "tasks.json"
         self.lock_path = self.meta_dir / "lock"
+        self.ledger_path = self.meta_dir / "ledger.json"
         self.log_path = self.meta_dir / "logs" / "toolkit.log"
         self._lock = filelock.FileLock(str(self.lock_path))
 
@@ -184,7 +195,22 @@ class Workspace:
         finally:
             os.close(directory)
         log.debug("file replaced", target=str(target), size=len(payload))
+        self._ledger_note(target)
         return target
+
+    def remove(self, path: Path) -> None:
+        """Delete a file as a sanctioned change. The caller must hold the lock."""
+        if not self.locked:
+            log.error("refused a delete without the workspace lock", target=str(path))
+            raise WorkspaceError(
+                "shared files may only be removed while holding the workspace lock",
+                code="workspace.unlocked_write",
+                detail={"target": str(path)},
+            )
+        target = self._inside(path)
+        with contextlib.suppress(FileNotFoundError):
+            target.unlink()
+        self._ledger_note(target)
 
     # -- state --------------------------------------------------------------
 
@@ -229,34 +255,113 @@ class Workspace:
     def save_manifest(self, manifest: Manifest) -> None:
         self.atomic_write(self.manifest_path, dump_manifest(manifest))
 
-    # -- shared zones -------------------------------------------------------
+    # -- watched files and the ledger --------------------------------------
 
-    def shared_zone_files(self) -> list[Path]:
-        """Every file that has a single serial writer, in a stable order."""
-        files = [
-            self.manifest_path,
-            self.state_path,
-            self.env_path,
-            self.env_example_path,
-            self.root / ".git" / "index",
-        ]
-        for directory in (self.ontology_dir, self.stack_dir):
-            if directory.is_dir():
-                files.extend(p for p in directory.rglob("*") if p.is_file())
-        state_installed = None
+    def _watched(self, path: Path) -> bool:
+        """True for files that only the toolkit, or the orchestrator between batches, may change."""
+        if path.name.endswith(_TMP_SUFFIX) or path in (self.lock_path, self.ledger_path):
+            return False
+        if self.root not in path.parents:
+            return True  # the installed skill lives outside the workspace
+        relative = path.relative_to(self.root).parts
+        if relative[0] == "tasks":
+            return False  # private task directories are checked by the task commands
+        if relative[:2] == (".dta", "logs"):
+            return False
+        if relative[0] == ".git":
+            return relative in ((".git", "index"), (".git", "HEAD"))
+        return True
+
+    def _key(self, path: Path) -> str:
+        return str(path.relative_to(self.root)) if self.root in path.parents else str(path)
+
+    def watched_files(self) -> list[Path]:
+        candidates = [p for p in self.root.rglob("*") if p.is_file() and not p.is_symlink()]
         if self.exists():
             with contextlib.suppress(WorkspaceError):
-                state_installed = self.load_state().installed_skill
-        if state_installed:
-            skill = Path(state_installed)
-            if skill.is_dir():
-                files.extend(p for p in skill.rglob("*") if p.is_file())
-        return sorted(p for p in files if p.is_file() and not p.name.endswith(_TMP_SUFFIX))
+                installed = self.load_state().installed_skill
+                if installed and Path(installed).is_dir():
+                    candidates.extend(p for p in Path(installed).rglob("*") if p.is_file())
+        return sorted(p for p in candidates if self._watched(p))
 
     def fingerprint(self) -> dict[str, str]:
-        """Content hash of every shared file, keyed by path."""
-        result = {}
-        for path in self.shared_zone_files():
-            key = str(path.relative_to(self.root)) if self.root in path.parents else str(path)
-            result[key] = sha256_file(path)
-        return result
+        """Content hash of every watched file, keyed by path."""
+        return {self._key(path): sha256_file(path) for path in self.watched_files()}
+
+    def _read_ledger(self) -> dict[str, str] | None:
+        if not self.ledger_path.is_file():
+            return None
+        try:
+            return json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            log.error("ledger cannot be read", exc=exc, path=str(self.ledger_path))
+            raise WorkspaceError(
+                "the ledger of sanctioned writes is unreadable",
+                code="workspace.bad_ledger",
+                detail={"path": str(self.ledger_path)},
+            ) from exc
+
+    def _write_ledger(self, ledger: dict[str, str]) -> None:
+        fd, tmp_name = tempfile.mkstemp(dir=self.meta_dir, prefix=".ledger.", suffix=_TMP_SUFFIX)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(ledger, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, self.ledger_path)
+
+    def _ledger_note(self, target: Path) -> None:
+        """Record a sanctioned change to one file, if a ledger is being kept."""
+        if not self._watched(target):
+            return
+        ledger = self._read_ledger()
+        if ledger is None:
+            return
+        if target.is_file():
+            ledger[self._key(target)] = sha256_file(target)
+        else:
+            ledger.pop(self._key(target), None)
+        self._write_ledger(ledger)
+
+    def rebase_ledger(self) -> dict[str, str]:
+        """Accept the files as they are now as the baseline. The caller must hold the lock."""
+        if not self.locked:
+            raise WorkspaceError(
+                "the ledger may only be rebased while holding the workspace lock",
+                code="workspace.unlocked_write",
+            )
+        ledger = self.fingerprint()
+        self._write_ledger(ledger)
+        log.info("ledger rebased", files=len(ledger))
+        return ledger
+
+    def drop_ledger(self) -> None:
+        """Stop watching. The caller must hold the lock."""
+        if not self.locked:
+            raise WorkspaceError(
+                "the ledger may only be dropped while holding the workspace lock",
+                code="workspace.unlocked_write",
+            )
+        with contextlib.suppress(FileNotFoundError):
+            self.ledger_path.unlink()
+        log.info("ledger dropped")
+
+    def foreign_changes(self) -> list[dict[str, str]]:
+        """Watched files that differ from the ledger: changes not made through this class.
+
+        Empty when no ledger is being kept.
+        """
+        ledger = self._read_ledger()
+        if ledger is None:
+            return []
+        current = self.fingerprint()
+        changes = []
+        for key in sorted(set(ledger) | set(current)):
+            if key not in current:
+                changes.append({"path": key, "change": "removed"})
+            elif key not in ledger:
+                changes.append({"path": key, "change": "added"})
+            elif ledger[key] != current[key]:
+                changes.append({"path": key, "change": "modified"})
+        if changes:
+            log.warn("watched files changed outside the toolkit", changes=changes)
+        return changes
