@@ -54,6 +54,9 @@ def test_a_run_is_recorded_with_its_datasets_and_sources(sync_twin: MakeTwin, ru
         "rows_read": 23,
         "rows_written": 12,
         "rows_rejected": 0,
+        "rows_late": 0,
+        # A load of existing history is not handed a clock.
+        "clock_at": None,
         "error": None,
         "trace_id": TRACE,
     }

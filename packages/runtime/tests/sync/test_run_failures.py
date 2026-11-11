@@ -110,7 +110,7 @@ def test_a_source_that_is_down_and_one_that_is_rate_limited_fail_alone_and_recov
     dataset = stored(store, "TwinDataset", "twin_dataset:telemetry/speeds")
     assert (dataset["cursor"], dataset["last_read_at"]) == ("2026-01-05T00:15:00Z", at(15))
     run = stored(store, "TwinSyncRun", second.run)
-    assert run["status"] == "failed"
+    assert (run["status"], run["clock_at"], run["rows_late"]) == ("partial", at(31), 0)
     assert run["error"] == (
         "sync.partial: some sources failed and the others were synced: "
         "lab (source.rate_limited), telemetry (source.unavailable)"

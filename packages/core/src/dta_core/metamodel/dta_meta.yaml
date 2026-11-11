@@ -113,7 +113,9 @@ classes:
         required: true
       kind:
         range: TwinRunKind
-        description: Whether the run loaded existing history or new data.
+        description: >-
+          Whether the run loaded existing history, took new data, or read a
+          dataset again whole.
       finished_at:
         range: datetime
         description: Data time at which the run ended.
@@ -151,6 +153,15 @@ classes:
       rows_rejected:
         range: integer
         minimum_value: 0
+      rows_late:
+        range: integer
+        minimum_value: 0
+        description: Rows that arrived behind the cursor of their series and were not written.
+      clock_at:
+        range: datetime
+        description: >-
+          Time the twin's clock gave when the run began; only intervals that
+          had ended by then were taken. Not set by a load of existing history.
       error:
         annotations:
           dta_long: true
@@ -186,8 +197,11 @@ enums:
     permissible_values:
       backfill: {}
       incremental: {}
+      replay: {}
   TwinRunStatus:
     permissible_values:
       running: {}
       succeeded: {}
+      partial:
+        description: Some sources failed; the others were synced.
       failed: {}

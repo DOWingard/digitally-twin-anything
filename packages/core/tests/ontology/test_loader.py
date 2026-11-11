@@ -144,7 +144,7 @@ def test_links_events_and_checks(water):
 
 def test_enums_and_source(water, water_path):
     assert water.enums["ValveType"] == ("prv", "psv", "fcv", "tcv")
-    assert water.enums["TwinRunStatus"] == ("running", "succeeded", "failed")
+    assert water.enums["TwinRunStatus"] == ("running", "succeeded", "partial", "failed")
     assert water.source == water_path.read_text(encoding="utf-8")
 
 

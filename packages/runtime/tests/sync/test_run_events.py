@@ -313,7 +313,7 @@ def test_a_replay_of_an_event_dataset_writes_only_what_differs(
     assert changes_of(store, "reading:R1", "value") == [(at(15), 3.0)]
     # A replay does not take the cursor back.
     assert report.sources["lab"].datasets["readings"].cursor == "3"
-    assert stored(store, "TwinSyncRun", report.run)["kind"] == "incremental"
+    assert stored(store, "TwinSyncRun", report.run)["kind"] == "replay"
 
     # Replayed again, everything is equal.
     again = tick(twin, clock, connect=connect, replay=Replay("lab", "readings"))

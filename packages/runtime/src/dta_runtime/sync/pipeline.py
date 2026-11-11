@@ -596,8 +596,8 @@ class _Run:
     def _recorded_outcome(self) -> tuple[str, str | None]:
         """(status, error) as the run's own record holds them.
 
-        The record knows a run as succeeded or failed. One in which some
-        sources failed is kept as failed, with an error that says so.
+        A run in which some sources failed is kept as partial; its error names
+        those sources and what was wrong with each.
         """
         status, error = self._outcome()
         if status == SUCCEEDED:
@@ -605,7 +605,7 @@ class _Run:
         if error is not None:
             return FAILED, f"{error['code']}: {error['message']}"
         causes = ", ".join(f"{name} ({code})" for name, (code, _) in sorted(self.failing.items()))
-        return FAILED, f"{PARTIAL}: some sources failed and the others were synced: {causes}"
+        return PARTLY, f"{PARTIAL}: some sources failed and the others were synced: {causes}"
 
     # -- what the run records about itself ------------------------------------------
 
@@ -619,8 +619,7 @@ class _Run:
             status, error = self._recorded_outcome()
         return {
             "uid": self.uid,
-            # The record tells a load of history from everything else.
-            "kind": self.plan.kind,
+            "kind": self._kind(),
             "status": status,
             "started_at": written[0].t if written else t,
             "finished_at": t,
@@ -633,6 +632,8 @@ class _Run:
             "rows_read": self._rows_read(),
             "rows_written": rows_written,
             "rows_rejected": self._rows_rejected(),
+            "rows_late": self._rows_late(),
+            "clock_at": self.now,
             "error": error,
             "trace_id": self.trace_id,
         }

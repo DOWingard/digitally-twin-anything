@@ -413,7 +413,7 @@ def test_a_run_in_which_every_row_was_set_aside_is_recorded_once(
     assert record["status"] == "failing"
     assert record["last_error"] == "sync.all_rejected: every row of mapping speeds was set aside"
     run = stored(store, "TwinSyncRun", first.run)
-    assert (run["status"], run["rows_rejected"]) == ("failed", 2)
+    assert (run["status"], run["rows_rejected"]) == ("partial", 2)
     assert run["error"].startswith("sync.partial: ")
     assert run["rejects_location"] == first.rejects_location
     # The cursor moved past the rows all the same.
@@ -431,7 +431,7 @@ def test_a_run_in_which_every_row_was_set_aside_is_recorded_once(
     record = stored(store, "TwinSource", "twin_source:scada")
     assert (record["status"], record["last_error"]) == ("ok", None)
     statuses = sorted(row["status"] for row in objects(store, "TwinSyncRun").values())
-    assert statuses == ["failed", "succeeded"]
+    assert statuses == ["partial", "succeeded"]
 
     # A good reading is then taken as usual.
     scada.append("speeds", [("PU1", at(35), 1.25)])
