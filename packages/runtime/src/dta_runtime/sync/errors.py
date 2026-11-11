@@ -14,6 +14,13 @@ ALL_REJECTED = "sync.all_rejected"
 STORE_FAILED = "sync.store_failed"
 REJECTS_UNWRITABLE = "sync.rejects_unwritable"
 UNEXPECTED = "sync.unexpected"
+REPLAY_UNSUPPORTED = "sync.replay_unsupported"
+REPLAY_UNKNOWN = "sync.replay_unknown"
+UNKNOWN_SOURCE = "sync.unknown_source"
+# A source that was read but is skipped because what it joins could not be.
+DEPENDENCY_FAILED = "sync.dependency_failed"
+# Recorded with a run in which some sources failed and the others were synced.
+PARTIAL = "sync.partial"
 
 
 @dataclass(frozen=True)
@@ -69,6 +76,13 @@ class StoreFailed(SyncError):
     """A version could not be written, or it cannot be told whether it was."""
 
     code = STORE_FAILED
+
+
+class ReplayUnsupported(SyncError):
+    """The dataset named for a replay feeds a state series, which cannot be read again:
+    a state property holds the latest value and nothing can be written behind it."""
+
+    code = REPLAY_UNSUPPORTED
 
 
 def plan_error(problems: list[Problem]) -> MappingInvalid:

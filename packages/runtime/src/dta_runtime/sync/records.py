@@ -9,6 +9,7 @@ the wall clock.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -35,6 +36,15 @@ ACTOR = "sync"
 # Recorded as the origin of everything the pipeline writes about itself.
 ORIGIN = "sync"
 INTERRUPTED = "sync.interrupted"
+_WHOLE_NUMBER = re.compile(r"^-?\d+$")
+
+# How far a dataset has been read: a point in time, or a number that only grows.
+Cursor = datetime | int
+
+
+def cursor_text(value: Cursor) -> str:
+    """A cursor as it is stored. A time is never all digits, so the two can be told apart."""
+    return iso_utc(value) if isinstance(value, datetime) else str(value)
 
 
 def run_uid(key: str) -> str:
@@ -76,12 +86,18 @@ class State:
     sources: dict[str, dict[str, Any]]
     interrupted: Interrupted | None = None
 
-    def cursor(self, key: RelationKey) -> datetime | None:
-        """Latest valid time already read from a dataset or view."""
+    def cursor(self, key: RelationKey, time: bool = True) -> Cursor | None:
+        """How far a dataset or view has been read.
+
+        The cursor of a time series is a point in time. Any other cursor is a
+        point in time or a whole number, whichever its column holds.
+        """
         row = self.datasets.get(dataset_uid(*key))
         text = row.get("cursor") if row else None
         if not text:
             return None
+        if not time and _WHOLE_NUMBER.match(text):
+            return int(text)
         try:
             found = datetime.fromisoformat(text)
         except ValueError as exc:
@@ -99,6 +115,16 @@ class State:
                 detail={"dataset": dataset_uid(*key)},
             )
         return found
+
+    def rows_read(self, key: RelationKey) -> int:
+        """Rows of a dataset or view taken account of by earlier runs."""
+        row = self.datasets.get(dataset_uid(*key))
+        return int((row or {}).get("rows_read") or 0)
+
+    def watermark(self, source_id: str) -> datetime | None:
+        """Latest valid time earlier runs took from a source."""
+        row = self.sources.get(source_uid(source_id))
+        return row.get("watermark") if row else None
 
 
 def _interrupted(store: Store) -> Interrupted | None:
@@ -162,11 +188,14 @@ def dataset_row(
     key: RelationKey,
     *,
     cursor_column: str | None,
-    cursor: datetime | None,
+    cursor: Cursor | None,
     rows_read: int | None = None,
     read_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """The row of one dataset or view. Fields left out keep what is stored."""
+    """The row of one dataset or view. Fields left out keep what is stored.
+
+    `rows_read` is what the run adds to the rows counted so far.
+    """
     uid = dataset_uid(*key)
     row: dict[str, Any] = {"uid": uid}
     stored = state.datasets.get(uid)
@@ -176,7 +205,7 @@ def dataset_row(
     if cursor_column is not None and (stored or {}).get("cursor_column") != cursor_column:
         row["cursor_column"] = cursor_column
     if cursor is not None:
-        row["cursor"] = iso_utc(cursor)
+        row["cursor"] = cursor_text(cursor)
     if rows_read is not None:
         row["rows_read"] = int((stored or {}).get("rows_read") or 0) + rows_read
     if read_at is not None:
