@@ -131,6 +131,11 @@ class Store(Reads):
     def settings(self) -> StoreSettings:
         return self._settings
 
+    @property
+    def validator(self) -> RowValidator:
+        """The row checks applied to every write."""
+        return self._validator
+
     def close(self) -> None:
         """Release every connection. The store cannot be used afterwards."""
         self._closed = True

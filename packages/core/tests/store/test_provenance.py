@@ -180,3 +180,83 @@ def test_provenance_changes_show_in_history_only_when_asked_for(store: Store):
     assert store.history("node:t1", ["name"], prov=True).column("_seq").to_pylist() == [1]
     # The whole row did change.
     assert store.history("node:t1").column("_seq").to_pylist() == [1, 2]
+
+
+def test_a_property_can_carry_provenance_of_its_own_within_one_row(store: Store):
+    metered = Provenance("meter-feed", FactKind.observed, at(0.5), 0.9)
+    store.commit(
+        ChangeSet(
+            upserts={"Tank": [TANK]},
+            provenance=OBSERVED,
+            property_provenance={"node:t1": {"capacity": metered, "name": OBSERVED}},
+        ),
+        meta(t=at(1)),
+    )
+    # The entry equal to the row's is not stored twice.
+    assert _stored(store) == {"*": OBSERVED.to_json(), "capacity": metered.to_json()}
+    found = store.get("node:t1")
+    assert found.provenance_of("capacity") == metered
+    assert found.provenance_of("level") == OBSERVED
+
+
+def test_an_update_needs_no_row_provenance_when_each_property_has_its_own(store: Store):
+    store.commit(ChangeSet(upserts={"Tank": [TANK]}, provenance=OBSERVED), meta(t=at(1)))
+    level = Provenance("scada", FactKind.observed, at(1.75))
+    status = Provenance("scada", FactKind.observed, at(2))
+    store.commit(
+        ChangeSet(
+            upserts={"Tank": [{"uid": "node:t1", "level": 3.0, "status": "low"}]},
+            property_provenance={"node:t1": {"level": level, "status": status}},
+        ),
+        meta(t=at(2)),
+    )
+    found = store.get("node:t1")
+    assert found.provenance == {"*": OBSERVED, "level": level, "status": status}
+    assert (found.values["level"], found.values["status"]) == (3.0, "low")
+
+
+@pytest.mark.parametrize(
+    ("row", "own", "message"),
+    [
+        # one written property is left without any provenance
+        ({"uid": "node:t1", "level": 3.0, "status": "low"}, {"level": OBSERVED}, "without"),
+        # provenance for a property the row does not write
+        ({"uid": "node:t1", "level": 3.0}, {"level": OBSERVED, "status": OBSERVED}, "not write"),
+        # a new object needs provenance of its own, for the properties left null
+        (
+            {"uid": "node:t9", "name": "T9", "capacity": 1.0},
+            {"name": OBSERVED, "capacity": OBSERVED},
+            "its own",
+        ),
+        ({"uid": "node:t1", "level": 3.0}, {"level": "scada"}, "malformed"),
+    ],
+)
+def test_property_provenance_that_does_not_cover_the_row_is_refused(
+    store: Store, row: dict, own: dict, message: str
+):
+    store.commit(ChangeSet(upserts={"Tank": [TANK]}, provenance=OBSERVED), meta(t=at(1)))
+    head = store.head().id
+    with pytest.raises(ViolationError) as caught:
+        store.commit(
+            ChangeSet(upserts={"Tank": [row]}, property_provenance={row["uid"]: own}),
+            meta(t=at(2)),
+        )
+    found = caught.value.violations
+    assert {violation.rule for violation in found} == {"provenance"}
+    assert any(message in violation.message for violation in found)
+    assert store.head().id == head
+
+
+def test_the_rule_on_fact_kinds_covers_every_property_of_a_row(store: Store):
+    store.commit(ChangeSet(upserts={"Tank": [TANK]}, provenance=OBSERVED), meta(t=at(1)))
+    simulated = Provenance("model", FactKind.simulated, at(2))
+    with pytest.raises(ViolationError) as caught:
+        store.commit(
+            ChangeSet(
+                upserts={"Tank": [{"uid": "node:t1", "level": 3.0, "status": "low"}]},
+                provenance=Provenance("operator", FactKind.assumed, at(2)),
+                property_provenance={"node:t1": {"level": simulated}},
+            ),
+            meta("manual", at(2)),
+        )
+    assert [violation.rule for violation in caught.value.violations] == ["fact_kind"]

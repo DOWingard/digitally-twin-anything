@@ -66,7 +66,10 @@ class _Row:
     uid: str
     given: dict[str, Any]  # as passed by the caller, for the validator
     encoded: dict[str, Any]  # property -> SQL parameter
-    provenance: Provenance
+    # Of the row as a whole; absent only when every written property has its own.
+    provenance: Provenance | None
+    # property -> provenance, where it differs from the row's
+    own: dict[str, Provenance] = field(default_factory=dict)
     mode: str = ""  # "create" | "replace" | "update"
 
 
@@ -156,7 +159,7 @@ class _Application:
             object_type = self.ontology.type(type_name)
             for row in rows:
                 self._read_row(object_type, row, seen)
-        for uid in changes.row_provenance:
+        for uid in sorted({*changes.row_provenance, *changes.property_provenance}, key=repr):
             if uid not in seen:
                 self.report(
                     "",
@@ -198,14 +201,41 @@ class _Application:
         seen.add(uid)
         sound = True
         provenance = self.changes.row_provenance.get(uid, self.changes.provenance)
-        if not isinstance(provenance, Provenance):
-            self.report(name, uid, None, RULE_PROVENANCE, "row is written without provenance")
-            sound = False
-        elif not object_type.meta:
-            problem = fact_kind_problem(provenance.kind, self.cause, self.branch)
-            if problem:
-                self.report(name, uid, None, RULE_FACT_KIND, problem)
+        own = self.changes.property_provenance.get(uid, {})
+        if not isinstance(own, Mapping):
+            self.report(name, uid, None, RULE_PROVENANCE, "property provenance is not a mapping")
+            own, sound = {}, False
+        if provenance is not None and not isinstance(provenance, Provenance):
+            self.report(name, uid, None, RULE_PROVENANCE, "row provenance is malformed")
+            provenance, sound = None, False
+        for key, entry in own.items():
+            if not isinstance(entry, Provenance):
+                self.report(name, uid, str(key), RULE_PROVENANCE, f"{key}: provenance is malformed")
                 sound = False
+            elif key not in row or key == UID_FIELD:
+                self.report(
+                    name,
+                    uid,
+                    str(key),
+                    RULE_PROVENANCE,
+                    f"provenance is given for {key}, which the row does not write",
+                )
+                sound = False
+        if provenance is None:
+            # Without provenance of its own the row must give one for each property it writes.
+            bare = sorted(str(key) for key in row if key != UID_FIELD and key not in own)
+            if bare or len(row) == 1:
+                self.report(name, uid, None, RULE_PROVENANCE, "row is written without provenance")
+                sound = False
+        if not object_type.meta:
+            kinds = {entry.kind for entry in own.values() if isinstance(entry, Provenance)}
+            if provenance is not None:
+                kinds.add(provenance.kind)
+            for kind in sorted(kinds):
+                problem = fact_kind_problem(kind, self.cause, self.branch)
+                if problem:
+                    self.report(name, uid, None, RULE_FACT_KIND, problem)
+                    sound = False
         given: dict[str, Any] = {}
         encoded: dict[str, Any] = {}
         for key, value in row.items():
@@ -224,7 +254,7 @@ class _Application:
                 self.report(name, uid, key, RULE_TYPE, f"{key}: {exc}")
                 sound = False
         if sound:
-            self.rows.append(_Row(object_type, uid, given, encoded, provenance))
+            self.rows.append(_Row(object_type, uid, given, encoded, provenance, dict(own)))
 
     # -- what is stored now ---------------------------------------------------
 
@@ -262,6 +292,16 @@ class _Application:
                 row.mode = "replace"
             else:
                 row.mode = "update"
+            if row.mode != "update" and row.provenance is None:
+                # The row's own provenance also covers the properties left null.
+                self.report(
+                    row.type.name,
+                    row.uid,
+                    None,
+                    RULE_PROVENANCE,
+                    "a row that creates or replaces an object needs provenance of its own",
+                )
+                continue
             kept.append(row)
         self.rows = kept
 
@@ -396,7 +436,8 @@ class _Application:
         stored = self._stored_rows(object_type, [row.uid for row in rows if row.mode == "update"])
         parameters = []
         for row in rows:
-            entry = row.provenance.to_json()
+            entry = row.provenance.to_json() if row.provenance is not None else None
+            own = {name: found.to_json() for name, found in row.own.items()}
             if row.mode == "update":
                 before = stored.get(row.uid)
                 if before is None:
@@ -412,14 +453,16 @@ class _Application:
                 values = dict(zip(names, before[1:], strict=True))
                 for name, value in row.encoded.items():
                     values[name] = value
+                    written = own.get(name, entry)
                     # A property keeps an entry of its own only while it differs from the row's.
-                    if entry == provenance[_STAR]:
+                    if written == provenance[_STAR]:
                         provenance.pop(name, None)
                     else:
-                        provenance[name] = entry
+                        provenance[name] = written
                 cells = [values[name] for name in names]
             else:
                 provenance = {_STAR: entry}
+                provenance.update({name: found for name, found in own.items() if found != entry})
                 cells = [row.encoded.get(name) for name in names]
             parameters.append(
                 (row.uid, *cells, json.dumps(provenance, sort_keys=True, separators=(",", ":")))

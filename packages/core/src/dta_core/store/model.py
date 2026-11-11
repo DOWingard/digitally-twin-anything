@@ -134,6 +134,11 @@ class ChangeSet:
     object that does not exist yet creates it, the properties left out being
     null. A row naming every property replaces the object. A row naming some
     of them updates those and leaves the others, and their provenance, alone.
+
+    Every written property needs provenance: its own entry in
+    `property_provenance`, else its row's in `row_provenance`, else
+    `provenance`. A row that creates or replaces an object needs one of the
+    last two, because it also covers the properties left null.
     """
 
     upserts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -141,6 +146,9 @@ class ChangeSet:
     # Applies to every written row without its own entry in `row_provenance`.
     provenance: Provenance | None = None
     row_provenance: dict[str, Provenance] = field(default_factory=dict)
+    # uid -> property -> provenance, for a property whose value came from
+    # somewhere else, or was true at another time, than the rest of its row.
+    property_provenance: dict[str, dict[str, Provenance]] = field(default_factory=dict)
 
     def size(self) -> int:
         return sum(len(rows) for rows in self.upserts.values()) + sum(
