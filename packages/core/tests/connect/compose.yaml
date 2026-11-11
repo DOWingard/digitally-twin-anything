@@ -1,0 +1,21 @@
+name: dta-m3-connect-dev
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${DTA_CONNECT_PG_USER:?DTA_CONNECT_PG_USER is required}
+      POSTGRES_PASSWORD: ${DTA_CONNECT_PG_PASSWORD:?DTA_CONNECT_PG_PASSWORD is required}
+      POSTGRES_DB: ${DTA_CONNECT_PG_DATABASE:?DTA_CONNECT_PG_DATABASE is required}
+    ports:
+      - "127.0.0.1:${DTA_CONNECT_PG_PORT:?DTA_CONNECT_PG_PORT is required}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+volumes:
+  pg-data: {}
