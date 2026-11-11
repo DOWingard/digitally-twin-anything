@@ -20,7 +20,7 @@ from api_testkit import (  # noqa: E402
     database_name,
     with_database,
 )
-from graph_testkit import Records  # noqa: E402
+from graph_testkit import FilteredNetwork, Records, build_filtered_network  # noqa: E402
 
 WATER_ONTOLOGY = (
     Path(__file__).resolve().parents[3] / "core/tests/ontology/fixtures/water_network.yaml"
@@ -36,6 +36,19 @@ def graph_history(server_settings: StoreSettings, _databases: list[str]) -> Iter
     )
     yield history
     history.twin.close()
+
+
+@pytest.fixture(scope="session")
+def filtered_network(
+    server_settings: StoreSettings, _databases: list[str]
+) -> Iterator[FilteredNetwork]:
+    name = database_name(server_settings, "filtered")
+    _databases.append(name)
+    network = build_filtered_network(
+        with_database(server_settings, name), WATER_ONTOLOGY.read_text(encoding="utf-8")
+    )
+    yield network
+    network.twin.close()
 
 
 @pytest.fixture
