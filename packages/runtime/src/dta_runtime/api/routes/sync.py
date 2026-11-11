@@ -18,7 +18,7 @@ from ..formats import json_response
 from ..live import source_document
 from ..models import JobAccepted, Page, RejectsOut, SourceList, SyncRunOne, SyncRunRequest
 from ..paging import next_cursor, start
-from ..params import Branch, Cursor, Limit, json_limit
+from ..params import JSON_LIMIT_DEFAULT, JSON_LIMIT_MAX, Branch, Cursor
 from ..problems import ApiError
 from ..rejectfile import locate
 from ..runs import list_runs, position_of, read_run
@@ -132,10 +132,16 @@ def runs(
     services: ServicesDep,
     status: Annotated[RunStatus | None, Query(description="Only runs with this status")] = None,
     kind: Annotated[RunKind | None, Query(description="Only runs of this kind")] = None,
-    limit: Limit = None,
+    limit: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=JSON_LIMIT_MAX,
+            description=f"Most runs returned, at most {JSON_LIMIT_MAX}",
+        ),
+    ] = JSON_LIMIT_DEFAULT,
     cursor: Cursor = None,
 ) -> Response:
-    per_page = json_limit(limit)
     query = fingerprint("sync_runs", status, kind)
     version, position = start(services, cursor, "sync_runs", query, "head", LIVE_BRANCH)
     state = services.head_state(version)
@@ -145,9 +151,9 @@ def runs(
         state.ontology,
         version,
         filters=filters,
-        limit=per_page,
+        limit=limit,
         position=position_of(position),
-        span=(state.interval or FALLBACK_INTERVAL) * (per_page + 1),
+        span=(state.interval or FALLBACK_INTERVAL) * (limit + 1),
         floor=state.first_sync_t,
     )
     return json_response(

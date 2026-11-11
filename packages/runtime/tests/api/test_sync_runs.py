@@ -400,4 +400,5 @@ def test_runs_are_paged_newest_first_and_runs_that_started_together_by_uid(
     assert following["data"] == every[2:4]
     mixed = live.get(RUNS, params={"status": "failed", "cursor": first["next_cursor"]})
     assert (mixed.status_code, problem_code(mixed)) == (400, "api.bad_cursor")
-    assert live.get(RUNS, params={"status": "lost"}).status_code == 400
+    for params in ({"status": "lost"}, {"limit": 0}, {"limit": 10_001}):
+        assert live.get(RUNS, params=params).status_code == 400, params
