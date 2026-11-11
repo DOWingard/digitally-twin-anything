@@ -1,0 +1,62 @@
+import json
+import logging
+from pathlib import Path
+
+import pytest
+import yaml
+from dta_core import log as dta_log
+from dta_core.ontology import build_validator, load_ontology
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def log_lines(tmp_path):
+    """Reader of the structured log lines written while the test runs."""
+    target = tmp_path / "ontology.log"
+    dta_log.configure(log_file=target, level="debug")
+
+    def read():
+        for handler in logging.getLogger("dta").handlers:
+            handler.flush()
+        return [json.loads(line) for line in target.read_text().splitlines()]
+
+    yield read
+    root = logging.getLogger("dta")
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        handler.close()
+
+
+@pytest.fixture(scope="session")
+def water_path() -> Path:
+    return FIXTURES / "water_network.yaml"
+
+
+@pytest.fixture(scope="session")
+def water(water_path):
+    return load_ontology(water_path)
+
+
+@pytest.fixture(scope="session")
+def water_validator(water, tmp_path_factory):
+    return build_validator(water, cache_dir=tmp_path_factory.mktemp("models"))
+
+
+@pytest.fixture
+def water_document(water_path) -> dict:
+    """A fresh, mutable copy of the water network ontology."""
+    return yaml.safe_load(water_path.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def write_schema(tmp_path):
+    """Write a LinkML document to a file and return its path."""
+    counter = iter(range(1_000))
+
+    def write(document: dict) -> Path:
+        path = tmp_path / f"schema_{next(counter)}.yaml"
+        path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        return path
+
+    return write
