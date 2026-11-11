@@ -5,6 +5,7 @@ code, so the order in which checks run does not show in the output.
 """
 
 from . import consistency, feasibility, references  # noqa: F401 - registers the checks
+from .against_ontology import ontology_findings
 from .findings import CHECKS, Check, Finding, Issue, Severity, check, errors_of, run_checks
 from .gates import (
     GATES,
@@ -41,6 +42,7 @@ __all__ = [
     "current_stage",
     "errors_of",
     "evaluate_gates",
+    "ontology_findings",
     "read_ontology_types",
     "recorded_gate",
     "render_summary",

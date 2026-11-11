@@ -89,14 +89,19 @@ class GateInputs:
         manifest: Manifest,
         recorded: Mapping[str, RecordedGate] | None = None,
         signatures: Sequence[SignatureRecord] = (),
+        extra_findings: Sequence[Finding] = (),
     ) -> None:
         self.manifest = manifest
         self.recorded = dict(recorded or {})
         self.signatures = list(signatures)
+        # Findings that need more than the manifest, such as those against its ontology.
+        self.extra_findings = list(extra_findings)
 
     @cached_property
     def findings(self) -> list[Finding]:
-        return run_checks(self.manifest)
+        found = [*run_checks(self.manifest), *self.extra_findings]
+        found.sort(key=lambda finding: (finding.path, finding.code, finding.message))
+        return found
 
     @cached_property
     def errors(self) -> list[Finding]:
