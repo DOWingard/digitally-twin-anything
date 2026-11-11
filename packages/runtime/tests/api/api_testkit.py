@@ -25,6 +25,7 @@ from dta_core.schema import FactKind
 from dta_core.store import ChangeSet, CommitMeta, Provenance, StoreSettings, VersionRef
 from dta_runtime.twin import Bundle, Twin, install_twin
 from httpx import Response
+from runtime_testkit import grow_ontology
 
 with warnings.catch_warnings():
     # Starlette suggests another HTTP client package for its test client; the
@@ -94,13 +95,6 @@ def manifest_for(ontology_text: str, revision: int = 1) -> Manifest:
         },
     }
     return parse_manifest(yaml.safe_load(yaml.safe_dump(document)), origin="test manifest")
-
-
-def grow_ontology(text: str) -> str:
-    """The water ontology with one more optional property on Pipe."""
-    lined = "      lined:\n        range: boolean\n"
-    assert lined in text
-    return text.replace(lined, lined + "      material:\n        range: string\n")
 
 
 def database_name(server: StoreSettings, purpose: str) -> str:
