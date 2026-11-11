@@ -21,25 +21,7 @@ from dta_core.store import Store, StoreSettings  # noqa: E402
 from dta_core.store.settings import ENV_NAMES  # noqa: E402
 from dta_store_testkit import raw_connection, sql, water_ontology  # noqa: E402
 
-SCALE = "scale"
 _SESSION = uuid.uuid4().hex[:6]
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line(
-        "markers",
-        f"{SCALE}: loads the full-size fixtures and asserts the performance thresholds; "
-        f"run with -m {SCALE}",
-    )
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if SCALE in (config.getoption("-m") or ""):
-        return
-    skip = pytest.mark.skip(reason=f"full-size fixture; run with -m {SCALE}")
-    for item in items:
-        if SCALE in item.keywords:
-            item.add_marker(skip)
 
 
 @pytest.fixture(scope="session")
