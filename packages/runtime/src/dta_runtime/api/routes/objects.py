@@ -10,7 +10,7 @@ from starlette.responses import Response
 
 from ...graph import links as object_links
 from ..deps import ServicesDep
-from ..docs import tabular, versioned
+from ..docs import API_PREFIX, tabular, versioned
 from ..filters import parse_where
 from ..formats import json_response, negotiate, table_response
 from ..models import ObjectOne, Page
@@ -33,7 +33,7 @@ from ..problems import ApiError
 from ..services import Services
 from ..tables import fingerprint, provenance_json, readable, version_json
 
-router = APIRouter(tags=["objects"])
+router = APIRouter(prefix=API_PREFIX, tags=["objects"])
 
 Where = Annotated[
     list[str] | None,
@@ -265,7 +265,7 @@ def object_history(
     chosen = negotiate(fmt, request.headers.get("accept"))
     per_page = page_limit(chosen, limit)
     wanted = split_list(properties)
-    query = fingerprint("history", type, uid, range, branch, wanted, include)
+    query = fingerprint("history", type, uid, wanted, include)
     selected, pinned, position = start_range(services, cursor, "history", query, range, branch)
     last = selected[-1]
     ontology = services.ontology(last)

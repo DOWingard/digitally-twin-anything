@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query
 from starlette.responses import Response
 
 from ..deps import ServicesDep
-from ..docs import errors
+from ..docs import API_PREFIX, errors
 from ..formats import json_response
 from ..logfiles import LogQuery, read_logs
 from ..models import LogsOut
@@ -17,7 +17,7 @@ from ..params import split_list
 from ..problems import ApiError
 from ..services import repair_plus
 
-router = APIRouter(prefix="/lifecycle", tags=["lifecycle"])
+router = APIRouter(prefix=f"{API_PREFIX}/lifecycle", tags=["lifecycle"])
 
 LOGS_LIMIT_DEFAULT = 200
 LOGS_LIMIT_MAX = 5_000

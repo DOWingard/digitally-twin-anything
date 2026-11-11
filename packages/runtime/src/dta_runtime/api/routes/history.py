@@ -14,7 +14,7 @@ from fastapi import APIRouter, Path, Query, Request
 from starlette.responses import Response
 
 from ..deps import ServicesDep
-from ..docs import errors, tabular, versioned
+from ..docs import API_PREFIX, errors, tabular, versioned
 from ..formats import json_response, negotiate, rows, table_response
 from ..models import BranchList, DiffOut, VersionList, VersionOne
 from ..params import Branch, Cursor, FormatParam, Limit, json_limit, split_list
@@ -28,7 +28,7 @@ from ..tables import (
     version_json,
 )
 
-router = APIRouter(prefix="/history", tags=["history"])
+router = APIRouter(prefix=f"{API_PREFIX}/history", tags=["history"])
 log = Log("api.history")
 
 _CHANGES = ("added", "modified", "removed")

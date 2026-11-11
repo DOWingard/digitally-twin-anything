@@ -12,7 +12,7 @@ from starlette.responses import Response
 
 from ...graph import EDGE_SCHEMA, select_kinds
 from ..deps import ServicesDep
-from ..docs import tabular
+from ..docs import API_PREFIX, tabular
 from ..formats import negotiate, table_response
 from ..models import Page, TensorPage
 from ..paging import next_cursor, paged_response, start, start_range
@@ -32,7 +32,7 @@ from ..slices import changes_slice, numeric_properties, state_slice, tensor, ten
 from ..tables import fingerprint, readable
 from .objects import list_type
 
-router = APIRouter(prefix="/block", tags=["block"])
+router = APIRouter(prefix=f"{API_PREFIX}/block", tags=["block"])
 
 EdgeTypePath = Annotated[
     str,
@@ -222,7 +222,7 @@ def block_slice(
     per_page = page_limit(chosen, limit)
     wanted = split_list(properties)
     objects = split_list(uids)
-    query = fingerprint("slice", type, range, branch, wanted, objects, mode, layout)
+    query = fingerprint("slice", type, wanted, objects, mode, layout)
     versions, pinned, position = start_range(services, cursor, "slice", query, range, branch)
     last = versions[-1]
     ontology = services.ontology(last)

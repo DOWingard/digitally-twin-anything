@@ -24,7 +24,7 @@ from ...graph import (
 from ...graph.local import IN_CHUNK
 from ...graph.result import ordered_edges
 from ..deps import ServicesDep
-from ..docs import tabular, versioned
+from ..docs import API_PREFIX, tabular, versioned
 from ..formats import json_response, negotiate, rows, table_response
 from ..models import GraphOut, Page, PathsOut, SubgraphRequest
 from ..paging import paged_response, start
@@ -33,7 +33,7 @@ from ..problems import ApiError
 from ..services import Services
 from ..tables import fingerprint, json_properties, mark_json, version_json
 
-router = APIRouter(prefix="/graph", tags=["graph"])
+router = APIRouter(prefix=f"{API_PREFIX}/graph", tags=["graph"])
 
 TRUNCATED_HEADER = "x-dta-truncated"
 MAX_DEPTH = 16

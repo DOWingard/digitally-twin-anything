@@ -13,13 +13,13 @@ from starlette.responses import Response
 
 from ...graph import edge_kinds
 from ..deps import ServicesDep
-from ..docs import VERSION_HEADERS, errors, versioned
+from ..docs import API_PREFIX, VERSION_HEADERS, errors, versioned
 from ..formats import json_response
 from ..models import ManifestOut, SchemaOut, TwinHealth
 from ..params import At, Branch
 from ..tables import version_headers, version_json
 
-router = APIRouter(prefix="/meta", tags=["meta"])
+router = APIRouter(prefix=f"{API_PREFIX}/meta", tags=["meta"])
 
 FIDELITY_UNKNOWN = "unknown"
 

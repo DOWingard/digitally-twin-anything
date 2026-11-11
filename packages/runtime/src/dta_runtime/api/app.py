@@ -11,7 +11,7 @@ from importlib.metadata import version as package_version
 import anyio.to_thread
 from dta_core.errors import ConfigError, DtaError
 from dta_core.log import Log
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
@@ -19,7 +19,7 @@ from starlette.responses import JSONResponse, Response
 from ..graph import GraphCache
 from ..settings import ENV_API_TOKEN, MIN_TOKEN_LENGTH, RuntimeSettings
 from ..twin import Twin, open_twin
-from .docs import OPEN_PATHS, build_openapi
+from .docs import API_PREFIX, OPEN_PATHS, build_openapi
 from .middleware import ApiMiddleware
 from .models import Health
 from .problems import error_response, problem
@@ -28,7 +28,8 @@ from .services import Services
 
 log = Log("api")
 
-API_PREFIX = "/api/v1"
+__all__ = ["API_PREFIX", "GRAPH_CACHE_VERSIONS", "create_app"]
+
 GRAPH_CACHE_VERSIONS = 4
 _HTTP_CODES = {404: "api.not_found", 405: "api.method_not_allowed"}
 
@@ -147,15 +148,12 @@ def create_app(
     app.add_exception_handler(RequestValidationError, _on_invalid_request)
     app.add_exception_handler(StarletteHTTPException, _on_http_error)
 
-    api = APIRouter(prefix=API_PREFIX)
     for module in (meta, history, objects, graph, block, lifecycle):
-        api.include_router(module.router)
+        app.include_router(module.router)
 
-    @api.get("/openapi.json", include_in_schema=False)
+    @app.get(f"{API_PREFIX}/openapi.json", include_in_schema=False)
     async def openapi_document() -> Response:
         return JSONResponse(build_openapi(app))
-
-    app.include_router(api)
 
     @app.get(
         "/healthz",

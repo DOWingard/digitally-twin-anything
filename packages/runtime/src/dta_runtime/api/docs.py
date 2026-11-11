@@ -11,6 +11,9 @@ from .formats import ARROW_MEDIA, PARQUET_MEDIA
 from .models import Problem
 from .problems import PROBLEM_MEDIA
 
+# Every route is declared with the full prefix: the request log reads the route
+# template from the matched route, which keeps only the prefix it was declared with.
+API_PREFIX = "/api/v1"
 SECURITY_SCHEME = "bearer"
 OPEN_PATHS = frozenset({"/healthz"})
 
