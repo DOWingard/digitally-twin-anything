@@ -144,7 +144,7 @@ def test_current_stage_is_the_lowest_gate_not_passed():
     assert current_stage(_outcomes(parse_manifest({})).values()) == 0
 
 
-def test_a_later_stage_can_replace_a_gate():
+def test_a_gate_can_be_replaced():
     original = GATES[2]
     try:
 

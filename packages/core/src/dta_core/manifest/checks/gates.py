@@ -4,7 +4,7 @@ The current stage is the lowest stage whose gate has not passed. Some gates are
 computed from the manifest and the recorded build state every time they are
 asked; others are recorded by the command that evaluates them and count only
 while the hash of what they examined (their subject) is unchanged. Gates live in
-a registry so later stages can add or replace them.
+a registry, so one gate can be added or replaced without touching the others.
 
 Recorded results and signatures are read through small protocols so this module
 does not depend on how the caller stores build state.
