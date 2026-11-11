@@ -317,7 +317,6 @@ class Sync(Base):
     backfill_interval: timedelta | None = opt(
         Owner.agent, "Width of the versions in which existing history is loaded"
     )
-    max_batch_rows: int | None = opt(Owner.agent, "Rows loaded per transaction", ge=1)
     assimilation: str = opt(Owner.agent, "How observations are merged into state", "direct")
 
 

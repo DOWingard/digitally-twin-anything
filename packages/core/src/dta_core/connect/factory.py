@@ -33,14 +33,19 @@ def open_connector(source_id: str, source: Source, env: Mapping[str, str]) -> Co
         raise _refuse("the source names no connector kind", context)
     if not location:
         raise _refuse("the source has no location", context)
-    if kind in (ConnectorKind.http, ConnectorKind.custom):
+    if kind is ConnectorKind.custom:
         raise _refuse(f"the {kind.value} connector kind is not available", context)
-    names = placeholders(location)
+    # Only an HTTP source keeps secrets outside its address: the values of its headers.
+    options: Mapping[str, Any] = source.options
+    option_names = _placeholders_in(options) if kind is ConnectorKind.http else []
+    names = list(dict.fromkeys([*placeholders(location), *option_names]))
     try:
         resolved = resolve_placeholders(location, env)
+        if option_names:
+            options = _filled(options, env)
     except ConfigError as exc:
         log.error(
-            "the location's placeholders cannot be filled",
+            "the source's placeholders cannot be filled",
             code=exc.code,
             missing=exc.detail.get("missing"),
             **context,
@@ -51,6 +56,14 @@ def open_connector(source_id: str, source: Source, env: Mapping[str, str]) -> Co
         secrets.append(resolved)
     redactor = Redactor(secrets)
     log.debug("opening connector", placeholders=names, **context)
+    if kind is ConnectorKind.http:
+        try:
+            from .http import open_http
+            from .http import parse_options as parse_http_options
+        except ImportError:
+            raise _refuse("the http connector kind is not available", context) from None
+        http_settings = _parse(parse_http_options, options, context)
+        return open_http(source_id, location, resolved, http_settings, redactor)
     if kind is ConnectorKind.sql:
         from .sql import open_sql
         from .sql import parse_options as parse_sql_options
@@ -62,6 +75,28 @@ def open_connector(source_id: str, source: Source, env: Mapping[str, str]) -> Co
 
     datasets = _parse(parse_file_options, source.options, context)
     return open_files(source_id, location, resolved, datasets, redactor)
+
+
+def _placeholders_in(value: Any) -> list[str]:
+    """Names of the variables the texts inside a nested option value refer to."""
+    if isinstance(value, str):
+        return placeholders(value)
+    if isinstance(value, Mapping):
+        return [name for item in value.values() for name in _placeholders_in(item)]
+    if isinstance(value, list | tuple):
+        return [name for item in value for name in _placeholders_in(item)]
+    return []
+
+
+def _filled(value: Any, env: Mapping[str, str]) -> Any:
+    """The option value with every `${NAME}` in its texts filled in."""
+    if isinstance(value, str):
+        return resolve_placeholders(value, env)
+    if isinstance(value, Mapping):
+        return {key: _filled(item, env) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_filled(item, env) for item in value]
+    return value
 
 
 def _parse[Parsed](

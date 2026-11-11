@@ -106,6 +106,23 @@ def env_unused(view: ManifestView) -> Iterator[Issue]:
             yield Issue(f"env.{name}", f"variable '{name}' is declared but nothing uses it")
 
 
+@check("ref.clock_source")
+def clock_source(view: ManifestView) -> Iterator[Issue]:
+    """A twin on a source's clock needs that source, and the source has to tell the time."""
+    clock = view.manifest.runtime.clock
+    if not clock.startswith("source:"):
+        return
+    source_id = clock.removeprefix("source:")
+    source = view.sources.get(source_id)
+    if source is None:
+        yield Issue("runtime.clock", f"source '{source_id}' is not defined")
+    elif not isinstance(source.options.get("clock"), dict):
+        yield Issue(
+            "runtime.clock",
+            f"source '{source_id}' has no clock option saying where its time is read",
+        )
+
+
 def _property_refs(view: ManifestView) -> Iterator[tuple[str, str]]:
     for qid, question in sorted(view.questions.items()):
         for ref in question.targets or []:

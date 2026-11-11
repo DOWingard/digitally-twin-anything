@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Mapping, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from .config import require_env
@@ -122,3 +123,17 @@ class Connector(Protocol):
     def __enter__(self) -> Connector: ...
 
     def __exit__(self, *exc: object) -> None: ...
+
+
+@runtime_checkable
+class TimeSource(Protocol):
+    """A connector whose source tells the time.
+
+    A twin whose clock is a source's clock reads `now` here: the time of the
+    system the data comes from, which for a simulated or replayed system is
+    not the time on the wall.
+    """
+
+    def now(self) -> datetime:
+        """The source's current time, with an offset; a `SourceError` when it cannot be read."""
+        ...

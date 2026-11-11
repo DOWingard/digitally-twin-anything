@@ -17,6 +17,7 @@ EXPECTED_CODES = {
     "ref.env_unused",
     "ref.property_format",
     "ref.mapping_columns",
+    "ref.clock_source",
     "control.bounds",
     "control.binding",
     "action.executor_addon",
