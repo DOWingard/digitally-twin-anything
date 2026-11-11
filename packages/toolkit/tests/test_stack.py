@@ -122,6 +122,25 @@ def test_images_and_variable_names_come_from_the_manifest():
     assert document["services"]["ui"]["ports"] == ["127.0.0.1:${MY_UI:?MY_UI is required}:8050"]
 
 
+def test_the_api_alone_joins_the_networks_of_sources_on_this_machine():
+    plain = yaml.safe_load(render_compose(plan_stack(manifest())))
+    assert "networks" not in plain and "networks" not in plain["services"]["api"]
+    plan = plan_stack(manifest(runtime={"networks": ["plant_default", "plant_default", "lab"]}))
+    assert plan.networks == ("plant_default", "lab")
+    document = yaml.safe_load(render_compose(plan))
+    assert document["networks"] == {
+        "default": {},
+        "plant_default": {"external": True},
+        "lab": {"external": True},
+    }
+    assert document["services"]["api"]["networks"] == ["default", "plant_default", "lab"]
+    assert "networks" not in document["services"]["store"]
+    assert "networks" not in document["services"]["ui"]
+    for name in ("default", "has space", ""):
+        with pytest.raises(StackError):
+            plan_stack(manifest(runtime={"networks": [name]}))
+
+
 def test_the_same_manifest_always_gives_the_same_file():
     assert render_compose(plan_stack(manifest())) == render_compose(plan_stack(manifest()))
 

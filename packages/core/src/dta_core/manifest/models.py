@@ -464,6 +464,11 @@ class Runtime(Base):
         "wall",
         pattern=r"^(wall|source:[a-z][a-z0-9_-]*)$",
     )
+    networks: list[str] = opt(
+        Owner.agent,
+        "Existing container networks the twin joins to reach sources running on this machine",
+        list,
+    )
     worker_cpus: float = opt(Owner.agent, "CPU limit of the worker for registered code", 1.0, gt=0)
     worker_memory_mb: int = opt(Owner.agent, "Memory limit of the worker", 1024, ge=128)
 

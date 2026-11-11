@@ -27,6 +27,7 @@ COMPOSE_FILE = "compose.yaml"
 _TEMPLATE = "templates/stack/compose.yaml.j2"
 _FILE_SCHEME = "file://"
 _DATABASE_MAX = 64
+_NETWORK_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 
 
 class StackError(DtaError):
@@ -56,6 +57,8 @@ class StackPlan:
     ui_port_env: str
     source_env: tuple[str, ...]
     source_mounts: tuple[Mount, ...]
+    # Networks created by other stacks on this machine, joined to reach their services.
+    networks: tuple[str, ...]
     ui: bool
 
     def required_env(self) -> tuple[str, ...]:
@@ -100,6 +103,17 @@ def _mount(source_id: str, location: str) -> Mount:
     return Mount(host=path, container=path)
 
 
+def _networks(names: list[str]) -> tuple[str, ...]:
+    for name in names:
+        if not _NETWORK_NAME.match(name) or name == "default":
+            log.error("network name cannot be used", network=name)
+            raise StackError(
+                f"runtime.networks: {name!r} is not the name of an existing container network",
+                detail={"network": name},
+            )
+    return tuple(dict.fromkeys(names))
+
+
 def plan_stack(manifest: Manifest) -> StackPlan:
     """What the stack of this manifest consists of."""
     if manifest.twin is None or not manifest.twin.id:
@@ -130,6 +144,7 @@ def plan_stack(manifest: Manifest) -> StackPlan:
         ui_port_env=interfaces.ui_port_env,
         source_env=tuple(sorted(env)),
         source_mounts=tuple(mounts),
+        networks=_networks(manifest.runtime.networks),
         ui=interfaces.ui,
     )
     log.debug(
@@ -161,6 +176,7 @@ def render_compose(plan: StackPlan) -> str:
         ui_port_env=plan.ui_port_env,
         source_env=plan.source_env,
         source_mounts=plan.source_mounts,
+        networks=plan.networks,
         ui=plan.ui,
     )
 

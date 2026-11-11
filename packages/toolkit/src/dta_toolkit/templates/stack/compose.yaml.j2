@@ -60,6 +60,14 @@ services:
       # A source that is a folder on this machine, readable and nothing more.
       - {{ mount.host }}:{{ mount.container }}:ro
 {%- endfor %}
+{%- if networks %}
+    # Only this service reads sources, so only it joins the networks they live on.
+    networks:
+      - default
+{%- for network in networks %}
+      - {{ network }}
+{%- endfor %}
+{%- endif %}
     ports:
       - "127.0.0.1:${{ '{' }}{{ api_port_env }}:?{{ api_port_env }} is required}:8000"
     healthcheck:
@@ -96,3 +104,12 @@ volumes:
   store-data: {}
   artifacts: {}
   logs: {}
+{%- if networks %}
+
+networks:
+  default: {}
+{%- for network in networks %}
+  {{ network }}:
+    external: true
+{%- endfor %}
+{%- endif %}
