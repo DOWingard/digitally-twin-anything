@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ...functions import BUILTINS, REGISTERED_ENTRY, shape_problem
 from .findings import Issue, Severity, check
 from .view import FORECAST_KINDS, ManifestView, is_property_ref
 
@@ -20,6 +21,43 @@ def question_function(view: ManifestView) -> Iterator[Issue]:
                 f"contract.questions.{qid}.function",
                 f"function '{question.function}' is not declared in functions",
             )
+
+
+@check("ref.function_entry")
+def function_entry(view: ManifestView) -> Iterator[Issue]:
+    """A built-in has to exist and its fixed parameters have to be ones it takes; a function
+    supplied as code is named as `module:function`."""
+    for fid, function in sorted(view.functions.items()):
+        if function.kind is None or function.entry is None:
+            continue
+        base = f"functions.{fid}"
+        if function.kind == "registered":
+            if not REGISTERED_ENTRY.match(function.entry):
+                yield Issue(
+                    f"{base}.entry",
+                    f"'{function.entry}' does not name code: write module:function",
+                )
+            continue
+        builtin = BUILTINS.get(function.entry)
+        if builtin is None:
+            yield Issue(
+                f"{base}.entry",
+                f"'{function.entry}' is not a built-in function; the built-ins are "
+                f"{', '.join(sorted(BUILTINS))}",
+            )
+            continue
+        for name, value in sorted(function.params.items()):
+            parameter = builtin.parameter(name)
+            if parameter is None:
+                takes = ", ".join(found.name for found in builtin.parameters)
+                yield Issue(
+                    f"{base}.params.{name}",
+                    f"{function.entry} takes no parameter '{name}'; it takes {takes}",
+                )
+                continue
+            problem = shape_problem(parameter, value)
+            if problem is not None:
+                yield Issue(f"{base}.params.{name}", f"{name} {problem}")
 
 
 @check("ref.question_model")

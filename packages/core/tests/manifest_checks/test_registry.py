@@ -8,6 +8,7 @@ from dta_core.manifest.checks.view import fmt_duration, is_property_ref, placeho
 
 EXPECTED_CODES = {
     "ref.question_function",
+    "ref.function_entry",
     "ref.question_model",
     "ref.model_question",
     "ref.control_action",

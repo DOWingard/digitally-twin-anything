@@ -63,6 +63,12 @@ STATIC = put("contract.tier", "static")
 CASES = [
     ("question_function", "ref.question_function", "error", f"{Q}.q_level.function",
      put(f"{Q}.q_level.function", "f_missing")),
+    ("function_entry_unknown", "ref.function_entry", "error", "functions.f_energy.entry",
+     put("functions.f_energy.entry", "total")),
+    ("function_entry_param", "ref.function_entry", "error", "functions.f_energy.params.op",
+     put("functions.f_energy.params.op", "median")),
+    ("function_entry_code", "ref.function_entry", "error", "functions.f_schedule.entry",
+     put("functions.f_schedule.entry", "schedule")),
     ("question_model_missing", "ref.question_model", "error", f"{Q}.q_forecast.model",
      put(f"{Q}.q_forecast.model", "m_missing")),
     ("question_model_other", "ref.question_model", "error", f"{Q}.q_forecast.model",

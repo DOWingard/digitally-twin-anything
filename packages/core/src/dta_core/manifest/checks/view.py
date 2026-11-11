@@ -172,6 +172,9 @@ class ManifestView:
             for path, text in walk_strings(executor.body, f"{base}.body"):
                 for name in placeholders(text):
                     yield name, path
+        for function_id, function in sorted(self.functions.items()):
+            for name in function.env:
+                yield name, f"functions.{function_id}.env"
         notification = self.contract.notification if self.contract else None
         if notification is not None and notification.webhook_env:
             yield notification.webhook_env, "contract.notification.webhook_env"

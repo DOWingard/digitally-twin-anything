@@ -168,8 +168,8 @@ functions:
     interval: PT15M
   f_energy:
     kind: builtin
-    entry: sum
-    params: {property: Pump.power}
+    entry: aggregate
+    params: {property: Pump.power, op: sum}
     complexity: O(|V|)
     latency_budget: PT1S
 actions:
