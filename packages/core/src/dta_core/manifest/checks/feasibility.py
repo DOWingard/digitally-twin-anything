@@ -48,17 +48,30 @@ def interval(view: ManifestView) -> Iterator[Issue]:
         return
     value = sync.interval
     shown = fmt_duration(value)
+    # Sources change at different rates. Syncing faster than the fastest of them
+    # brings nothing; syncing faster than a slower one only reads it more often
+    # than it changes, which is allowed. A rate limit binds every source it is on.
+    refreshes = [
+        (source.refresh_period, sid)
+        for sid, source in sorted(view.sources.items())
+        if source.refresh_period is not None
+    ]
+    if refreshes:
+        fastest, sid = min(refreshes)
+        if value < fastest:
+            yield Issue(
+                "sync.interval",
+                f"interval {shown} is shorter than the refresh period "
+                f"{fmt_duration(fastest)} of source '{sid}', the fastest one",
+            )
     for sid, source in sorted(view.sources.items()):
-        for label, period in (
-            ("refresh period", source.refresh_period),
-            ("rate limit period", source.rate_limit_period),
-        ):
-            if period is not None and value < period:
-                yield Issue(
-                    "sync.interval",
-                    f"interval {shown} is shorter than the {label} "
-                    f"{fmt_duration(period)} of source '{sid}'",
-                )
+        period = source.rate_limit_period
+        if period is not None and value < period:
+            yield Issue(
+                "sync.interval",
+                f"interval {shown} is shorter than the rate limit period "
+                f"{fmt_duration(period)} of source '{sid}'",
+            )
     stalenesses = [
         (question.staleness, qid)
         for qid, question in sorted(view.questions.items())
