@@ -57,9 +57,27 @@ def timezone(value: Any, path: str) -> str:
     return name
 
 
+# Plain names for the types a manifest's author usually means. Arrow's own
+# `float` is 32 bits wide, which loses digits of an ordinary measurement.
+_PLAIN_TYPES: dict[str, pa.DataType] = {
+    "timestamp": pa.timestamp("us", tz="UTC"),
+    "float": pa.float64(),
+    "integer": pa.int64(),
+    "boolean": pa.bool_(),
+    "text": pa.string(),
+}
+
+
 def arrow_type(value: Any, path: str) -> pa.DataType:
-    """An Arrow type from its name: `int64`, `timestamp[us, tz=UTC]`, `decimal128(10, 2)`..."""
+    """A column type from its name.
+
+    Plain names (`timestamp`, `float`, `integer`, `boolean`, `text`, `string`,
+    `date32`) or any Arrow type name: `int64`, `float32`,
+    `timestamp[us, tz=UTC]`, `decimal128(10, 2)`...
+    """
     name = text(value, path).strip()
+    if name in _PLAIN_TYPES:
+        return _PLAIN_TYPES[name]
     if match := _TIMESTAMP_TYPE.match(name):
         zone = match.group(2).strip() if match.group(2) else None
         if zone is not None:

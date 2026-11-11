@@ -1,4 +1,5 @@
-"""Read-only access to a twin's data sources: SQL databases and folders of files.
+"""Read-only access to a twin's data sources: SQL databases, folders of files, and
+JSON-over-HTTP interfaces.
 
 `open_connector` turns a manifest's source entry into a `Connector` whose
 `read` yields Arrow tables with one set of type rules (`normalize`); `probe`

@@ -208,7 +208,7 @@ class TestDeclaredColumns:
         api.route("/r", Reply(rows))
         dataset = {
             "path": "/r",
-            "columns": {"n": "int32", "x": "double", "at": "timestamp[s]", "f": "float"},
+            "columns": {"n": "int32", "x": "double", "at": "timestamp[s]", "f": "float32"},
         }
         table = _tables(api, dataset)[0]
         assert [str(t) for t in table.schema.types] == [

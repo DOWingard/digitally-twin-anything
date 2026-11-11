@@ -100,7 +100,7 @@ def _dataset(**entry: Any) -> dict[str, Any]:
         (_dataset(since={}), "datasets.a.since.param"),
         (_dataset(since={"param": "start", "format": "rfc2822"}), "datasets.a.since.format"),
         (_dataset(columns={}), "datasets.a.columns"),
-        (_dataset(columns={"t": "timestamp"}), "datasets.a.columns.t"),
+        (_dataset(columns={"t": "moment"}), "datasets.a.columns.t"),
         (_dataset(columns={"t": "json"}), "datasets.a.columns.t"),
         ({**_dataset(), "headers": {"Bad Name": "x"}}, "headers.Bad Name"),
         ({**_dataset(), "headers": {"X-Key": {"v": 1}}}, "headers.X-Key"),

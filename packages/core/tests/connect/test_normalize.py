@@ -183,3 +183,14 @@ class TestCursor:
     def test_values_that_cannot_be_compared_are_refused(self) -> None:
         with pytest.raises(ValueError):
             cursor_scalar("abc", pa.int64())
+
+
+def test_plain_type_names_mean_what_a_manifest_author_expects() -> None:
+    from dta_core.connect.options import arrow_type
+
+    assert arrow_type("timestamp", "columns.t") == pa.timestamp("us", tz="UTC")
+    assert arrow_type("float", "columns.x") == pa.float64()  # Arrow's own float is 32 bits
+    assert arrow_type("float32", "columns.x") == pa.float32()
+    assert arrow_type("integer", "columns.n") == pa.int64()
+    assert arrow_type("boolean", "columns.b") == pa.bool_()
+    assert arrow_type("text", "columns.s") == arrow_type("string", "columns.s") == pa.string()

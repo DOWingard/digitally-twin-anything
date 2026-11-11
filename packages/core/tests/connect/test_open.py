@@ -128,7 +128,7 @@ class TestPlaceholders:
 
 
 class TestKindsAndOptions:
-    @pytest.mark.parametrize("kind", ["http", "custom"])
+    @pytest.mark.parametrize("kind", ["custom"])
     def test_kinds_that_are_not_available(self, kind: str) -> None:
         with pytest.raises(SourceConfigError, match="not available") as caught:
             open_connector("x", Source(connector=kind, location="https://example.invalid"), {})
