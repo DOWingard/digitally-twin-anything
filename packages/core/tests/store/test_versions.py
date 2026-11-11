@@ -23,6 +23,7 @@ from dta_core.store import (
     UnknownType,
     UnknownVersion,
     VersionRef,
+    stored_ontology,
 )
 from dta_store_testkit import (
     at,
@@ -136,6 +137,24 @@ def test_install_is_version_zero_at_the_time_it_is_given(make_store: Callable[..
         assert caught.value.code == "store.ontology_mismatch"
     finally:
         other.close()
+
+
+def test_a_process_that_did_not_install_the_twin_reads_its_ontology_first(
+    make_store: Callable[..., Store],
+):
+    store = make_store(install=False)
+    with pytest.raises(NotInstalled) as caught:
+        stored_ontology(store.settings)
+    assert caught.value.code == "store.not_installed"
+    store.install("twin-8", t=at(0))
+    found = stored_ontology(store.settings)
+    assert found == store.ontology
+    assert found.hash == store.ontology.hash
+    second = Store(store.settings, found)
+    try:
+        assert second.head().seq == 0
+    finally:
+        second.close()
 
 
 def test_install_defaults_to_the_earliest_time(store: Store):

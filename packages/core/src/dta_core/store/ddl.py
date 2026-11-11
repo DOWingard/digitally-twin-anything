@@ -241,7 +241,7 @@ def column_type(ontology: Ontology, field: Field) -> str:
     if field.kind == Kind.json or is_list(field):
         return "JSON"
     if field.kind == Kind.string:
-        return "TEXT" if field.long_text else f"VARCHAR({STRING_LENGTH})"
+        return "LONGTEXT" if field.long_text else f"VARCHAR({STRING_LENGTH})"
     if field.kind == Kind.integer:
         return "BIGINT"
     if field.kind == Kind.float:

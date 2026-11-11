@@ -39,7 +39,7 @@ from ..log import Log, current_trace_id
 from ..schema import Ontology, RowValidator, Violation
 from . import ddl
 from .boundary import public
-from .db import Conn, Database, error_text
+from .db import Conn, Database, error_code, error_text
 from .errors import (
     BranchExists,
     HeadMoved,
@@ -89,6 +89,7 @@ BUILD_BRANCH = "_dta_build"
 _OWN_OPERATION = {Cause.install: "install", Cause.migration: "migrate", Cause.merge: "merge"}
 _STARTUP_LOCK_WAIT_S = 5
 _STATUS = "SELECT `table_name`, `staged`, `status` FROM `dolt_status`"
+_ER_NO_SUCH_TABLE = 1146
 
 
 class Store(Reads):
@@ -1008,4 +1009,40 @@ class Store(Reads):
         self._validator = validator or DescriptorValidator(ontology)
 
 
-__all__ = ["BRANCH_NAME", "BUILD_BRANCH", "Store"]
+@public
+def stored_ontology(settings: StoreSettings) -> Ontology:
+    """The ontology in force at the head of the live branch of an installed twin.
+
+    A store is opened with the ontology its caller works with. A process that
+    did not install the twin has none, so it reads the stored one first.
+    """
+    database = Database(settings)
+    try:
+        with database.connect() as conn:
+            try:
+                text = conn.scalar(
+                    f"SELECT `descriptor` FROM `{ddl.ONTOLOGY_TABLE}` AS OF %s", (LIVE_BRANCH,)
+                )
+            except pymysql.MySQLError as exc:
+                if error_code(exc) != _ER_NO_SUCH_TABLE:
+                    raise
+                text = None
+    finally:
+        database.dispose()
+    if text is None:
+        log.error("no ontology is stored; the twin is not installed", database=settings.database)
+        raise NotInstalled(
+            f"database {settings.database} holds no installed twin",
+            detail={"database": settings.database},
+        )
+    try:
+        return Ontology.from_json(text)
+    except (ValueError, KeyError, TypeError) as exc:
+        log.error("stored ontology cannot be read", exc=exc, database=settings.database)
+        raise StoreError(
+            f"the ontology stored in {settings.database} cannot be read: {exc}",
+            code="store.corrupt_ontology",
+        ) from exc
+
+
+__all__ = ["BRANCH_NAME", "BUILD_BRANCH", "Store", "stored_ontology"]

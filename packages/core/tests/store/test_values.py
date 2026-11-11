@@ -203,7 +203,7 @@ def test_type_table_holds_keys_references_ranges_and_checks():
         "`sampled_at` DATETIME(6)",
         "`sealed` BOOLEAN",
         "`fill_count` BIGINT",
-        "`notes` TEXT",
+        "`notes` LONGTEXT",
         "`_prov` JSON NOT NULL",
         "FOREIGN KEY (`uid`, `_type`) REFERENCES `_object` (`uid`, `type`)",
         "CHECK (`_type` = 'Tank')",

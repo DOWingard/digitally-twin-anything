@@ -42,7 +42,7 @@ from .model import (
 )
 from .selector import Selector
 from .settings import StoreSettings
-from .store import Store
+from .store import Store, stored_ontology
 from .validate import DescriptorValidator
 
 __all__ = [
@@ -83,4 +83,5 @@ __all__ = [
     "Version",
     "VersionRef",
     "ViolationError",
+    "stored_ontology",
 ]
