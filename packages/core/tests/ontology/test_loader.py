@@ -5,7 +5,7 @@ from dta_core.ontology import OntologyError, load_ontology, parse_ontology
 from dta_core.schema import Field, Kind, Ontology, Role
 
 FIXTURES = Path(__file__).parent / "fixtures"
-META_TYPES = ["TwinArtifact", "TwinSource", "TwinSyncRun"]
+META_TYPES = ["TwinArtifact", "TwinDataset", "TwinManifest", "TwinSource", "TwinSyncRun"]
 
 
 def test_load_and_failure_are_logged(log_lines, water_path, tmp_path):
@@ -36,7 +36,7 @@ def test_types_are_concrete_meta_first_then_by_name(water):
         "Tank",
         "Valve",
     ]
-    assert [t.meta for t in water.types] == [True] * 3 + [False] * 8
+    assert [t.meta for t in water.types] == [True] * len(META_TYPES) + [False] * 8
     # Abstract classes, mixins and value types get no table.
     for name in ("Node", "Link", "Located", "PumpCurvePoint"):
         assert not water.has_type(name)

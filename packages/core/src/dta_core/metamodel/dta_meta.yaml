@@ -13,6 +13,34 @@ imports:
   - linkml:types
 
 classes:
+  TwinManifest:
+    description: >-
+      The manifest the twin was built from. There is one such object; each
+      revision of the manifest is a new version of it.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      twin_id:
+        required: true
+      name: {}
+      tier: {}
+      revision:
+        range: integer
+        required: true
+        minimum_value: 1
+      manifest_hash:
+        required: true
+        pattern: "^[0-9a-f]{64}$"
+      contract_hash:
+        required: true
+        pattern: "^[0-9a-f]{64}$"
+      content:
+        required: true
+        description: The whole manifest as YAML.
+        annotations:
+          dta_long: true
+
   TwinSource:
     description: A data source the twin reads.
     attributes:
@@ -23,6 +51,15 @@ classes:
         required: true
         description: How the source is read (file, sql, http, custom).
       description: {}
+      location:
+        description: Address of the source with placeholders in place of anything secret.
+        annotations:
+          dta_long: true
+      watermark:
+        range: datetime
+        description: Latest data timestamp read from the source.
+        annotations:
+          dta_role: state
       status:
         range: TwinSourceStatus
         required: true
@@ -38,6 +75,34 @@ classes:
           dta_role: state
           dta_long: true
 
+  TwinDataset:
+    description: One dataset of a source and how far the twin has read it.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      source:
+        range: TwinSource
+        required: true
+      name:
+        required: true
+      cursor_column: {}
+      cursor:
+        description: Highest value of the cursor column read so far, as text.
+        annotations:
+          dta_role: state
+      rows_read:
+        range: integer
+        minimum_value: 0
+        description: Rows read from the dataset since the twin was installed.
+        annotations:
+          dta_role: state
+      last_read_at:
+        range: datetime
+        description: Data time of the last read.
+        annotations:
+          dta_role: state
+
   TwinSyncRun:
     description: One execution of the sync pipeline.
     annotations:
@@ -46,6 +111,24 @@ classes:
       uid:
         identifier: true
         required: true
+      kind:
+        range: TwinRunKind
+        description: Whether the run loaded existing history or new data.
+      finished_at:
+        range: datetime
+        description: Data time at which the run ended.
+      duration_ms:
+        range: integer
+        minimum_value: 0
+        description: How long the run took on the wall clock.
+      versions_written:
+        range: integer
+        minimum_value: 0
+      rejects_location:
+        description: Path inside the artifact volume of the rows set aside by validation.
+      unmapped_columns:
+        multivalued: true
+        description: Source columns the run saw that no mapping reads, as source.dataset.column.
       started_at:
         range: datetime
         required: true
@@ -99,6 +182,10 @@ enums:
       ok: {}
       failing: {}
       disabled: {}
+  TwinRunKind:
+    permissible_values:
+      backfill: {}
+      incremental: {}
   TwinRunStatus:
     permissible_values:
       running: {}

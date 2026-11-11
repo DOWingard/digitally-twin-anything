@@ -220,8 +220,21 @@ class DatasetProfile(Base):
     columns: dict[str, ColumnProfile]
     candidate_keys: list[list[str]] = Field(default_factory=list)
     timestamp_columns: list[str] = Field(default_factory=list)
+    time_column: str | None = Field(
+        default=None, description="The timestamp column the history is ordered by"
+    )
+    entity_columns: list[str] = Field(
+        default_factory=list,
+        description="Columns that, with the time column, identify one row of a time series",
+    )
     history_start: datetime | None = None
     history_end: datetime | None = None
+    refresh_period: timedelta | None = Field(
+        default=None, description="Median gap between consecutive timestamps"
+    )
+    sampled_rows: int | None = Field(
+        default=None, ge=0, description="Rows the statistics were computed on, when not all"
+    )
 
 
 class SourceProfile(Base):
@@ -252,6 +265,15 @@ class Mapping(Base):
         Owner.agent, "Column carrying when the fact was true; else time of read"
     )
     kind: FactKind = opt(Owner.agent, "How the facts were obtained", FactKind.observed)
+    mode: Literal["upsert", "snapshot"] = opt(
+        Owner.agent,
+        "upsert keeps an object that is missing from a read; snapshot deletes it",
+        "upsert",
+    )
+    filter: str | None = opt(Owner.agent, "Condition a row must meet to be mapped")
+    cursor: str | None = opt(
+        Owner.agent, "Column that only grows, so a later read can take only new rows"
+    )
 
 
 class Source(Base):
@@ -264,6 +286,9 @@ class Source(Base):
     rate_limit_period: timedelta | None = opt(Owner.agent, "Shortest allowed gap between reads")
     edits_past: bool = opt(Owner.agent, "The source rewrites its own history", False)
     host_local: bool = opt(Owner.agent, "A changing file on the user's machine", False)
+    views: dict[str, str] = opt(
+        Owner.agent, "Named SELECT statements over the datasets read in one run", dict
+    )
     profile: SourceProfile | None = req(Owner.agent, "Result of read-only profiling")
     mappings: dict[str, Mapping] | None = req(Owner.agent, "How rows become ontology objects")
 
@@ -288,6 +313,9 @@ class Sync(Base):
     derivation: SyncDerivation | None = opt(Owner.agent, "How the interval was derived")
     aggregation: Literal["last", "mean", "min", "max"] = opt(
         Owner.agent, "How signals faster than the interval are reduced before commit", "last"
+    )
+    backfill_interval: timedelta | None = opt(
+        Owner.agent, "Width of the versions in which existing history is loaded"
     )
     max_batch_rows: int | None = opt(Owner.agent, "Rows loaded per transaction", ge=1)
     assimilation: str = opt(Owner.agent, "How observations are merged into state", "direct")
@@ -428,6 +456,13 @@ class EnvVar(Base):
 class Runtime(Base):
     store_image: str = opt(
         Owner.agent, "Image of the versioned store", "dolthub/dolt-sql-server:2.7.3"
+    )
+    image: str = opt(Owner.agent, "Image the twin's own services run from", "dta-runtime:0.1.0")
+    clock: str = opt(
+        Owner.agent,
+        "Where the twin reads the current time: wall, or source:<source id>",
+        "wall",
+        pattern=r"^(wall|source:[a-z][a-z0-9_-]*)$",
     )
     worker_cpus: float = opt(Owner.agent, "CPU limit of the worker for registered code", 1.0, gt=0)
     worker_memory_mb: int = opt(Owner.agent, "Memory limit of the worker", 1024, ge=128)
