@@ -28,7 +28,7 @@ from .live import Clocks
 from .middleware import ApiMiddleware
 from .models import Health
 from .problems import error_response, problem
-from .routes import block, graph, history, lifecycle, meta, objects, sync
+from .routes import artifacts, block, graph, history, lifecycle, meta, objects, sync
 from .services import Services
 
 log = Log("api")
@@ -168,7 +168,7 @@ def create_app(
     app.add_exception_handler(RequestValidationError, _on_invalid_request)
     app.add_exception_handler(StarletteHTTPException, _on_http_error)
 
-    for module in (meta, history, objects, graph, block, lifecycle, sync):
+    for module in (meta, history, objects, graph, block, lifecycle, sync, artifacts):
         app.include_router(module.router)
 
     @app.get(f"{API_PREFIX}/openapi.json", include_in_schema=False)

@@ -328,6 +328,12 @@ class JobAccepted(BaseModel):
     job: JobOut
 
 
+class ArtifactStored(BaseModel):
+    sha256: str = Field(description="SHA-256 of the content; the name the file is kept under")
+    size_bytes: int
+    location: str = Field(description="Path inside the twin's artifact volume")
+
+
 class JobOne(BaseModel):
     data: JobOut
 

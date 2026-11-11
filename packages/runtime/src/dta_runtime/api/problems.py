@@ -80,6 +80,9 @@ STATUS_BY_CODE: dict[str, int] = {
     "sync.busy": 409,
     "sync.run_not_found": 404,
     "sync.rejects_missing": 404,
+    "artifact.not_found": 404,
+    "artifact.empty": 400,
+    "artifact.too_large": 413,
 }
 
 # What a server error tells the client; the cause stays in the logs.

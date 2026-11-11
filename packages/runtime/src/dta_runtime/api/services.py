@@ -18,6 +18,7 @@ from typing import Any
 from dta_core.schema import Ontology
 from dta_core.store import InvalidInput, Selector, Store, VersionRef
 
+from ..artifacts import ArtifactStore
 from ..graph import GraphCache
 from ..settings import RuntimeSettings
 from ..sync.extract import Connect
@@ -59,12 +60,14 @@ class Services:
     connect: Connect | None = None
     rejects: RejectsReader = field(default_factory=RejectsReader)
     sync_jobs: SyncJobs = field(init=False)
+    artifacts: ArtifactStore = field(init=False)
     _ontologies: OrderedDict[str, Ontology] = field(default_factory=OrderedDict)
     _heads: OrderedDict[str, HeadState] = field(default_factory=OrderedDict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         self.sync_jobs = SyncJobs(self.jobs, lambda params: sync_work(self, params))
+        self.artifacts = ArtifactStore(self.settings.artifacts_dir)
 
     @property
     def store(self) -> Store:
