@@ -224,7 +224,7 @@ def _profiling(inputs: GateInputs) -> GateOutcome:
     return _outcome(3, reasons)
 
 
-DESIGN_GATE = recorded_gate(4, subject=manifest_hash)
+recorded_gate(4, subject=manifest_hash)
 
 
 @computed_gate(5)
@@ -253,6 +253,12 @@ def _gaps(inputs: GateInputs) -> GateOutcome:
 
 for _stage in (6, 7, 8):
     recorded_gate(_stage)
+
+
+def subject_of(stage: int, manifest: Manifest) -> str | None:
+    """The subject hash a command must record for a recorded gate."""
+    gate = GATES[stage]
+    return gate.subject(manifest) if gate.subject is not None else None
 
 
 def evaluate_gates(inputs: GateInputs) -> list[GateOutcome]:
