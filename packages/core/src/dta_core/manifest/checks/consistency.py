@@ -76,8 +76,21 @@ def static_extras(view: ManifestView) -> Iterator[Issue]:
     if not view.static:
         return
     manifest = view.manifest
+    # How existing history is loaded applies to a static twin too; only the
+    # settings of the recurring sync are of no use to it.
+    sync = manifest.sync
+    recurring = sync is not None and any(
+        value is not None
+        for value in (
+            sync.interval,
+            sync.minimum_interval,
+            sync.maximum_interval,
+            sync.derivation,
+        )
+    )
+    if recurring:
+        yield Issue("sync", "a static twin is loaded once; its sync interval will be ignored")
     for section, present in (
-        ("sync", manifest.sync is not None),
         ("fidelity", manifest.fidelity is not None),
         ("control_loops", bool(manifest.control_loops)),
     ):
