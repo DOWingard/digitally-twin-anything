@@ -24,8 +24,11 @@ router = APIRouter(prefix=f"{API_PREFIX}/meta", tags=["meta"])
 FIDELITY_UNKNOWN = "unknown"
 
 
+YAML_MEDIA = "application/yaml"
+
+
 class YamlResponse(Response):
-    media_type = "text/yaml"
+    media_type = YAML_MEDIA
 
 
 def schema_document(ontology: Ontology) -> dict[str, Any]:
@@ -166,7 +169,14 @@ def schema(services: ServicesDep, at: At = "head", branch: Branch = LIVE_BRANCH)
     response_class=YamlResponse,
     responses={
         200: {
-            "content": {"text/yaml": {"schema": {"type": "string"}}},
+            "content": {
+                YAML_MEDIA: {
+                    "schema": {
+                        "type": "object",
+                        "description": "A LinkML schema document",
+                    }
+                }
+            },
             "description": "The domain ontology as LinkML YAML",
             "headers": VERSION_HEADERS,
         },
