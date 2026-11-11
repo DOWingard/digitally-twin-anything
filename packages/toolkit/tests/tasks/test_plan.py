@@ -1,4 +1,9 @@
+from pathlib import Path
+
 import pytest
+import yaml
+from dta_core.manifest import Owner, Status, parse_manifest, required_fields
+from dta_core.manifest.checks import GateInputs, current_stage, evaluate_gates
 from dta_toolkit.tasks.catalogue import CATALOGUE, Kind, tasks_for
 from dta_toolkit.tasks.errors import TaskError
 
@@ -144,10 +149,37 @@ def test_plan_changes_nothing(ws):
 
 
 def test_plan_needs_a_stage_that_has_delegable_work(ws):
-    ws.run("plan").could_not_run("tasks.stage.required")
+    # The build stands before profiling, where there is nothing to hand out.
+    detail = ws.run("plan").could_not_run("tasks.stage.required")
+    assert detail["stage"] not in detail["stages"]
     detail = ws.run("plan", "--stage", "5").could_not_run("tasks.stage.unknown")
     assert detail["stages"] == ["3", "4", "6", "operate"]
     ws.run("plan", "--stage", "3", "--store-version", "v1").could_not_run("tasks.usage")
+
+
+def test_plan_without_a_stage_takes_the_one_the_build_stands_at(make_ws):
+    complete = Path(__file__).parent.parent / "commands" / "complete_manifest.yaml"
+    data = yaml.safe_load(complete.read_text(encoding="utf-8"))
+    # As the user leaves it after the discussion: every value they own confirmed.
+    data["field_status"] = {
+        state.path: Status.confirmed.value
+        for state in required_fields(parse_manifest(data))
+        if state.owner == Owner.user and state.status == Status.proposed
+    }
+    ws = make_ws("complete", data)
+    workspace = ws.workspace
+
+    def stage() -> int | None:
+        inputs = GateInputs(workspace.load_manifest(), recorded=workspace.load_state().gates)
+        return current_stage(evaluate_gates(inputs))
+
+    # Access is the one gate before design that only a command can pass.
+    assert stage() == 2
+    workspace.record_gate(2, True)
+    assert stage() == 4
+    before = workspace.fingerprint()
+    assert ws.run("plan").result == _plan(ws, "4")
+    assert workspace.fingerprint() == before
 
 
 @pytest.mark.parametrize("bad", ["../../escape", "a/b", "a.b", "Upper", "x y", "tail\n", "-dash"])

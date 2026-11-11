@@ -10,12 +10,39 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 import typer
+from dta_core.log import Log
+from dta_core.manifest.checks import STAGE_NAMES, current_stage, evaluate_gates
 
+from ..commands.common import gate_inputs
 from ..output import command, emit, session
+from ..workspace import Workspace
 from . import lifecycle
+from .catalogue import stages
 from .errors import TaskError
 
+log = Log("tasks.cli")
+
 app = typer.Typer(add_completion=False, no_args_is_help=True)
+
+_OPERATE = "operate"
+
+
+def _default_stage(workspace: Workspace) -> str:
+    """The stage the build stands at, when that stage has work to hand out."""
+    workspace.require()
+    reached = current_stage(evaluate_gates(gate_inputs(workspace, workspace.load_manifest())))
+    stage = _OPERATE if reached is None else str(reached)
+    known = stages()
+    if stage not in known:
+        log.info("current stage has no delegable work", stage=stage)
+        raise TaskError(
+            f"the build is at stage {stage} ({STAGE_NAMES.get(reached, stage)}), which has no "
+            f"work to hand out; pass --stage with one of {', '.join(known)}",
+            code="tasks.stage.required",
+            detail={"stage": stage, "stages": known},
+        )
+    log.debug("stage taken from the build's progress", stage=stage)
+    return stage
 
 
 def _plan_text(result: dict[str, Any]) -> str:
@@ -45,7 +72,10 @@ def plan(
     ctx: typer.Context,
     stage: Annotated[
         str | None,
-        typer.Option("--stage", help="Stage to plan: 3, 4, 6 or operate."),
+        typer.Option(
+            "--stage",
+            help="Stage to plan: 3, 4, 6 or operate. Default: the stage the build stands at.",
+        ),
     ] = None,
     open_batch: Annotated[
         bool,
@@ -57,11 +87,11 @@ def plan(
     ] = None,
 ) -> None:
     """List a stage's tasks and the batches they run in; with --open, open the next batch."""
-    if stage is None:
-        raise TaskError("pass --stage (3, 4, 6 or operate)", code="tasks.stage.required")
     if store_version is not None and not open_batch:
         raise TaskError("--store-version only applies with --open", code="tasks.usage")
     workspace = session(ctx).workspace
+    if stage is None:
+        stage = _default_stage(workspace)
     if open_batch:
         result = lifecycle.open_batch(workspace, stage, store_version)
     else:
