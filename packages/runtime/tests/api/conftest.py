@@ -1,21 +1,27 @@
 """Fixtures of the API tests: the water network's history on the test Dolt server,
-and the API serving it, called in process.
+and the API serving it, called in process; and live twins whose sources are
+folders of CSV files, synced through the API.
 
 Without the `DTA_STORE_*` variables every test that needs them is skipped.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
+import httpx
 import pytest
 from dta_core import log as core_log
 from dta_core.store import StoreSettings
 
 sys.path.insert(0, str(Path(__file__).parent))
+# The sync tests' sources that change between runs, used as they are.
+sys.path.append(str(Path(__file__).resolve().parents[1] / "sync"))
 
 from api_testkit import (  # noqa: E402
     TOKEN,
@@ -26,8 +32,20 @@ from api_testkit import (  # noqa: E402
     with_database,
 )
 from dta_runtime.api import create_app  # noqa: E402
+from dta_runtime.clock import FixedClock  # noqa: E402
 from dta_runtime.settings import RuntimeSettings  # noqa: E402
+from dta_runtime.twin import Bundle, Twin  # noqa: E402
+from live_api_testkit import (  # noqa: E402
+    PLANT_ENV,
+    LiveApi,
+    Plant,
+    http_client,
+    live_manifest,
+)
+from live_api_testkit import served as serve  # noqa: E402
+from live_testkit import LIVE, at  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
+from sync_testkit import T0  # noqa: E402
 
 WATER_ONTOLOGY = (
     Path(__file__).resolve().parents[3] / "core/tests/ontology/fixtures/water_network.yaml"
@@ -111,3 +129,59 @@ def log_to() -> Iterator[Callable[[Path], Path]]:
 def log_lines(log_to: Callable[[Path], Path], tmp_path: Path) -> Path:
     """Every line the process logs during the test, written as JSON to the returned file."""
     return log_to(tmp_path / "test.jsonl")
+
+
+@pytest.fixture
+def plant_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Where the plant's source folders are; its sources name it through a variable."""
+    path = tmp_path / "plant"
+    path.mkdir()
+    monkeypatch.setenv(PLANT_ENV, str(path))
+    return path
+
+
+@pytest.fixture
+def live_api(
+    make_twin: Callable[..., Twin], water_text: str, plant_dir: Path, tmp_path: Path
+) -> Iterator[Callable[..., LiveApi]]:
+    """A fresh twin whose manifest holds the given sources, behind an API of its own whose
+    clock is the test's; called in process, or served over HTTP by uvicorn with `served`.
+    Stopped before the twin is closed and dropped."""
+    started: list[tuple[LiveApi, contextlib.ExitStack]] = []
+
+    def make(
+        sources: Mapping[str, Any],
+        *,
+        sync: Mapping[str, Any] | None = LIVE,
+        tier: str = "live",
+        clock: FixedClock | None = None,
+        served: bool = False,
+    ) -> LiveApi:
+        manifest = live_manifest(water_text, sources, sync=sync, tier=tier)
+        twin = make_twin(Bundle(manifest=manifest, ontology_text=water_text), t=T0)
+        settings = RuntimeSettings(
+            store=twin.store.settings,
+            api_token=TOKEN,
+            artifacts_dir=tmp_path / "artifacts",
+            logs_dir=tmp_path / "logs",
+        )
+        plant = Plant()
+        chosen = clock or FixedClock(at(16))
+        app = create_app(settings, twin, clock=chosen, connect=plant)
+        stack = contextlib.ExitStack()
+        if served:
+            base_url = stack.enter_context(serve(app))
+            client: httpx.Client = stack.enter_context(http_client(base_url))
+        else:
+            client = stack.enter_context(TestClient(app, raise_server_exceptions=False))
+        live = LiveApi(
+            client=client, twin=twin, clock=chosen, plant=plant, settings=settings, app=app
+        )
+        started.append((live, stack))
+        return live
+
+    yield make
+    for live, stack in reversed(started):
+        # A run still held at a gate would hold up the API's stop.
+        live.plant.release()
+        stack.close()
