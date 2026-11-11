@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from dta_core.ontology import load_ontology
+from dta_core.ontology import build_validator, load_ontology
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -15,6 +15,11 @@ def water_path() -> Path:
 @pytest.fixture(scope="session")
 def water(water_path):
     return load_ontology(water_path)
+
+
+@pytest.fixture(scope="session")
+def water_validator(water, tmp_path_factory):
+    return build_validator(water, cache_dir=tmp_path_factory.mktemp("models"))
 
 
 @pytest.fixture
