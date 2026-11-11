@@ -113,3 +113,23 @@ def test_interactive_sign_aborted_at_the_prompt_is_declined(signable, monkeypatc
     code, document = signable.json("manifest", "sign", input="")
     assert code == 1
     assert document["error"]["code"] == "sign.declined"
+
+
+def test_sign_refuses_when_the_manifest_changes_while_the_user_reads(
+    signable, complete, monkeypatch
+):
+    def edit_while_reading(twin_id, summary, to_stderr):
+        signable.write_manifest({**complete, "twin": {**complete["twin"], "name": "Edited"}})
+
+    monkeypatch.setattr(sign_module, "_is_terminal", lambda: True)
+    monkeypatch.setattr(sign_module, "_ask", edit_while_reading)
+    code, document = signable.json("manifest", "sign")
+    assert code == 2
+    assert document["error"]["code"] == "sign.changed"
+    assert signable.state()["signatures"] == []
+
+
+def test_blank_approver_name_is_refused(signable):
+    code, document = signable.json("manifest", "sign", "--non-interactive", "--approved-by", " ")
+    assert code == 2
+    assert document["error"]["code"] == "sign.approved_by_missing"

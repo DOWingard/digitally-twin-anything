@@ -85,7 +85,8 @@ def sign(
     """Record the user's approval of the contract. Requires no gaps and no error findings."""
     current = session(ctx)
     workspace = current.workspace
-    if non_interactive and not (approved_by and approved_by.strip()):
+    approved_by = (approved_by or "").strip() or None
+    if non_interactive and approved_by is None:
         log.error("non-interactive sign without --approved-by")
         raise DtaError(
             "--non-interactive needs --approved-by NAME", code="sign.approved_by_missing"
