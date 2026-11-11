@@ -34,6 +34,41 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class FeatureRef(_Model):
+    """One more column of a frame, beside the target."""
+
+    # `Type.property`. Without `via`: a property of the target's own type, read from the
+    # same object. With `via`: of the objects that links of that type join to it.
+    property: str
+    # How far back it is read: the value in force at the row's time less the lag. Zero,
+    # or a whole multiple of the frame's step.
+    lag: timedelta = timedelta(0)
+    # A link type, and how the values of the objects it joins become one.
+    via: str | None = None
+    agg: Literal["mean", "sum", "min", "max", "count"] | None = None
+    # Which end of the link the row's object is: its source (`out`), its target (`in`).
+    direction: Literal["both", "out", "in"] = "both"
+    # Name of the column; `column()` when absent.
+    name: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_text(cls, value: Any) -> Any:
+        # A bare `Type.property` is that property of the same object, now.
+        return {"property": value} if isinstance(value, str) else value
+
+    def column(self, step: timedelta) -> str:
+        """`Tank.level` two steps back, as a mean over neighbours: `Tank_level_mean_lag2`."""
+        if self.name is not None:
+            return self.name
+        parts = [self.property.replace(".", "_")]
+        if self.agg is not None:
+            parts.append(self.agg)
+        if self.lag:
+            parts.append(f"lag{self.lag / step:g}")
+        return "_".join(parts)
+
+
 class FrameRef(_Model):
     """A frame by reference: the target's values in force on a regular grid over a range
     of versions, one series per object, with the features beside it. It is the body of
@@ -47,10 +82,20 @@ class FrameRef(_Model):
     start: str
     end: str
     branch: str = "live"
-    # The grid: a row per series every `step` from the first version's time on.
+    # The grid: a row per series every `step` from the first version's time on, up to
+    # the last version's time.
     step: timedelta
-    # `Type.property` each, read as the value in force on the same grid.
-    features: list[str] = Field(default_factory=list)
+    features: list[FeatureRef] = Field(default_factory=list)
+    # Rows for this many further steps after the last version's time. Nothing is known
+    # of the target there; a feature is, where its lag reaches back far enough.
+    ahead: int = Field(default=0, ge=0)
+
+
+class TrainingSetRequest(FrameRef):
+    """Body of `POST /api/v1/block/training-set`: a frame, and with a horizon the label
+    of each row beside it (the target that far ahead)."""
+
+    horizon: timedelta | None = None
 
 
 class FamilyRef(_Model):
@@ -100,6 +145,9 @@ class FitRequest(_Run):
     family: FamilyRef
     params: dict[str, Any] = Field(default_factory=dict)
     frame: FrameRef
+    # Steps of the grid the state will be asked to predict: a family that calibrates its
+    # intervals when it is fitted does so for this many.
+    horizon: int = Field(ge=1)
 
 
 class BacktestRequest(_Run):
@@ -113,8 +161,9 @@ class BacktestRequest(_Run):
     # steps before the end of the frame.
     step: int = Field(ge=1)
     windows: int = Field(ge=1)
-    # Fit again at every k-th origin (true: at every origin; false: once).
-    refit: int | bool = True
+    # Fit again at every k-th origin (true: at every origin; false: once). Absent: the
+    # worker times one fit and takes the most frequent refitting that fits the budget.
+    refit: int | bool | None = None
     levels: Levels
     # Names of the manifest's error measures.
     metrics: list[str] = Field(min_length=1)
@@ -134,6 +183,9 @@ class PredictRequest(_Run):
     # Known future values of features over the horizon, when the family uses any.
     drivers: FrameRef | None = None
     interventions: list[InterventionRef] = Field(default_factory=list)
+    # The stored residual quantiles of the model's backtest: where the intervals of a
+    # family that has none of its own come from.
+    residuals: Sha | None = None
 
 
 WorkerRequest = Annotated[
@@ -169,6 +221,8 @@ class FitResult(_Result):
     fitted_to: datetime
     # Per input column, the range the fit saw.
     validity: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    # What the caller has to know, as short codes: series left out, intervals not made.
+    notes: list[str] = Field(default_factory=list)
 
 
 class BacktestResult(_Result):
@@ -182,6 +236,7 @@ class BacktestResult(_Result):
     first_fit_ms: float
     # Stored table of the residuals' quantiles per step ahead, for intervals.
     residuals: Sha | None = None
+    notes: list[str] = Field(default_factory=list)
 
 
 class PredictResult(_Result):

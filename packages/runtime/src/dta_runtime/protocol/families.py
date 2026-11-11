@@ -68,8 +68,9 @@ class Family(Protocol):
     # varied, may say so.
     interventional: bool
 
-    def fit(self, frame: pd.DataFrame, params: Mapping[str, Any]) -> Any:
-        """The fitted state: whatever `predict` needs, picklable."""
+    def fit(self, frame: pd.DataFrame, params: Mapping[str, Any], *, horizon: int) -> Any:
+        """The fitted state: whatever `predict` needs, picklable. `horizon` is how many
+        steps the state will be asked to predict."""
         ...
 
     def predict(

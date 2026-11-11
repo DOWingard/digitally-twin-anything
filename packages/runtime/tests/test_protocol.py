@@ -15,10 +15,13 @@ from dta_runtime.protocol import (
     Answer,
     BacktestRequest,
     FamilyRef,
+    FeatureRef,
     FitRequest,
+    FrameRef,
     FunctionRequest,
     Interval,
     PredictRequest,
+    TrainingSetRequest,
     WorkerRequest,
     answer_document,
     prediction_columns,
@@ -35,7 +38,7 @@ SHA = "ab" * 32
 def test_a_request_is_told_apart_by_its_op():
     cases = {
         "function": ({"artifact": SHA, "entry": "plant:low_pressure", "at": "v9"}, FunctionRequest),
-        "fit": ({"family": {"name": "theta"}, "frame": FRAME}, FitRequest),
+        "fit": ({"family": {"name": "theta"}, "frame": FRAME, "horizon": 8}, FitRequest),
         "backtest": (
             {
                 "family": {"artifact": SHA, "entry": "plant.hydraulics:Network"},
@@ -62,15 +65,35 @@ def test_a_request_is_told_apart_by_its_op():
         assert REQUEST.validate_json(REQUEST.dump_json(request)) == request
     fit = REQUEST.validate_python({"op": "fit", **RUN, **cases["fit"][0]})
     assert fit.frame.step == timedelta(minutes=15) and fit.frame.branch == "live"
+    # Without a refit the worker chooses one that fits the budget.
+    chosen = {**cases["backtest"][0]}
+    del chosen["refit"]
+    assert REQUEST.validate_python({"op": "backtest", **RUN, **chosen}).refit is None
 
 
 @pytest.mark.parametrize(
     "body",
     [
         {"op": "train", **RUN},
-        {"op": "fit", **RUN, "family": {"name": "theta"}},
-        {"op": "fit", **RUN, "family": {"name": "theta"}, "frame": FRAME, "extra": 1},
-        {"op": "fit", "trace_id": "t", "budget_s": 0, "family": {"name": "theta"}, "frame": FRAME},
+        {"op": "fit", **RUN, "family": {"name": "theta"}, "horizon": 8},
+        {"op": "fit", **RUN, "family": {"name": "theta"}, "frame": FRAME},
+        {"op": "fit", **RUN, "family": {"name": "theta"}, "frame": FRAME, "horizon": 0},
+        {"op": "fit", **RUN, "family": {"name": "theta"}, "frame": FRAME, "horizon": 8, "extra": 1},
+        {
+            "op": "fit",
+            "trace_id": "t",
+            "budget_s": 0,
+            "family": {"name": "theta"},
+            "frame": FRAME,
+            "horizon": 8,
+        },
+        {
+            "op": "fit",
+            **RUN,
+            "family": {"name": "theta"},
+            "frame": {**FRAME, "ahead": -1},
+            "horizon": 8,
+        },
         {
             "op": "predict",
             **RUN,
@@ -85,6 +108,34 @@ def test_a_request_is_told_apart_by_its_op():
 def test_a_request_that_cannot_be_run_is_refused(body):
     with pytest.raises(ValidationError):
         REQUEST.validate_python(body)
+
+
+def test_a_frame_names_its_features_and_how_each_is_read():
+    step = timedelta(minutes=15)
+    frame = FrameRef(
+        **FRAME,
+        features=[
+            "Tank.inflow",
+            {"property": "Tank.level", "lag": "PT30M"},
+            {"property": "Pump.speed", "via": "Feeds", "agg": "mean", "direction": "in"},
+            {"property": "Pump.speed", "via": "Feeds", "agg": "max", "lag": "PT1H", "name": "peak"},
+        ],
+        ahead=8,
+    )
+    assert [feature.column(step) for feature in frame.features] == [
+        "Tank_inflow",
+        "Tank_level_lag2",
+        "Pump_speed_mean",
+        "peak",
+    ]
+    assert frame.features[0] == FeatureRef(property="Tank.inflow")
+    assert frame.features[0].lag == timedelta(0) and frame.features[0].direction == "both"
+    assert FrameRef.model_validate_json(frame.model_dump_json()) == frame
+    # A training set is a frame, with the label of each row when it has a horizon.
+    wanted = TrainingSetRequest(**FRAME, features=["Tank.inflow"], horizon="PT2H")
+    assert wanted.horizon == timedelta(hours=2) and TrainingSetRequest(**FRAME).horizon is None
+    with pytest.raises(ValidationError):
+        FeatureRef(property="Tank.level", agg="median", via="Feeds")
 
 
 def test_a_family_is_a_shipped_name_or_code_never_both_or_neither():
@@ -152,10 +203,16 @@ def test_every_op_has_a_handler_and_a_pool():
     assert BATCH_OPS == {"fit", "backtest"}
     # Code the twin brought: a registered function, or a family given as an artifact.
     shipped = REQUEST.validate_python(
-        {"op": "fit", **RUN, "family": {"name": "theta"}, "frame": FRAME}
+        {"op": "fit", **RUN, "family": {"name": "theta"}, "frame": FRAME, "horizon": 4}
     )
     own = REQUEST.validate_python(
-        {"op": "fit", **RUN, "family": {"artifact": SHA, "entry": "plant:Network"}, "frame": FRAME}
+        {
+            "op": "fit",
+            **RUN,
+            "family": {"artifact": SHA, "entry": "plant:Network"},
+            "frame": FRAME,
+            "horizon": 4,
+        }
     )
     function = REQUEST.validate_python(
         {"op": "function", **RUN, "artifact": SHA, "entry": "plant:low", "at": "v9"}
