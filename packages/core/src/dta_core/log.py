@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import logging.handlers
 import os
 import re
 import sys
@@ -23,6 +24,8 @@ from typing import Any
 
 _ROOT = "dta"
 _LEVEL_ENV = "DTA_LOG_LEVEL"
+_LOG_FILE_BYTES = 20 * 1024 * 1024
+_LOG_FILE_BACKUPS = 3
 _LEVEL_NAMES = {"WARNING": "warn", "CRITICAL": "error"}
 # Whole tokens only, so that `passed` or `tokenizer` are not mistaken for credentials.
 _SECRET_KEY = re.compile(
@@ -115,7 +118,10 @@ def configure(log_file: Path | None = None, level: str | None = None) -> None:
 
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        # Bounded, so a long-running service cannot fill the disk with its own log.
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=_LOG_FILE_BYTES, backupCount=_LOG_FILE_BACKUPS, encoding="utf-8"
+        )
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
 

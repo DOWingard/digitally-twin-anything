@@ -75,3 +75,23 @@ def test_env_int_rejects_text():
     with pytest.raises(ConfigError) as caught:
         env_int("P", {"P": "forty-two"})
     assert caught.value.code == "config.bad_value"
+
+
+def test_a_log_file_is_rotated_before_it_grows_without_bound(tmp_path, monkeypatch):
+    from dta_core import log as log_module
+
+    monkeypatch.setattr(log_module, "_LOG_FILE_BYTES", 2_000)
+    monkeypatch.setattr(log_module, "_LOG_FILE_BACKUPS", 2)
+    target = tmp_path / "service.jsonl"
+    log_module.configure(log_file=target)
+    try:
+        writer = log_module.Log("rotation")
+        for index in range(200):
+            writer.info("a line of ordinary length", index=index)
+    finally:
+        log_module.configure()
+    files = sorted(path.name for path in tmp_path.iterdir())
+    assert files == ["service.jsonl", "service.jsonl.1", "service.jsonl.2"]
+    assert all(path.stat().st_size <= 2_400 for path in tmp_path.iterdir())
+    # The newest lines are in the file that keeps the plain name.
+    assert '"index": 199' in target.read_text(encoding="utf-8")
