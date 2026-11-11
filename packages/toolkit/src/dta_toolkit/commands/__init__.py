@@ -5,6 +5,8 @@ from __future__ import annotations
 import typer
 
 from . import (
+    accept,
+    build,
     env,
     init,
     lifecycle,
@@ -51,6 +53,8 @@ def register(app: typer.Typer) -> None:
     app.command("up")(lifecycle.up)
     app.command("down")(lifecycle.down)
     app.command("logs")(lifecycle.logs)
+    app.command("build")(build.build)
+    app.command("accept")(accept.accept)
 
     generate_app = typer.Typer(add_completion=False, no_args_is_help=True)
     generate_app.command("skill")(skill.generate_skill)
