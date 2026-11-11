@@ -204,7 +204,56 @@ curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>?include=provenance"
 ```sh
 curl -sS -H "$AUTH" "$API/meta/health"                              # is the twin up, what is its head
 curl -sS -H "$AUTH" "$API/lifecycle/logs?level=warn&limit=50"       # what the twin itself reported (debug, info, warn, error)
-curl -sS -H "$AUTH" "$API/objects/TwinSyncRun?sort=-started_at&limit=5"   # the last loads from the sources
+curl -sS -H "$AUTH" "$API/sync/runs?limit=5"                        # the last runs that read the sources
+curl -sS -H "$AUTH" "$API/sync/runs/<run uid>/rejects?limit=20"     # the rows one run set aside, and why
 ```
 
-A sync run records how many rows it read, wrote and set aside. Rows are set aside when they would break the schema's rules; they are not in the twin.
+A run records how many rows it read, wrote and set aside. Rows are set aside when they would break the schema's rules; they are not in the twin. Each such row names the `rule` it broke and the `mapping` it came through; `total` is their number.
+{% if live %}
+
+## 8. Work with a live twin
+
+```python
+health = get("/meta/health").json()
+clock, sync = health["clock"], health["sync"]
+now = clock["now"]                    # the twin's time; None when clock["available"] is false
+version = health["head"]["id"]        # pin it: the head moves
+# fresh is None when no question sets a limit; freshness_s is None when the clock is unavailable
+print(now, sync["fresh"], sync["freshness_s"], sync["staleness"], sync["last_run"])
+
+for source in get("/sync/sources").json()["data"]:
+    print(source["id"], source["status"], source["watermark"], source["freshness_s"], source["last_error"])
+
+runs = get("/sync/runs", limit=20).json()["data"]             # newest first
+for run in runs:
+    if run.get("rows_rejected"):
+        rejects = get(f"/sync/runs/{run['uid']}/rejects", limit=100).json()
+        print(run["uid"], rejects["total"], rejects["data"][:3])
+```
+
+- Take "now" from `clock.now`. A question such as "in the last hour" means the hour before that time, read at the pinned head.
+- `freshness_s` above `staleness` is not an error of yours and not a reason to stop: answer, and state the age and the limit.
+- A source with status `failing` keeps the data it had; its `last_error` says what went wrong at the last attempt. The other sources go on being synced.
+
+Make the twin read its sources now, and wait for the result:
+
+```python
+import time, uuid
+
+response = client.post("/sync/runs", json={}, headers={"Idempotency-Key": str(uuid.uuid4())})
+if response.status_code >= 400:
+    problem = response.json()         # 409 sync.busy: a different run is in progress; its job is in problem["job"]
+    raise RuntimeError(f"{problem['code']}: {problem['detail']} (trace {problem['trace_id']})")
+job = response.json()["job"]          # 202: started for you; 200: the same run was already in progress
+while job["state"] in ("queued", "running"):
+    time.sleep(1)
+    job = get(f"/lifecycle/jobs/{job['id']}").json()
+report = job["result"]                # the run's report; None when the job failed before it had one
+print(job["state"], job["error"], report and (report["status"], report["versions_written"], report["rows_written"]))
+```
+
+- Body `{}` reads every source. `{"sources": ["<id>"]}` reads only those.
+- A job in state `succeeded` whose report has status `partial` synced some sources and not others: `report["sources"]` says which, each with its error.
+- A run writes at least one version, so the head has moved when the job ends: read `/meta/health` again and pin the new head.
+- A run takes the data up to the last interval that has ended on the twin's clock. Data newer than that arrives with the next run; starting another run at once brings nothing.
+{% endif %}

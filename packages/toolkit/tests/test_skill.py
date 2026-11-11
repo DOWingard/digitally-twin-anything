@@ -155,6 +155,41 @@ def test_variable_names_follow_the_manifest_and_tier_wording_follows_the_contrac
     assert "Tier: live" in render(live).files[SKILL_FILE]
 
 
+def live_manifest(**sections: Any) -> Manifest:
+    document = manifest(**sections)
+    document.contract.tier = type(document.contract.tier)("live")
+    return document
+
+
+def test_a_live_twin_is_told_how_to_judge_and_refresh_its_data():
+    skill = render(live_manifest(sync={"interval": "PT15M"}))
+    body = skill.files[SKILL_FILE]
+    assert "## A live twin" in body and "every 15 minutes" in body
+    for needed in ("`clock`", "`freshness_s`", "`fresh`", "/sync/sources", "POST /sync/runs"):
+        assert needed in body, needed
+    assert "This API only reads" not in body
+    recipes, api, errors = (
+        skill.files[f"reference/{name}.md"] for name in ("recipes", "api", "errors")
+    )
+    assert "## 8. Work with a live twin" in recipes and "Idempotency-Key" in recipes
+    assert "| `POST /sync/runs`" in api
+    assert "`sync.busy`" in errors and "`twin.not_live`" in errors
+    assert "make it read its sources now" in front_matter(body)["description"]
+    # Without an interval in the manifest the skill still renders.
+    assert "on a schedule" in render(live_manifest()).files[SKILL_FILE]
+
+
+def test_a_static_twin_is_not_offered_what_only_a_live_twin_does():
+    skill = render(manifest())
+    body = skill.files[SKILL_FILE]
+    assert "## A live twin" not in body and "POST /sync/runs" not in body
+    assert "This API only reads" in body
+    assert "POST /sync/runs" not in skill.files["reference/api.md"]
+    assert "Work with a live twin" not in skill.files["reference/recipes.md"]
+    # What its load did is still there to read.
+    assert "/sync/runs" in body and "/sync/runs" in skill.files["reference/recipes.md"]
+
+
 def test_text_from_the_manifest_cannot_break_the_front_matter():
     document = manifest(twin={"id": "x", "name": 'Odd: "name"\n---\nname: other'})
     front = front_matter(render(document).files[SKILL_FILE])

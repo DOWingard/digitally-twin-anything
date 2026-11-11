@@ -17,7 +17,7 @@ Purpose, as agreed with its owner: {{ purpose }}
 
 ## Start of every session
 
-1. `GET /meta/health`: confirms the twin answers and gives its head version, its tier and its fidelity state.
+1. `GET /meta/health`: confirms the twin answers and gives its head version, its tier and its fidelity state{% if live %}, the twin's time and how old its newest data is{% endif %}.
 2. `GET /meta/schema`: the twin's types, their properties, units and descriptions, and the link types.
 
 Take type and property names from the schema, never from memory and never from this file: the schema is the only authority, and it can change between versions.
@@ -27,7 +27,7 @@ This skill was written from manifest `{{ short_hash }}`. If `manifest.hash` in `
 ## What this twin promises
 
 {% if live %}
-Tier: live. The twin is synced from its sources on a schedule, so its head moves.
+Tier: live. The twin reads its sources {% if interval %}every {{ interval }}{% else %}on a schedule{% endif %} and writes a new version each time, so its head moves while you work. Read "A live twin" below before the first answer about the present.
 {% else %}
 Tier: static. The twin was loaded once from recorded data and does not change. Its head is the end of the recording, not the present.
 {% endif %}
@@ -67,6 +67,28 @@ Every read returns the twin as of one version. A version's time is the time of t
 - For any work of more than one request, read the version id from the first response and pass `at=<that id>` on every later request. Otherwise two requests may see two different states.
 - `branch` selects a branch (default `main`, the live one). Other branches hold scenarios; facts on them are not observations.
 
+{% if live %}
+## A live twin
+
+`/meta/health` has two sections that matter here:
+
+- `clock`: the twin's time (`now`) and where it is read from (`kind`). This is "now" for every question about the present, about how old something is, or about "the last hour". Use it, never your own clock: the twin's time is that of its sources. `available: false` means the twin cannot tell the time at the moment: say so, and do not answer questions about the present.
+- `sync`: `interval` (how often the sources are read), `freshness_s` (the age in seconds, on the twin's clock, of the newest data of the source that is furthest behind), `staleness` (the oldest the contract allows; null when no question sets a limit), `fresh` (whether the first is within the second), the state of each source, the last run, and the run in progress if there is one.
+
+Before a contract answer about the present:
+
+1. Read `/meta/health`. If `sync.fresh` is false the data is older than was agreed: give the answer with its age and say that it is outside the agreed limit. `GET /sync/sources` shows which source is behind or failing, and why.
+2. Pin the head you read (`at=<head id>`). The next version can arrive while you work.
+
+What the twin did, and why data is missing:
+
+- `GET /sync/sources`: each source's status (`ok`, `failing`, `disabled`), the time of its newest data, its last error, and how far each of its datasets has been read.
+- `GET /sync/runs`: every run, newest first, with the rows it read, wrote, set aside and found late. Status `partial` means some sources failed and the others were synced.
+- `GET /sync/runs/{uid}/rejects`: the rows a run set aside, each with the rule it broke. They are not in the twin.
+
+`POST /sync/runs` makes the twin read its sources now instead of at the next interval. It is the only request that changes the twin. Use it when the user asks for the newest data, or after a source was mended. Do not call it in a loop: the schedule already does that. The answer is a job; wait for it as recipe 8 shows.
+
+{% endif %}
 ## How to do things
 
 Read `reference/recipes.md` before the first request of each kind. In short:
@@ -81,6 +103,11 @@ Read `reference/recipes.md` before the first request of each kind. In short:
 | see what changed between two versions | `/history/diff` |
 | pull whole tables for analysis or training | `/block/nodes/{type}`, `/block/edges/{edge_type}`, `/block/slice/{type}` as Arrow or Parquet |
 | see when and why versions were written | `/history/versions` |
+| see what each load or sync run did, and the rows it set aside | `/sync/runs`, `/sync/runs/{uid}/rejects` |
+{% if live %}
+| see whether the data is current, and the state of each source | `/meta/health` (`clock`, `sync`), `/sync/sources` |
+| make the twin read its sources now | `POST /sync/runs`, then `/lifecycle/jobs/{id}` |
+{% endif %}
 | read the twin's own logs | `/lifecycle/logs` |
 
 All endpoints, with parameters: `reference/api.md`. Error codes and what to do about each: `reference/errors.md`.
@@ -93,7 +120,11 @@ All endpoints, with parameters: `reference/api.md`. Error codes and what to do a
 4. Let the twin do the filtering, the traversal and the history: use `where`, the graph endpoints and the slice endpoint instead of downloading everything and searching it yourself.
 5. Every value has provenance (`include=provenance`): where it came from, whether it was observed, inferred, assumed or simulated, and when it was true. Quote it when the user asks how a number is known.
 6. Report what the twin says. If the data does not answer a question, say that; do not fill the gap with an estimate presented as the twin's. A null is "no value held", never zero. If a definition leaves a choice open (how to integrate, what counts as an occurrence, which time zone a day is in), state the choice you made with the answer.
+{% if live %}
+7. This API reads, with one exception: `POST /sync/runs` makes the twin read its sources. You cannot change the twin's data in any other way, and you should not try to reach its database or its sources directly.
+{% else %}
 7. This API only reads. You cannot change the twin through it, and you should not try to reach its database or its sources directly.
+{% endif %}
 8. If the user needs something the contract does not cover (a new question, a tighter tolerance, another source), that is a revision of the contract: tell the user it has to be agreed and rebuilt; do not improvise it.
 {% if ui %}
 

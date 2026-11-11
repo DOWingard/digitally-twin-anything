@@ -131,6 +131,7 @@ def _context(manifest: Manifest, manifest_hash: str) -> dict[str, Any]:
         "purpose": " ".join(contract.purpose.split()).rstrip(". ") + ".",
         "tier": contract.tier.value,
         "live": contract.tier.value == "live",
+        "interval": _duration(manifest.sync.interval if manifest.sync is not None else None),
         "questions": questions,
         "base_url_env": interfaces.base_url_env,
         "token_env": interfaces.token_env,
@@ -155,6 +156,11 @@ def _description(context: dict[str, Any]) -> str:
         "Use it to read the twin's objects and links, follow connections, look at any past "
         "version, export tables for analysis or model training, and check the twin's health.",
     ]
+    if context["live"]:
+        parts.append(
+            "The twin is live: use it also to check how current its data is, to see what "
+            "its sync runs did, and to make it read its sources now."
+        )
     if asked:
         parts.append(f"It answers: {asked}.")
     return _one_line(" ".join(parts), _DESCRIPTION_MAX)

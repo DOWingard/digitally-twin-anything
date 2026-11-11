@@ -22,6 +22,7 @@ Branch on `code`, not on the text. Quote `trace_id` when you report a failure to
 | 400 | `store.bad_branch_name` | the branch name is not valid | list branches with `/history/branches` |
 | 400 | `graph.too_broad` | the traversal would visit too much | lower `depth` or `limit`, or name `edge_types` |
 | 400 | `graph.bad_weight` | the weight is not a numeric property of the links on the path | choose a numeric link property from the schema, or leave `weight` out |
+| 400 | `sync.unknown_source`, `sync.replay_unknown` | the request to start a run names a source or dataset the twin does not have | take source ids and dataset names from `/sync/sources` |
 | 401 | `api.unauthorized` | the token is missing or wrong | check that `{{ token_env }}` is set and sent as a bearer token; ask the user if it is not |
 | 404 | `api.not_found` | no such endpoint | check the path against `reference/api.md` |
 | 404 | `api.unknown_object` | no object with that uid at that version | it may not exist yet, or no longer, at the version you asked for; check `at` |
@@ -29,7 +30,13 @@ Branch on `code`, not on the text. Quote `trace_id` when you report a failure to
 | 404 | `store.unknown_property` | the type has no such property at that version | read `/meta/schema` again at the same `at` |
 | 404 | `store.unknown_version` | no version matches the selector | list versions with `/history/versions`; a time before the first version matches nothing |
 | 404 | `store.unknown_branch` | no such branch | list branches with `/history/branches` |
-| 405 | `api.method_not_allowed` | wrong HTTP method | most endpoints are `GET`; the subgraph is `POST` |
+| 404 | `sync.run_not_found` | no run with that uid | take uids from `/sync/runs`; a uid is written whole, `twin_sync_run:…` |
+| 404 | `sync.rejects_missing` | the file of rows a run set aside is no longer held | report it with the trace id; the run's counts are still in `/sync/runs` |
+| 404 | `job.not_found` | no job with that id | jobs are forgotten when the API restarts and after 200 newer ones; look for the run in `/sync/runs` instead |
+| 405 | `api.method_not_allowed` | wrong HTTP method | most endpoints are `GET`; the subgraph and starting a sync run are `POST` |
+| 409 | `twin.not_live` | a run was asked of a static twin | a static twin does not sync; tell the user |
+| 409 | `sync.busy` | a run with other parameters is queued or running | wait for the job in the answer's `job` (`/lifecycle/jobs/{id}`), then ask again if it is still needed |
+| 409 | `sync.key_reused` | the `Idempotency-Key` was used before for a different request | use a new key for a new request |
 | 422 | `store.violation` | data would break the schema's rules | does not arise from reading; report it with the trace id |
 | 503 | `store.unavailable`, `store.closed`, `store.lock_timeout`, `store.not_installed` | the twin's store cannot answer now | wait a few seconds and retry up to three times; then tell the user the twin is down |
 | 500 | `api.internal` | a fault in the twin | do not retry in a loop; report the trace id to the user |
