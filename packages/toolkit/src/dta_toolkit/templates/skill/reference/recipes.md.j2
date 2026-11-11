@@ -1,0 +1,166 @@
+# Recipes for the {{ twin_name }} twin
+
+Names in angle brackets (`<Type>`, `<uid>`, `<property>`) are placeholders: take real ones from `/meta/schema` and from listings. Nothing here is specific to what this twin models.
+
+## Setup
+
+Shell:
+
+```sh
+API="${{ '{' }}{{ base_url_env }}:?set {{ base_url_env }}}/api/v1"
+AUTH="Authorization: Bearer ${{ '{' }}{{ token_env }}:?set {{ token_env }}}"
+curl -sS -H "$AUTH" "$API/meta/health"
+```
+
+Python (httpx and pyarrow; pandas or polars only if you want dataframes):
+
+```python
+import io, os
+import httpx
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+client = httpx.Client(
+    base_url=os.environ["{{ base_url_env }}"].rstrip("/") + "/api/v1",
+    headers={"Authorization": "Bearer " + os.environ["{{ token_env }}"]},
+    timeout=120.0,
+)
+
+def get(path, **params):
+    response = client.get(path, params=params)
+    if response.status_code >= 400:
+        problem = response.json()
+        raise RuntimeError(f"{problem['code']}: {problem['detail']} (trace {problem['trace_id']})")
+    return response
+
+def table(path, **params):
+    """Any listing or table endpoint as an Arrow table, whole."""
+    response = get(path, format="arrow", **params)
+    return pa.ipc.open_stream(response.content).read_all()
+```
+
+## 1. Orient
+
+```python
+health = get("/meta/health").json()
+version = health["head"]["id"]            # pin this for everything that follows
+schema = get("/meta/schema", at=version).json()
+for t in schema["types"]:
+    print(t["name"], "link" if t.get("link") else "object", [p["name"] for p in t["properties"]])
+```
+
+The schema gives, per type: whether it is an object or a link type, its ancestors, for a link its two ends, and for each property its kind, unit, description, whether it is required, and its role (`static`: fixed; `state`: changes with time).
+
+## 2. Read objects
+
+```sh
+# first page of a type (JSON: 100 rows unless limit says otherwise, at most 10,000)
+curl -sS -H "$AUTH" "$API/objects/<Type>?at=$VERSION&limit=50"
+# chosen columns, filtered, sorted
+curl -sS -H "$AUTH" --get "$API/objects/<Type>" \
+  --data-urlencode "at=$VERSION" --data-urlencode "columns=<p1>,<p2>" \
+  --data-urlencode "where=<p1>:gt:10" --data-urlencode "where=<p2>:in:a,b" \
+  --data-urlencode "sort=-<p1>"
+# one object, with the provenance of each value
+curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>?at=$VERSION&include=provenance"
+# an object whose type you do not know
+curl -sS -H "$AUTH" "$API/object/<uid>?at=$VERSION"
+```
+
+- A JSON listing is `{"data": [...], "next_cursor": ..., "version": {...}}`. While `next_cursor` is not null, repeat the request with `cursor=<next_cursor>`; the cursor keeps reading the version of the first page.
+- Filter operators: `eq ne lt le gt ge in like null notnull`. A value is read by the property's kind (number, `true`/`false`, ISO time with offset, date, text). `like` takes an SQL pattern (`%` any run, `_` one character).
+- An abstract type (listed under the schema's abstract classes) can be listed too: the rows are its concrete kinds, with the properties they share and a `_type` column.
+- uids look like `<scope>:<key>`. Take them from listings; do not construct them.
+
+## 3. Follow connections
+
+Edges are of two sorts, and both have an edge type: a link type's name, or `<Type>.<property>` for a property that refers to another object.
+
+```sh
+# everything one object touches
+curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>/links?at=$VERSION&direction=both"
+# everything within 2 hops
+curl -sS -H "$AUTH" "$API/graph/neighbors?seed=<uid>&depth=2&at=$VERSION"
+# up to 3 shortest paths between two objects, at most 8 hops
+curl -sS -H "$AUTH" "$API/graph/paths?source=<uid>&target=<uid>&max_depth=8&k=3&at=$VERSION"
+```
+
+```python
+# a piece of the graph around some objects, as two tables
+body = {"seeds": ["<uid>"], "depth": 3, "direction": "both", "limit": 2000}
+nodes = pa.ipc.open_stream(client.post("/graph/subgraph", json=body,
+    params={"at": version, "format": "arrow", "part": "nodes"}).content).read_all()
+edges = pa.ipc.open_stream(client.post("/graph/subgraph", json=body,
+    params={"at": version, "format": "arrow", "part": "edges"}).content).read_all()
+
+# the whole graph as an edge list (src, dst, edge_type, link_uid), for your own traversal
+all_edges = table("/graph/edges", at=version)
+```
+
+- `direction`: `out` follows an edge from its source to its target, `in` backwards, `both` either way.
+- `edge_types` (repeated or comma-separated) restricts what is followed.
+- `weight=<numeric link property>` on `/graph/paths` ranks paths by the sum of that property instead of by hops.
+- If a traversal is refused as too broad (`graph.too_broad`), lower `depth` or `limit`, or name `edge_types`.
+
+## 4. Look at the past
+
+```sh
+# when versions were written, newest first
+curl -sS -H "$AUTH" "$API/history/versions?order=desc&limit=20"
+# which version was current at a moment
+curl -sS -H "$AUTH" "$API/history/versions/2026-01-10T12:00:00Z"
+# how one object changed (only versions in which the named properties changed)
+curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>/history?range=%230..head&properties=<property>"
+# what changed between two versions: counts per type, then the rows of one type
+curl -sS -H "$AUTH" "$API/history/diff?from=%231&to=head"
+curl -sS -H "$AUTH" "$API/history/diff?from=%231&to=head&types=<Type>&detail=rows"
+```
+
+- `#` must be written `%23` in a URL, and `+` as `%2B`. Passing parameters with `--data-urlencode` or with a client library's `params` avoids both.
+- History and diff rows carry `_version`, `_seq`, `_t` (the version's time) and `_change` (`added`, `modified`, `removed`).
+- A version's time is the time of the data. On a twin loaded from history, many versions were written in one run; their times are still the times of the data they hold.
+
+## 5. Pull tables for analysis or training
+
+Ask for Arrow or Parquet; both return the whole table in one response, typed.
+
+```python
+nodes = table("/block/nodes/<Type>", at=version)                 # one row per object
+links = table("/block/edges/<edge_type>", at=version)            # src, dst, link properties
+
+# a time series: each object as of each version of a range
+series = table("/block/slice/<Type>", range="#1..head", properties="<p1>,<p2>",
+               mode="state", layout="long")
+df = series.to_pandas()                                          # columns: uid, _seq, _t, <p1>, <p2>
+
+# only the changes, one row per change
+changes = table("/block/slice/<Type>", range="#1..head", properties="<p1>",
+                mode="changes", layout="long")
+
+# Parquet to a file
+with open("nodes.parquet", "wb") as out:
+    out.write(get("/block/nodes/<Type>", at=version, format="parquet").content)
+```
+
+- `range` takes `<a>..<b>` and optionally `/<step>`: `#1..head/4` is every fourth version. Use a step, or name `uids`, when a slice is refused as too large.
+- `mode=state` forward-fills: a row for every version in the range, holding the value that was current then. `mode=changes` has a row only where something changed.
+- `layout=tensor` returns coordinates `(uid_index, property_index, version_index, value)` for numeric properties, with the three index tables in the Arrow schema's metadata; use it to build a dense array of shape objects × properties × versions.
+- For a training set: take the slice of the properties you need over the range, split it by `_t` (never at random: later versions must not leak into the past), and keep the version ids of the split points with the model so the set can be rebuilt exactly.
+
+## 6. How a value is known
+
+```sh
+curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>?include=provenance"
+```
+
+Per property: `source` (which data source), `kind` (`observed`, `inferred`, `assumed` or `simulated`), `confidence`, and `t_valid` (when the value was true in the real system, which can be earlier than the version's time).
+
+## 7. When something looks wrong
+
+```sh
+curl -sS -H "$AUTH" "$API/meta/health"                              # is the twin up, what is its head
+curl -sS -H "$AUTH" "$API/lifecycle/logs?level=warning&limit=50"    # what the twin itself reported
+curl -sS -H "$AUTH" "$API/objects/TwinSyncRun?sort=-started_at&limit=5"   # the last loads from the sources
+```
+
+A sync run records how many rows it read, wrote and set aside. Rows are set aside when they would break the schema's rules; they are not in the twin.

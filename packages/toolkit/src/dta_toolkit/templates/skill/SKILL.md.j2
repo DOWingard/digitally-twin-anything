@@ -1,0 +1,95 @@
+# {{ twin_name }}: digital twin
+
+A digital twin is a typed graph of a real system (objects, links between them, properties) together with every past version of that graph. This one is `{{ twin_id }}`. You work with it through one HTTP API.
+
+Purpose, as agreed with its owner: {{ purpose }}
+
+## How to reach it
+
+| What | Where |
+|---|---|
+| API root | the value of the environment variable `{{ base_url_env }}`, followed by `/api/v1` |
+| Token | the environment variable `{{ token_env }}`, sent as `Authorization: Bearer <token>` on every request |
+| Machine-readable description of every endpoint | `GET /api/v1/openapi.json` |
+
+- Never print, log or store the token. Pass it from the environment, as the recipes do.
+- If either variable is unset, stop and ask the user for it. Do not guess an address.
+
+## Start of every session
+
+1. `GET /meta/health`: confirms the twin answers and gives its head version, its tier and its fidelity state.
+2. `GET /meta/schema`: the twin's types, their properties, units and descriptions, and the link types.
+
+Take type and property names from the schema, never from memory and never from this file: the schema is the only authority, and it can change between versions.
+
+This skill was written from manifest `{{ short_hash }}`. If `manifest.hash` in `/meta/health` starts differently, the twin was revised after this skill was written: tell the user, and trust the twin's own answers over this file.
+
+## What this twin promises
+
+{% if live %}
+Tier: live. The twin is synced from its sources on a schedule, so its head moves.
+{% else %}
+Tier: static. The twin was loaded once from recorded data and does not change. Its head is the end of the recording, not the present.
+{% endif %}
+
+{% if questions %}
+The questions it was built to answer, each with the accuracy agreed for it:
+
+| Id | Question | Kind | Agreed tolerance | Data no older than | Rests on |
+|---|---|---|---|---|---|
+{% for q in questions %}
+| `{{ q.id }}` | {{ q.text }} | {{ q.kind or "-" }} | {{ q.tolerance or "-" }} | {{ q.staleness or "-" }} | {{ q.targets | join(", ") or "-" }} |
+{% endfor %}
+{% endif %}
+
+- Inside the contract: the questions above. Their answers are held to the stated tolerance.
+- Outside the contract: anything else you compute from the twin's data. The data is real and you may use it, but say plainly that no accuracy was agreed for the result.
+- The fidelity state in `/meta/health` says whether the twin currently keeps its promises:
+  - `unknown`: not measured yet. Say so when you answer a contract question.
+  - `ok`: within tolerance.
+  - `correcting` or `failed`: the twin is outside its tolerance. Report this with any answer, and do not base a decision or an action on it.
+
+## Versions
+
+Every read returns the twin as of one version. A version's time is the time of the data it holds, not the time it was written.
+
+- `at` selects the version: `head` (default), a commit id, `#<n>` (the n-th version), or an ISO 8601 time with an offset, which means the last version at or before that time. In a URL write `Z`, or `%2B` for `+`.
+- Ranges, where an endpoint takes one: `<a>..<b>`, optionally `/<step>`, for example `#1..head/4`.
+- Every response names the version it read: `version` in JSON, the `x-dta-version-*` headers on tables.
+- For any work of more than one request, read the version id from the first response and pass `at=<that id>` on every later request. Otherwise two requests may see two different states.
+- `branch` selects a branch (default `main`, the live one). Other branches hold scenarios; facts on them are not observations.
+
+## How to do things
+
+Read `reference/recipes.md` before the first request of each kind. In short:
+
+| To | Use |
+|---|---|
+| see one object, or list and filter objects of a type | `/objects/{type}`, `/objects/{type}/{uid}` |
+| see what an object is connected to | `/objects/{type}/{uid}/links`, `/graph/neighbors` |
+| find how two objects are connected | `/graph/paths` |
+| cut out a part of the graph | `POST /graph/subgraph` |
+| see how a property changed | `/objects/{type}/{uid}/history` |
+| see what changed between two versions | `/history/diff` |
+| pull whole tables for analysis or training | `/block/nodes/{type}`, `/block/edges/{edge_type}`, `/block/slice/{type}` as Arrow or Parquet |
+| see when and why versions were written | `/history/versions` |
+| read the twin's own logs | `/lifecycle/logs` |
+
+All endpoints, with parameters: `reference/api.md`. Error codes and what to do about each: `reference/errors.md`.
+
+## Rules
+
+1. Read the schema before naming a type or property.
+2. Pin the version for multi-step work.
+3. Ask for tables as Arrow or Parquet when you need more than a few hundred rows; do not page through JSON for bulk data.
+4. Let the twin do the filtering, the traversal and the history: use `where`, the graph endpoints and the slice endpoint instead of downloading everything and searching it yourself.
+5. Every value has provenance (`include=provenance`): where it came from, whether it was observed, inferred, assumed or simulated, and when it was true. Quote it when the user asks how a number is known.
+6. Report what the twin says. If the data does not answer a question, say that; do not fill the gap with an estimate presented as the twin's.
+7. This API only reads. You cannot change the twin through it, and you should not try to reach its database or its sources directly.
+8. If the user needs something the contract does not cover (a new question, a tighter tolerance, another source), that is a revision of the contract: tell the user it has to be agreed and rebuilt; do not improvise it.
+{% if ui %}
+
+## For the user
+
+The twin also has a browser interface (graph, tables, history) on the port its owner chose. Suggest it when the user wants to look around rather than ask.
+{% endif %}

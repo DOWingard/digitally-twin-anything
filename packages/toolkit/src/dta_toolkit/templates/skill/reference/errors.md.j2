@@ -1,0 +1,37 @@
+# Errors of the {{ twin_name }} twin API
+
+Every error is a JSON document with media type `application/problem+json`:
+
+```json
+{"type": "urn:dta:error:store.unknown_type", "title": "Unknown type", "status": 404,
+ "detail": "…what was wrong…", "code": "store.unknown_type", "trace_id": "…"}
+```
+
+Branch on `code`, not on the text. Quote `trace_id` when you report a failure to the user: it finds the request in the twin's logs (`/lifecycle/logs?trace_id=…`).
+
+| Status | Code | Meaning | What to do |
+|---|---|---|---|
+| 400 | `api.bad_request` | a parameter is missing, malformed or out of range | read `detail`, fix the request; for JSON the largest `limit` is 10,000 |
+| 400 | `api.bad_cursor` | the cursor is not from this query | start the listing again without `cursor` |
+| 400 | `api.sort_too_large` | sorting by a property was asked on too many rows | filter first, or fetch the table as Arrow and sort it yourself |
+| 400 | `api.slice_too_large` | the slice would be too large | narrow the range, add a step (`a..b/<step>`), or name fewer objects or properties |
+| 400 | `store.bad_selector` | `at`, `from`, `to` or `range` is not a version selector | use `head`, a commit id, `#<n>`, an ISO time with an offset, or `<a>..<b>` |
+| 400 | `store.naive_datetime` | a time has no offset | add `Z` or an offset such as `+01:00` (as `%2B01:00` in a URL) |
+| 400 | `store.bad_time` | a time cannot be read | write it as ISO 8601 |
+| 400 | `store.bad_filter` | a `where` clause is malformed, or its value does not fit the property's kind | `<property>:<op>:<value>`; check the property's kind in the schema |
+| 400 | `store.bad_branch_name` | the branch name is not valid | list branches with `/history/branches` |
+| 400 | `graph.too_broad` | the traversal would visit too much | lower `depth` or `limit`, or name `edge_types` |
+| 400 | `graph.bad_weight` | the weight is not a numeric property of the links on the path | choose a numeric link property from the schema, or leave `weight` out |
+| 401 | `api.unauthorized` | the token is missing or wrong | check that `{{ token_env }}` is set and sent as a bearer token; ask the user if it is not |
+| 404 | `api.not_found` | no such endpoint | check the path against `reference/api.md` |
+| 404 | `api.unknown_object` | no object with that uid at that version | it may not exist yet, or no longer, at the version you asked for; check `at` |
+| 404 | `store.unknown_type` | the schema has no such type at that version | read `/meta/schema` again at the same `at` |
+| 404 | `store.unknown_property` | the type has no such property at that version | read `/meta/schema` again at the same `at` |
+| 404 | `store.unknown_version` | no version matches the selector | list versions with `/history/versions`; a time before the first version matches nothing |
+| 404 | `store.unknown_branch` | no such branch | list branches with `/history/branches` |
+| 405 | `api.method_not_allowed` | wrong HTTP method | most endpoints are `GET`; the subgraph is `POST` |
+| 422 | `store.violation` | data would break the schema's rules | does not arise from reading; report it with the trace id |
+| 503 | `store.unavailable`, `store.closed`, `store.lock_timeout`, `store.not_installed` | the twin's store cannot answer now | wait a few seconds and retry up to three times; then tell the user the twin is down |
+| 500 | `api.internal` | a fault in the twin | do not retry in a loop; report the trace id to the user |
+
+A connection that is refused or times out means the twin's stack is not running or the address is wrong. Tell the user; do not look for the twin elsewhere.
