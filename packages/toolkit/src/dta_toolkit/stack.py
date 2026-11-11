@@ -412,8 +412,8 @@ class Stack:
                 code="stack.bad_output",
                 detail={"args": list(args)},
             )
-        if "error" in document:
-            reported = document["error"]
+        reported = reported_error(document)
+        if reported is not None:
             log.error(
                 "runtime command reported an error",
                 command=args[0] if args else None,
@@ -432,6 +432,16 @@ class Stack:
         if failed is not None:
             raise failed
         return document
+
+
+def reported_error(document: dict[str, Any]) -> dict[str, Any] | None:
+    """The error a runtime command reported, if its document is one.
+
+    A report of work done may carry an `error` entry that is empty; only an
+    entry that holds an error makes the document an error.
+    """
+    reported = document.get("error")
+    return reported if isinstance(reported, dict) and reported else None
 
 
 def _last_document(stdout: str) -> dict[str, Any] | None:

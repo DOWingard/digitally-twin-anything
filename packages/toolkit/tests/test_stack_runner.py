@@ -14,7 +14,7 @@ import pytest
 import yaml
 from dta_core.manifest import Manifest, parse_manifest
 from dta_toolkit.envfile import MASK, EnvFileError, missing, read_env, scrub
-from dta_toolkit.stack import Stack, StackError
+from dta_toolkit.stack import Stack, StackError, reported_error
 from dta_toolkit.workspace import State, Workspace, now
 
 RUNTIME_IMAGE = "dta-runtime:0.1.0"
@@ -108,6 +108,16 @@ def test_scrub_masks_values_long_enough_to_be_secrets():
     values = {"TOKEN": "s3cr3t-token-value", "PORT": "8000", "EMPTY": ""}
     text = scrub("auth s3cr3t-token-value failed on port 8000", values)
     assert text == f"auth {MASK} failed on port 8000"
+
+
+# -- what a runtime command printed --------------------------------------------
+
+
+def test_only_a_filled_error_entry_makes_a_document_an_error():
+    assert reported_error({"status": "succeeded", "error": None, "rows_written": 3}) is None
+    assert reported_error({"ok": True}) is None
+    failure = {"code": "sync.source_failed", "message": "cannot be read", "detail": {}}
+    assert reported_error({"error": failure}) == failure
 
 
 # -- files and environment, without docker ------------------------------------
