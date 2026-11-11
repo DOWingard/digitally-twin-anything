@@ -49,6 +49,9 @@ _NO_LIMIT = 2**63 - 1
 
 At = str | Selector | VersionRef
 Filter = Mapping[str, Any] | Sequence[tuple[str, str, Any]]
+# (property or `uid`, `asc` or `desc`), most significant first.
+Order = Sequence[tuple[str, str]]
+_DIRECTIONS = {"asc": "ASC", "desc": "DESC"}
 
 
 def _transpose(rows: Sequence[Sequence[Any]], width: int) -> list[Sequence[Any]]:
@@ -217,6 +220,45 @@ class Reads:
             return "", [], True
         return " WHERE " + " AND ".join(clauses), parameters, True
 
+    @staticmethod
+    def _order(requested: ObjectType, stored: ObjectType, order_by: Order) -> str:
+        """ORDER BY terms for a read of one type.
+
+        Rows without a value come last in either direction, and the uid ends
+        every order, so that rows equal in what was asked for still come in
+        one fixed order and paging through them neither repeats nor skips.
+        """
+        terms: list[str] = []
+        for entry in order_by:
+            if not isinstance(entry, tuple | list) or len(entry) != 2:
+                raise invalid("bad_order", "an order is a list of (property, 'asc' or 'desc')")
+            name, direction = entry
+            if direction not in _DIRECTIONS:
+                raise invalid("bad_order", f"order by {name}: direction is 'asc' or 'desc'")
+            if name == UID_FIELD:
+                terms.append(f"`{UID_FIELD}` {_DIRECTIONS[direction]}")
+                # Nothing after the uid can change the order.
+                return ", ".join(terms)
+            if not isinstance(name, str) or not requested.has_field(name):
+                raise UnknownProperty(
+                    f"{requested.name} has no property {name!r}",
+                    detail={"type": requested.name, "property": name},
+                )
+            if requested.field(name).stored_as_json:
+                raise invalid("bad_order", f"{name} holds structured values; cannot order by it")
+            if not stored.has_field(name):
+                # The property did not exist at this version: null in every row.
+                continue
+            column = ddl.quote(name)
+            value = column
+            if requested.field(name).kind == Kind.enum:
+                # The database orders an enumeration by the position of its values
+                # in the declaration; a reader expects the order of the text.
+                value = f"CAST({column} AS CHAR) COLLATE utf8mb4_0900_bin"
+            terms.append(f"{column} IS NULL, {value} {_DIRECTIONS[direction]}")
+        terms.append(f"`{UID_FIELD}` ASC")
+        return ", ".join(terms)
+
     # -- one object ---------------------------------------------------------
 
     @public
@@ -270,8 +312,13 @@ class Reads:
         branch: str = LIVE_BRANCH,
         prov: bool = False,
         ontology: Ontology | None = None,
+        order_by: Order | None = None,
     ) -> pa.Table:
-        """Every object of a type at a version: `uid`, then the properties asked for."""
+        """Every object of a type at a version: `uid`, then the properties asked for.
+
+        Rows come in the order of `order_by` when it is given, in uid order when
+        only a limit or an offset is, and in no promised order otherwise.
+        """
         requested = self._requested_type(ontology, type)
         names = self._names(requested, columns)
         for label, number in (("limit", limit), ("offset", offset)):
@@ -295,10 +342,17 @@ class Reads:
             if prov:
                 select.append("`_prov`")
             tail = ""
-            if limit is not None or offset:
+            if order_by:
+                tail = f" ORDER BY {self._order(requested, stored, order_by)}"
+            elif limit is not None or offset:
                 # Paging needs a fixed order; the primary key gives one.
-                tail = f" ORDER BY `{UID_FIELD}` LIMIT %s OFFSET %s"
-                parameters = [*parameters, _NO_LIMIT if limit is None else limit, offset or 0]
+                tail = f" ORDER BY `{UID_FIELD}`"
+            if limit is not None or offset:
+                tail += " LIMIT %s OFFSET %s"
+                skipped = offset or 0
+                # The database adds the two when it sorts, and refuses a sum beyond its integers.
+                most = _NO_LIMIT - skipped
+                parameters = [*parameters, most if limit is None else min(limit, most), skipped]
             rows = conn.query(
                 f"SELECT {', '.join(select)} FROM {ddl.quote(stored.table)} AS OF %s{where}{tail}",
                 [version.id, *parameters],
@@ -309,6 +363,32 @@ class Reads:
         if prov:
             arrays.append(codec.text_column(cells[-1]))
         return pa.Table.from_arrays(arrays, schema=schema)
+
+    @public
+    def count(
+        self,
+        type: str,
+        filter: Filter | None = None,
+        at: At = "head",
+        branch: str = LIVE_BRANCH,
+        ontology: Ontology | None = None,
+    ) -> int:
+        """How many objects of a type there are at a version, of those a filter passes."""
+        requested = self._requested_type(ontology, type)
+        with self._reading("count", type=type) as conn:
+            version = self._one(conn, at, branch)
+            stored_ontology = self._ontology_of(conn, version)
+            if not stored_ontology.has_type(type):
+                return 0
+            stored = stored_ontology.type(type)
+            where, parameters, possible = self._where(requested, stored, filter)
+            if not possible:
+                return 0
+            found = conn.scalar(
+                f"SELECT COUNT(*) FROM {ddl.quote(stored.table)} AS OF %s{where}",
+                [version.id, *parameters],
+            )
+        return int(found or 0)
 
     # -- changes over a run of versions ---------------------------------------
 

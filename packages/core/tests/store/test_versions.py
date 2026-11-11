@@ -364,6 +364,32 @@ def test_a_table_read_takes_columns_filters_and_paging(store: Store):
     assert _uids(store.table("Tank", limit=0)) == []
     assert _uids(store.table("Tank", filter={"status": "ok"}, limit=1, offset=1)) == ["node:t3"]
 
+    # An order asked for is the store's: rows without a value last, ties in uid order.
+    def ordered(*order: tuple[str, str], **more) -> list[str]:
+        return _uids(store.table("Tank", columns=[], order_by=list(order), **more))
+
+    assert ordered(("level", "asc")) == ["node:t1", "node:t4", "node:t2", "node:t3"]
+    assert ordered(("level", "desc")) == ["node:t2", "node:t4", "node:t1", "node:t3"]
+    assert ordered(("status", "desc"), ("capacity", "desc")) == [
+        "node:t1",
+        "node:t3",
+        "node:t2",
+        "node:t4",
+    ]
+    assert ordered(("status", "asc")) == ["node:t2", "node:t1", "node:t3", "node:t4"]
+    assert ordered(("uid", "desc")) == ["node:t4", "node:t3", "node:t2", "node:t1"]
+    assert ordered(("uid", "desc"), ("level", "asc")) == ordered(("uid", "desc"))
+    assert ordered(("capacity", "desc"), limit=2) == ["node:t2", "node:t4"]
+    assert ordered(("capacity", "desc"), limit=2, offset=2) == ["node:t1", "node:t3"]
+    assert ordered(("capacity", "asc"), offset=3) == ["node:t2"]
+    assert ordered(("name", "desc"), filter={"status": "ok"}) == ["node:t3", "node:t1"]
+
+    assert store.count("Tank") == 4
+    assert store.count("Tank", filter={"status": "ok"}) == 2
+    assert store.count("Tank", filter=[("level", ">", 100.0)]) == 0
+    assert store.count("Tank", filter={"status": []}) == 0
+    assert store.count("Tank", at="#0") == 0
+
     with_prov = store.table("Tank", columns=["level"], prov=True, limit=1)
     assert with_prov.schema.names == ["uid", "level", "_prov"]
     assert '"k":"observed"' in with_prov.column("_prov").to_pylist()[0]
@@ -385,6 +411,12 @@ def test_a_table_read_takes_columns_filters_and_paging(store: Store):
         (lambda: store.table("Tank", filter=[("name", "like", 5)]), "store.bad_filter"),
         (lambda: store.table("Tank", limit=-1), "store.bad_filter"),
         (lambda: store.table("Tank", offset=1.5), "store.bad_filter"),
+        (lambda: store.table("Tank", order_by=[("depth", "asc")]), "store.unknown_property"),
+        (lambda: store.table("Tank", order_by=[("level", "up")]), "store.bad_order"),
+        (lambda: store.table("Tank", order_by=["level"]), "store.bad_order"),
+        (lambda: store.table("Tank", order_by=[("tags", "asc")]), "store.bad_order"),
+        (lambda: store.count("Reservoir"), "store.unknown_type"),
+        (lambda: store.count("Tank", filter={"depth": 1}), "store.unknown_property"),
     ]:
         with pytest.raises((InvalidInput, UnknownType, UnknownProperty)) as caught:
             call()
