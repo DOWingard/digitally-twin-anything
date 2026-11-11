@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 import schemathesis
+from api_testkit import WaterHistory
+from dta_runtime.api import create_app
 from dta_runtime.api.docs import build_openapi
+from dta_runtime.settings import RuntimeSettings
 from hypothesis import HealthCheck, settings
 from schemathesis.checks import (
     content_type_conformance,
@@ -26,11 +31,16 @@ CHECKS = [
 
 
 @pytest.fixture(scope="module")
-def api_schema(app_client: TestClient) -> BaseSchema:
-    app = app_client.app
-    loaded = schemathesis.openapi.from_dict(build_openapi(app))  # type: ignore[arg-type]
+def api_schema(
+    runtime_settings: RuntimeSettings, water_history: WaterHistory
+) -> Iterator[BaseSchema]:
+    # Schemathesis runs the application's lifespan around every call, so it gets
+    # an application of its own, serving a twin that its lifespan leaves open.
+    app = create_app(runtime_settings, water_history.twin)
+    loaded = schemathesis.openapi.from_dict(build_openapi(app))
     loaded.app = app
-    return loaded
+    with TestClient(app):
+        yield loaded
 
 
 schema = schemathesis.pytest.from_fixture("api_schema")

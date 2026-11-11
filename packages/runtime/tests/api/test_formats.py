@@ -38,7 +38,7 @@ def parquet_table(content: bytes) -> pa.Table:
 )
 def test_negotiation(api: Api, params: dict, headers: dict, media: str) -> None:
     response = api.get("/api/v1/objects/Junction", params=params, headers=headers)
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert response.headers["content-type"].split(";")[0] == media
 
 
