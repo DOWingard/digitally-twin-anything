@@ -3,7 +3,8 @@
 Every API call is made on the server, inside a callback, with the token from
 the settings; the browser receives the data and never the token. All
 scripts, styles and fonts are served by the application itself, so the
-interface works on a stack without internet access.
+interface works on a stack without internet access. It answers only requests
+addressed to it under a loopback name (`guard`).
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from dta_core.log import Log
 from flask import jsonify
 
 from ..settings import UiSettings
-from . import graph, header, history, ids, sheet, sync
+from . import graph, guard, header, history, ids, sheet, sync
 from .backend import Backend
 
 log = Log("ui")
@@ -60,6 +61,7 @@ def create_app(settings: UiSettings) -> Dash:
         serve_locally=True,
         suppress_callback_exceptions=True,
     )
+    guard.install(app.server)
     app.layout = layout()
     header.register(app, backend)
     graph.register(app, backend)
