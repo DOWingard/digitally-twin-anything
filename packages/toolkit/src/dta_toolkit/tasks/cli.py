@@ -149,6 +149,8 @@ def abort(
     """Abandon a task, or the whole open batch (orchestrator only)."""
     result = lifecycle.abort(session(ctx).workspace, task_id, whole_batch)
     text = f"abandoned: {', '.join(result['abandoned']) or 'nothing'}"
+    if result["completed"]:
+        text += f"\nrecorded as merged, patch was already applied: {', '.join(result['completed'])}"
     if result["batch_closed"]:
         text += f"\nbatch {result['batch']} closed"
     for finding in result["findings"]:

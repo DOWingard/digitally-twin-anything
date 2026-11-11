@@ -130,12 +130,12 @@ def test_only_the_announced_content_is_accepted_after_an_interruption(ws):
 
 def test_a_planted_note_cannot_bless_a_different_file(ws):
     ws.open("3")
+    token = ws.claim("profile-erp")
     stray = ws.root / "stray.txt"
     stray.write_text("x")
     _note(ws).write_text(
         json.dumps({"path": "stray.txt", "sha256": hashlib.sha256(b"x").hexdigest()})
     )
-    token = ws.claim("profile-erp")
     ws.write_result("profile-erp", ws.profile_patch("erp"))
     assert ws.submit("profile-erp", token).reasons == ["tasks.foreign.added"]
     assert not _note(ws).exists()

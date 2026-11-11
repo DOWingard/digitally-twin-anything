@@ -70,8 +70,7 @@ def test_proposals_are_kept_for_the_orchestrator_and_never_applied(ws):
         {
             "task": f"profile-{source}",
             "batch": "b1",
-            "target": "ontology",
-            "description": f"add a type for {source}",
+            "proposal": {"target": "ontology", "description": f"add a type for {source}"},
         }
         for source in SOURCES
     ]

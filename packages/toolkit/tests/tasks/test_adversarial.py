@@ -236,6 +236,7 @@ def test_abort_of_one_task_and_of_things_that_cannot_be_aborted(ws):
     assert ws.abort("profile-erp") == {
         "batch": "b1",
         "abandoned": ["profile-erp"],
+        "completed": [],
         "batch_closed": False,
         "findings": [],
         "state_file_changed": False,
@@ -257,6 +258,7 @@ def test_abort_of_one_task_and_of_things_that_cannot_be_aborted(ws):
     assert ws.abort() == {
         "batch": None,
         "abandoned": [],
+        "completed": [],
         "batch_closed": False,
         "findings": [],
         "state_file_changed": False,

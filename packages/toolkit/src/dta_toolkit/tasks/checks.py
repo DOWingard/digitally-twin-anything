@@ -205,7 +205,13 @@ def ledger_reasons(workspace: Workspace) -> list[dict[str, Any]]:
     try:
         changes = _foreign_changes(workspace)
     except WorkspaceError as exc:
-        return [reason("tasks.ledger.unreadable", exc.message)]
+        return [
+            reason(
+                "tasks.ledger.unreadable",
+                f"{exc.message}, so changes to shared files can no longer be told apart; "
+                "abort the batch",
+            )
+        ]
     wording = {
         "modified": "shared files were modified outside the toolkit",
         "added": "files appeared outside the task directories",

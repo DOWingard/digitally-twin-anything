@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from dta_core.log import Log
-from dta_core.manifest import Manifest, dump_manifest, manifest_hash, to_plain
+from dta_core.manifest import Manifest, dump_manifest, manifest_hash
 
 from ..workspace import Workspace
 from ..workspace import now as _wall_clock
@@ -46,18 +46,23 @@ from .checks import (
     discard_stale_ledger,
     examine_output,
     ledger_reasons,
+    load_manifest,
     manifest_pin,
     ontology_pin,
     own_reasons,
     owned_pin,
     pin_reasons,
     read_manifest,
-    state_key,
+    rewrite_reasons,
+    sealed_reasons,
+    touches_state,
+    unsettled,
     zone_reasons,
 )
 from .durable import critical, write_recorded
 from .errors import TaskError, reason, refusal
 from .planning import build_plan, describe_plan
+from .result import Result, same_plain
 from .state import (
     TERMINAL,
     Batch,
@@ -77,6 +82,7 @@ from .zone import (
     Finding,
     inspect_task,
     inspect_zone,
+    sealed_findings,
     snapshot,
     spec_document,
     spec_leftovers,
@@ -106,7 +112,9 @@ def _iso(moment: datetime | None) -> str | None:
 
 
 def _token_digest(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    # A token typed on a command line is bytes and need not be text; whatever
+    # it is, it is compared, never rejected for its encoding.
+    return hashlib.sha256(token.encode("utf-8", errors="surrogateescape")).hexdigest()
 
 
 # -- plan and open -------------------------------------------------------------
@@ -116,7 +124,7 @@ def plan(workspace: Workspace, stage: str) -> dict[str, Any]:
     """The stage's tasks and batches. Changes nothing and takes no lock."""
     workspace.require()
     state = load_state(workspace)
-    return describe_plan(build_plan(workspace.load_manifest(), stage, state), state)
+    return describe_plan(build_plan(load_manifest(workspace), stage, state), state)
 
 
 def _fresh_task_dir(workspace: Workspace, task_id: str) -> None:
@@ -154,14 +162,23 @@ def open_batch(
                 ),
             )
         discard_stale_ledger(workspace)
+        # Opening takes everything under tasks/ into the batch's baseline as it
+        # is. A merged result that was altered since must not get in that way.
+        altered = sealed_reasons(sealed_findings(workspace, state))
+        if altered:
+            log.warn("open refused: merged results were altered", reasons=altered)
+            raise refusal(altered[0]["code"], altered[0]["message"], **altered[0]["detail"])
 
         # From here on every watched file is compared with what it is now. The
         # manifest is read after this point, so a change that slips in between
         # is either part of the baseline and of the pins, or caught later.
-        workspace.rebase_ledger()
+        try:
+            workspace.rebase_ledger()
+        except OSError as exc:
+            raise unsettled(exc) from exc
         _checkpoint("open.ledger_rebased")
         try:
-            manifest = workspace.load_manifest()
+            manifest = load_manifest(workspace)
             staged = build_plan(manifest, stage, state)
             specs = staged.to_open()
             if not specs:
@@ -280,6 +297,24 @@ def _require_ttl(ttl: int) -> int:
     return ttl
 
 
+def _require_rewritable(workspace: Workspace, task_id: str, action: str) -> None:
+    """Refuse a command that would write the task state over one the toolkit did not write."""
+    reasons = rewrite_reasons(workspace)
+    if reasons:
+        log.warn(
+            f"{action} refused: shared files are disturbed",
+            task=task_id,
+            codes=[entry["code"] for entry in reasons],
+            reasons=reasons,
+        )
+        raise refusal(
+            reasons[0]["code"],
+            f"{action} of task {task_id} refused: {reasons[0]['message']}",
+            task=task_id,
+            reasons=reasons,
+        )
+
+
 def _zone_refusal(task_id: str, findings: list[Finding]) -> Exception:
     codes = {"spec": "tasks.spec.changed", "input": "tasks.input.changed"}
     first = findings[0]
@@ -321,6 +356,7 @@ def claim(
                 lease=_lease_view(task, moment),
             )
 
+        _require_rewritable(workspace, task_id, "claim")
         base = task_dir(workspace, task_id)
         findings = inspect_task(workspace, batch, task, skip_output=previous is not None)
         if findings:
@@ -437,6 +473,7 @@ def renew(workspace: Workspace, task_id: str, holder: str, token: str, ttl: int)
                 task=task_id,
                 lease=_lease_view(task, moment),
             )
+        _require_rewritable(workspace, task_id, "renewal")
         task.lease.expires_at = moment + timedelta(seconds=ttl)
         task.lease.renewals += 1
         save_state(workspace, state)
@@ -496,7 +533,14 @@ def submit(workspace: Workspace, task_id: str, token: str) -> dict[str, Any]:
             reasons += own_reasons(inspect_task(workspace, batch, task, skip_output=True))
             output = examine_output(workspace, task, sealed=False)
             reasons += output.reasons
-            if not output.reasons and manifest is not None:
+            # Tried whenever there is a patch to try, so that one submit reports
+            # everything. Keys outside the task's own would only be reported twice.
+            misplaced = {"tasks.patch.key", "tasks.patch.not_owned"}
+            if (
+                output.result is not None
+                and manifest is not None
+                and not any(entry["code"] in misplaced for entry in output.reasons)
+            ):
                 reasons += apply(manifest, task, output.result)[1]
         reasons += ledger_reasons(workspace)
         reasons += unreadable + pin_reasons(workspace, manifest, task)
@@ -568,6 +612,37 @@ def _after_close(workspace: Workspace, batch: Batch) -> None:
     )
 
 
+def _record_merge(task: TaskRecord, result: Result, moment: datetime) -> None:
+    task.status = "merged"
+    task.merged_at = moment
+    task.patch_keys = sorted(result.manifest_patch)
+    task.proposals = [proposal.model_dump() for proposal in result.proposals]
+    task.notes = result.notes
+
+
+def _applied_result(
+    workspace: Workspace, manifest: Manifest | None, task: TaskRecord
+) -> Result | None:
+    """The result of a submitted task whose patch is in the manifest already.
+
+    That is what a merge leaves when it stops between writing the manifest and
+    writing the state: the task's keys are no longer what they were when the
+    batch opened, its sealed output is untouched, and applying its patch
+    changes nothing.
+    """
+    if task.status != "submitted" or manifest is None:
+        return None
+    if owned_pin(manifest, task.spec) == task.pins.manifest_owned:
+        return None
+    output = examine_output(workspace, task, sealed=True)
+    if output.reasons or output.result is None:
+        return None
+    patched, _ = apply(manifest, task, output.result)
+    if patched is None or not same_plain(patched, manifest):
+        return None
+    return output.result
+
+
 def _merge_one(
     workspace: Workspace,
     state: TasksState,
@@ -593,7 +668,7 @@ def _merge_one(
         # If its patch is already in (this merge was interrupted after writing
         # the manifest), applying it again changes nothing and is safe. If it
         # would change something, someone else wrote there and is not overwritten.
-        if merged is not None and owned_moved and to_plain(merged) != to_plain(manifest):
+        if merged is not None and owned_moved and not same_plain(merged, manifest):
             merged, reasons = None, owned_moved
     if reasons:
         log.warn(
@@ -613,11 +688,7 @@ def _merge_one(
     )
     _checkpoint("merge.manifest_written")
     moment = _now()
-    task.status = "merged"
-    task.merged_at = moment
-    task.patch_keys = sorted(output.result.manifest_patch)
-    task.proposals = [proposal.model_dump() for proposal in output.result.proposals]
-    task.notes = output.result.notes
+    _record_merge(task, output.result, moment)
     closed = _close_if_done(state, batch, moment)
     save_state(workspace, state)
     log.info(
@@ -722,6 +793,9 @@ def abort(
 
     This is the way out of a batch that can no longer complete, so it never
     refuses because of what the checks would find; it reports it instead.
+
+    One thing it will not do is record as abandoned a task whose patch is in
+    the manifest: an interrupted merge is completed, not undone in name only.
     """
     if (task_id is None) == (not whole_batch):
         raise TaskError("name one task or pass --batch, not both", code="tasks.usage")
@@ -750,11 +824,13 @@ def abort(
             return {
                 "batch": None,
                 "abandoned": [],
+                "completed": [],
                 "batch_closed": False,
                 "findings": [],
                 "state_file_changed": False,
             }
 
+        manifest, _ = read_manifest(workspace)
         if task_id is not None:
             _, record = _locate(state, task_id)
             if record.status == "merged":
@@ -763,18 +839,36 @@ def abort(
                     f"task {task_id} is merged; its result is already in the manifest",
                     task=task_id,
                 )
+            if _applied_result(workspace, manifest, record) is not None:
+                log.warn("abort refused: the task's patch is already applied", task=task_id)
+                raise refusal(
+                    "tasks.abort.applied",
+                    f"the patch of task {task_id} is already in the manifest: its merge was "
+                    f"interrupted. Run `dta tasks merge {task_id}` to complete it",
+                    task=task_id,
+                )
             targets = [] if record.status == "abandoned" else [record]
         else:
             targets = [task for task in batch.tasks.values() if task.status not in TERMINAL]
 
-        # Once the batch is closed the ledger is gone, so this is the last
-        # moment at which what happened to the shared files can be told.
+        # Once the batch is closed the ledger is gone and the next batch takes
+        # tasks/ as it finds it, so this is the last moment at which what
+        # happened to the shared files and to the task directories can be told.
         findings = ledger_reasons(workspace)
-        state_file_changed = any(
-            state_key(workspace) in entry["detail"].get("paths", []) for entry in findings
-        )
+        unreadable = any(entry["code"] == "tasks.ledger.unreadable" for entry in findings)
+        if unreadable and task_id is not None:
+            # Writing the state would try to enter it in a ledger that cannot
+            # be read. Closing the whole batch is the way out: it ends the watch.
+            raise refusal(
+                "tasks.ledger.unreadable",
+                "the ledger of sanctioned writes cannot be read, so a single task cannot "
+                "be given up; abort the whole batch with --batch",
+                task=task_id,
+            )
+        state_file_changed = touches_state(workspace, findings)
+        findings += zone_reasons(inspect_zone(workspace, batch, skip=frozenset()))
         if findings:
-            log.warn("batch is being aborted with shared files disturbed", findings=findings)
+            log.warn("batch is being aborted with shared state disturbed", findings=findings)
         if state_file_changed:
             log.error(
                 "task state was changed outside the toolkit; the statuses recorded in it "
@@ -782,9 +876,23 @@ def abort(
                 batch=batch.id,
             )
         moment = _now()
+        completed: list[str] = []
+        abandoned: list[str] = []
         for task in targets:
+            applied = _applied_result(workspace, manifest, task)
+            if applied is not None:
+                _record_merge(task, applied, moment)
+                completed.append(task.spec.id)
+                log.warn(
+                    "task recorded as merged: its patch was already in the manifest",
+                    task=task.spec.id,
+                    batch=batch.id,
+                    patch_keys=task.patch_keys,
+                )
+                continue
             task.status = "abandoned"
             task.abandoned_at = moment
+            abandoned.append(task.spec.id)
             log.info(
                 "task abandoned",
                 task=task.spec.id,
@@ -792,6 +900,10 @@ def abort(
                 holder=task.lease.holder if task.lease else None,
             )
         closed = _close_if_done(state, batch, moment)
+        if unreadable:
+            # Only reached when the whole batch is given up, which closes it.
+            workspace.drop_ledger()
+            log.warn("unreadable ledger discarded with its batch", batch=batch.id)
         if targets or closed:
             save_state(workspace, state)
         if closed:
@@ -799,7 +911,8 @@ def abort(
 
     return {
         "batch": batch.id,
-        "abandoned": sorted(task.spec.id for task in targets),
+        "abandoned": sorted(abandoned),
+        "completed": sorted(completed),
         "batch_closed": closed,
         "findings": findings,
         "state_file_changed": state_file_changed,
@@ -818,13 +931,8 @@ def _standing_pin_reasons(
     manifest; running the merge again completes it, so it is not a problem.
     """
     pins = pin_reasons(workspace, manifest, task)
-    moved = any(entry["code"] == "tasks.pin.owned" for entry in pins)
-    if moved and task.status == "submitted" and manifest is not None:
-        output = examine_output(workspace, task, sealed=True)
-        if not output.reasons:
-            patched, _ = apply(manifest, task, output.result)
-            if patched is not None and to_plain(patched) == to_plain(manifest):
-                return [entry for entry in pins if entry["code"] != "tasks.pin.owned"]
+    if _applied_result(workspace, manifest, task) is not None:
+        return [entry for entry in pins if entry["code"] != "tasks.pin.owned"]
     return pins
 
 
@@ -842,8 +950,10 @@ def status(workspace: Workspace, verify: bool = False) -> dict[str, Any]:
         "open_batch": None,
         "batches": len(state.batches),
         "merged": sorted(state.merged_ids()),
+        # What a task wrote is kept apart from who wrote it: a proposal with
+        # keys of its own called "task" or "batch" cannot pass for another's.
         "proposals": [
-            {"task": task_id, "batch": entry.id, **proposal}
+            {"task": task_id, "batch": entry.id, "proposal": proposal}
             for entry in state.batches
             for task_id, task in sorted(entry.tasks.items())
             for proposal in task.proposals
@@ -871,7 +981,9 @@ def status(workspace: Workspace, verify: bool = False) -> dict[str, Any]:
             state = load_state(workspace)
             batch = state.current()
             problems: list[dict[str, Any]] = []
-            if batch is not None:
+            if batch is None:
+                problems += sealed_reasons(sealed_findings(workspace, state))
+            else:
                 problems += ledger_reasons(workspace)
                 problems += zone_reasons(inspect_zone(workspace, batch, skip=frozenset()))
                 manifest, unreadable = read_manifest(workspace)
