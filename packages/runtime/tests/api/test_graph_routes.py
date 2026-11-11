@@ -233,6 +233,17 @@ def test_paths_follow_direction_and_depth(api: Api) -> None:
     assert shallow["paths"] == []
 
 
+def test_paths_may_be_long_but_not_without_limit(api: Api) -> None:
+    ends = {"source": "node:R1", "target": "node:J4", "direction": "out"}
+    usual = api.ok("/api/v1/graph/paths", params={**ends, "k": 1})
+    deep = api.ok("/api/v1/graph/paths", params={**ends, "max_depth": 64, "k": 1})
+    # The limit is a ceiling, not a target: the shortest path is still the answer.
+    assert path_nodes(deep) == path_nodes(usual) != []
+    refused = api.get("/api/v1/graph/paths", params={**ends, "max_depth": 65})
+    assert refused.status_code == 400
+    assert refused.json()["code"] == "api.bad_request"
+
+
 def test_weighted_paths(api: Api) -> None:
     body = api.ok(
         "/api/v1/graph/paths",

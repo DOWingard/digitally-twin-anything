@@ -37,6 +37,10 @@ router = APIRouter(prefix=f"{API_PREFIX}/graph", tags=["graph"])
 
 TRUNCATED_HEADER = "x-dta-truncated"
 MAX_DEPTH = 16
+# Paths in real networks are long (a pipe network's supply paths run to tens of
+# hops); what bounds a path search is how much of the graph it must look at,
+# which the search itself refuses when it is too much.
+MAX_PATH_HOPS = 64
 
 Direction = Annotated[
     Literal["out", "in", "both"],
@@ -134,7 +138,9 @@ def neighbors(
 @router.get(
     "/paths",
     summary="The k shortest paths between two objects",
-    description="Simple paths of at most `max_depth` hops, shortest first. Without `weight` "
+    description="Simple paths of at most `max_depth` hops, shortest first. A search that "
+    "would have to look at too much of the graph is refused with `graph.too_broad`. Without "
+    "`weight` "
     "a path costs its number of hops; with it, the sum over its edges of that numeric "
     "property of their link type. An edge without the property costs `default_weight`, or is "
     "not followed when none is given. Paths are distinct sequences of nodes; between two "
@@ -146,7 +152,15 @@ def paths(
     services: ServicesDep,
     source: Annotated[str, Query(description="uid where paths start", max_length=190)],
     target: Annotated[str, Query(description="uid where paths end", max_length=190)],
-    max_depth: Annotated[int, Query(ge=1, le=10, description="Most hops of a path")] = 6,
+    max_depth: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=MAX_PATH_HOPS,
+            description="Most hops of a path. No path within that many hops gives an empty "
+            "list, which does not mean the two objects are unconnected",
+        ),
+    ] = 6,
     k: Annotated[int, Query(ge=1, le=100, description="Most paths returned")] = 3,
     weight: Annotated[
         str | None,
