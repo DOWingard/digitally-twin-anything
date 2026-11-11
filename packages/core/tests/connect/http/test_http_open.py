@@ -140,6 +140,18 @@ class TestThroughTheFactory:
                 open_connector("plant", entry, {"URL": address})
             assert address not in json.dumps(caught.value.as_dict())
 
+    def test_opening_sends_nothing_and_close_ends_the_connector(self, api: Api) -> None:
+        connector = _open(api, "k")
+        assert api.calls == []
+        list(connector.read("sensors"))
+        connector.close()
+        connector.close()
+        with pytest.raises(SourceError, match="closed"):
+            connector.read("sensors")
+        with pytest.raises(SourceError, match="closed"):
+            connector.now()  # type: ignore[attr-defined]
+        assert len(api.calls) == 1
+
 
 class TestSecretsStayHidden:
     def test_no_header_value_or_address_in_logs_or_errors(
