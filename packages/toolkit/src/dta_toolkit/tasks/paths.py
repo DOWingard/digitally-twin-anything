@@ -141,3 +141,29 @@ def pinned_paths(plain: dict[str, Any], reads: Iterable[str], owns: Iterable[str
         path = split_path(text)
         visit(path, _lookup(plain, path))
     return sorted(found)
+
+
+def owned_paths(plain: dict[str, Any], owns: Iterable[str]) -> list[str]:
+    """Every concrete manifest path the owned-key patterns name right now.
+
+    A plain key is listed whether or not it has a value, so that its appearing
+    is seen; a pattern lists the keys that currently match it.
+    """
+    found: set[str] = set()
+
+    def visit(node: Any, pattern: Pattern, path: tuple[str, ...]) -> None:
+        if len(path) == len(pattern):
+            found.add(".".join(path))
+            return
+        segment = pattern[len(path)]
+        if not segment.glob:
+            child = node.get(segment.text) if isinstance(node, dict) else None
+            visit(child, pattern, (*path, segment.text))
+        elif isinstance(node, dict):
+            for key, child in node.items():
+                if _LITERAL.fullmatch(str(key)) and segment.matches(str(key)):
+                    visit(child, pattern, (*path, str(key)))
+
+    for text in owns:
+        visit(plain, parse_pattern(text), ())
+    return sorted(found)

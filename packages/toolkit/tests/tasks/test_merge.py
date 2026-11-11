@@ -268,6 +268,50 @@ def test_results_of_earlier_batches_may_not_change_while_a_batch_is_open(ws):
     assert ws.submit("mapping-erp", token).code == 0
 
 
+def test_a_value_written_into_a_tasks_keys_by_someone_else_is_never_overwritten(ws):
+    ws.open("3")
+    token = ws.claim("profile-erp")
+    ws.write_result("profile-erp", ws.profile_patch("erp"))
+    ws.finish("profile-sensors", ws.profile_patch("sensors"))
+
+    def measured_elsewhere(manifest):
+        manifest.sources["erp"].refresh_period = "PT15M"
+        manifest.sources["sensors"].refresh_period = "PT15M"
+
+    # A toolkit command sets keys that open tasks own: a sanctioned write, so the
+    # ledger is silent, and the tasks do not read their own keys.
+    ws.edit_manifest(measured_elsewhere)
+
+    assert ws.submit("profile-erp", token).reasons == ["tasks.pin.owned"]
+    ws.claim("profile-sheets", holder="carol")  # its keys are untouched: no objection
+    outcome = ws.run("merge", "--all")
+    assert _refusals(outcome) == {"profile-sensors": ["tasks.pin.owned"]}
+    assert str(ws.manifest().sources["sensors"].refresh_period) == "0:15:00"
+    assert ws.manifest().sources["sensors"].profile is None
+
+    # Once the keys already hold what the task would write, merging changes nothing and is fine.
+    def as_the_task_found(manifest):
+        patched = ws.profile_patch("sensors")
+        manifest.sources["sensors"].refresh_period = patched["sources.sensors.refresh_period"]
+        manifest.sources["sensors"].profile = patched["sources.sensors.profile"]
+
+    ws.edit_manifest(as_the_task_found)
+    before = ws.manifest_bytes()
+    assert ws.merge("profile-sensors")["merged"] == ["profile-sensors"]
+    assert ws.manifest_bytes() == before
+
+
+def test_a_claim_is_refused_when_the_tasks_keys_were_already_written(ws):
+    ws.open("3")
+
+    def measured_elsewhere(manifest):
+        manifest.sources["erp"].rate_limit_period = "PT1S"
+
+    ws.edit_manifest(measured_elsewhere)
+    ws.run("claim", "profile-erp", "--holder", "alice").refused("tasks.pin.owned")
+    assert ws.run("claim", "profile-sensors", "--holder", "alice").code == 0
+
+
 # -- idempotence and recovery --------------------------------------------------
 
 

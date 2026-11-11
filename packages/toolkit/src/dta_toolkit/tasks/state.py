@@ -38,6 +38,7 @@ class Pins(_Record):
     """What a task's result is valid against. Taken when its batch opens."""
 
     manifest_reads: str  # hash of the manifest values the task reads, own keys cut out
+    manifest_owned: str  # hash of the values under the keys the task owns
     ontology: OntologyPin
     store_version: str | None = None
 

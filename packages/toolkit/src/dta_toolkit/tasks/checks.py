@@ -28,7 +28,7 @@ from dta_core.manifest import Manifest, subtree_hash, to_plain
 from ..workspace import Workspace, sha256_file
 from .catalogue import TaskSpec
 from .errors import TaskError, reason, refusal
-from .paths import pinned_paths
+from .paths import owned_paths, pinned_paths
 from .result import (
     Result,
     apply_patch,
@@ -68,6 +68,16 @@ def manifest_pin(manifest: Manifest, spec: TaskSpec) -> str:
     return subtree_hash(manifest, pinned_paths(to_plain(manifest), spec.reads, spec.owns))
 
 
+def owned_pin(manifest: Manifest, spec: TaskSpec) -> str:
+    """Hash of what the manifest holds under the keys a task owns.
+
+    While the task is out nobody else may write there. The merge is the one
+    writer, and it will not overwrite a value that is no longer the one the
+    task started from.
+    """
+    return subtree_hash(manifest, owned_paths(to_plain(manifest), spec.owns))
+
+
 def read_manifest(workspace: Workspace) -> tuple[Manifest | None, list[dict[str, Any]]]:
     try:
         return workspace.load_manifest(), []
@@ -95,6 +105,14 @@ def pin_reasons(
                 "tasks.pin.manifest",
                 "manifest values this task reads have changed since its batch opened",
                 reads=list(task.spec.reads),
+            )
+        )
+    if owned_pin(manifest, task.spec) != task.pins.manifest_owned:
+        reasons.append(
+            reason(
+                "tasks.pin.owned",
+                "manifest keys this task owns were written since its batch opened",
+                owned_keys=list(task.spec.owns),
             )
         )
     try:

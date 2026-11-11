@@ -1,7 +1,14 @@
 import pytest
 from dta_core.manifest import parse_manifest, subtree_hash, to_plain
 from dta_toolkit.tasks.errors import TaskError
-from dta_toolkit.tasks.paths import covers, overlaps, parse_pattern, pinned_paths, split_path
+from dta_toolkit.tasks.paths import (
+    covers,
+    overlaps,
+    owned_paths,
+    parse_pattern,
+    pinned_paths,
+    split_path,
+)
 
 
 def _overlap(first, second):
@@ -168,3 +175,19 @@ def test_a_key_that_cannot_be_addressed_is_reported():
     with pytest.raises(TaskError) as caught:
         pinned_paths(plain, ["sources.a"], ["sources.a.profile"])
     assert caught.value.code == "tasks.path.unaddressable"
+
+
+def test_owned_paths_name_plain_keys_always_and_pattern_matches_as_they_exist():
+    plain = {
+        "sources": {"a": {"location": "a.csv", "profile": {"rows": 1}}},
+        "functions": {"q1": {}, "q1-kpi": {}, "q1-trend": {}, "q10": {}},
+    }
+    owns = ["sources.a.profile", "sources.a.refresh_period", "models.q1", "functions.q1-*"]
+    assert owned_paths(plain, owns) == [
+        "functions.q1-kpi",
+        "functions.q1-trend",
+        "models.q1",
+        "sources.a.profile",
+        "sources.a.refresh_period",
+    ]
+    assert owned_paths({}, owns) == ["models.q1", "sources.a.profile", "sources.a.refresh_period"]

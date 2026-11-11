@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from dta_core.log import Log
-from dta_core.manifest import Manifest, dump_manifest, manifest_hash
+from dta_core.manifest import Manifest, dump_manifest, manifest_hash, to_plain
 
 from ..workspace import Workspace
 from ..workspace import now as _wall_clock
@@ -49,6 +49,7 @@ from .checks import (
     manifest_pin,
     ontology_pin,
     own_reasons,
+    owned_pin,
     pin_reasons,
     read_manifest,
     state_key,
@@ -176,6 +177,7 @@ def open_batch(
                     spec=spec,
                     pins=Pins(
                         manifest_reads=manifest_pin(manifest, spec),
+                        manifest_owned=owned_pin(manifest, spec),
                         ontology=ontology,
                         store_version=store_version,
                     ),
@@ -576,13 +578,23 @@ def _merge_one(
     """Check one submitted task again and, if everything holds, apply it. Returns refusals."""
     task_id = task.spec.id
     manifest, reasons = read_manifest(workspace)
-    reasons = ledger_reasons(workspace) + reasons + pin_reasons(workspace, manifest, task)
+    pins = pin_reasons(workspace, manifest, task)
+    # Owned keys that moved are judged once the patch is known: see below.
+    owned_moved = [entry for entry in pins if entry["code"] == "tasks.pin.owned"]
+    reasons = ledger_reasons(workspace) + reasons
+    reasons += [entry for entry in pins if entry["code"] != "tasks.pin.owned"]
     reasons += own_reasons(inspect_task(workspace, batch, task, skip_output=True))
     output = examine_output(workspace, task, sealed=True)
     reasons += output.reasons + elsewhere
     merged: Manifest | None = None
     if not reasons:
         merged, reasons = apply(manifest, task, output.result)
+        # The task's keys are no longer what they were when the batch opened.
+        # If its patch is already in (this merge was interrupted after writing
+        # the manifest), applying it again changes nothing and is safe. If it
+        # would change something, someone else wrote there and is not overwritten.
+        if merged is not None and owned_moved and to_plain(merged) != to_plain(manifest):
+            merged, reasons = None, owned_moved
     if reasons:
         log.warn(
             "merge refused",
@@ -796,6 +808,25 @@ def abort(
 # -- status --------------------------------------------------------------------
 
 
+def _standing_pin_reasons(
+    workspace: Workspace, manifest: Manifest | None, task: TaskRecord
+) -> list[dict[str, Any]]:
+    """Stale pins of a task, not counting its own keys if its own patch is what moved them.
+
+    That is the state a merge leaves when it is interrupted after writing the
+    manifest; running the merge again completes it, so it is not a problem.
+    """
+    pins = pin_reasons(workspace, manifest, task)
+    moved = any(entry["code"] == "tasks.pin.owned" for entry in pins)
+    if moved and task.status == "submitted" and manifest is not None:
+        output = examine_output(workspace, task, sealed=True)
+        if not output.reasons:
+            patched, _ = apply(manifest, task, output.result)
+            if patched is not None and to_plain(patched) == to_plain(manifest):
+                return [entry for entry in pins if entry["code"] != "tasks.pin.owned"]
+    return pins
+
+
 def status(workspace: Workspace, verify: bool = False) -> dict[str, Any]:
     """Where every task of the open batch stands, and the proposals stored so far.
 
@@ -847,7 +878,7 @@ def status(workspace: Workspace, verify: bool = False) -> dict[str, Any]:
                 for task_id, task in sorted(batch.tasks.items()):
                     if task.status in TERMINAL:
                         continue
-                    for entry in pin_reasons(workspace, manifest, task):
+                    for entry in _standing_pin_reasons(workspace, manifest, task):
                         problems.append({**entry, "detail": {**entry["detail"], "task": task_id}})
         report["verified"] = {"clean": not problems, "problems": problems}
     return report
