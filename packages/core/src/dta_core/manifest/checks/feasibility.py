@@ -12,10 +12,12 @@ from datetime import timedelta
 
 from ..models import ErrorMetric
 from .findings import Issue, Severity, check
+from .freshness import freshness_bounds
 from .view import FORECAST_KINDS, ManifestView, fmt_duration
 
 # Metrics in the unit of the signal, so they compare directly with its noise floor.
 _ABSOLUTE_METRICS = frozenset({ErrorMetric.mae, ErrorMetric.rmse, ErrorMetric.max_abs})
+_ZERO = timedelta(0)
 
 
 @check("coverage.unmapped_target", Severity.warning)
@@ -72,19 +74,30 @@ def interval(view: ManifestView) -> Iterator[Issue]:
                 f"interval {shown} is shorter than the rate limit period "
                 f"{fmt_duration(period)} of source '{sid}'",
             )
-    stalenesses = [
-        (question.staleness, qid)
-        for qid, question in sorted(view.questions.items())
-        if question.staleness is not None
-    ]
-    if stalenesses:
-        tightest, qid = min(stalenesses)
-        if value > tightest:
+    # Tightest first, and only the tightest one that fails is reported: one
+    # interval that is too long is one finding, however many questions it fails.
+    for bound in freshness_bounds(view):
+        if value <= bound.value:
+            break
+        if bound.value < _ZERO:
+            continue  # the staleness is shorter than the source's period: said there
+        if bound.source is None:
             yield Issue(
                 "sync.interval",
-                f"interval {shown} is longer than the staleness {fmt_duration(tightest)} "
-                f"of question '{qid}'",
+                f"interval {shown} is longer than the staleness "
+                f"{fmt_duration(bound.staleness)} of question '{bound.question}'",
             )
+        else:
+            assert bound.refresh_period is not None
+            yield Issue(
+                "sync.interval",
+                f"interval {shown} plus the refresh period "
+                f"{fmt_duration(bound.refresh_period)} of source '{bound.source}' is "
+                f"{fmt_duration(value + bound.refresh_period)}, longer than the staleness "
+                f"{fmt_duration(bound.staleness)} of question '{bound.question}': just "
+                "before a run its data is that old",
+            )
+        break
     if sync.minimum_interval is not None and value < sync.minimum_interval:
         yield Issue(
             "sync.interval",

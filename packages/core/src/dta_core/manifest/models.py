@@ -302,8 +302,11 @@ class SyncDerivation(Base):
     source_period: timedelta | None = None
     rate_period: timedelta | None = None
     min_staleness: timedelta | None = None
+    # The longest interval that keeps every question inside its staleness: the least,
+    # over questions and the sources they rest on, of staleness less refresh period.
+    freshness_bound: timedelta | None = None
     change_time: timedelta | None = None
-    rule: str = "max(source_period, rate_period, min(min_staleness, change_time / 2))"
+    rule: str = "max(source_period, rate_period, min(freshness_bound, change_time / 2))"
 
 
 class Sync(Base):
