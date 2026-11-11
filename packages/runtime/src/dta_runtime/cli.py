@@ -261,6 +261,57 @@ def load() -> None:
 
 
 @app.command()
+def sync(
+    source: Annotated[
+        list[str] | None,
+        typer.Option("--source", help="Keep the run to this source; may be repeated"),
+    ] = None,
+    replay: Annotated[
+        str | None,
+        typer.Option(help="Read one dataset again whole, given as <source>.<dataset>"),
+    ] = None,
+) -> None:
+    """One run of a live twin: take the intervals that have ended on the twin's clock."""
+
+    def work() -> dict[str, Any]:
+        from .clock import clock_for
+        from .sync import Replay, SyncError
+        from .sync import run as run_sync
+        from .twin import TwinError, open_twin
+
+        again = None
+        if replay is not None:
+            source_id, _, dataset = replay.partition(".")
+            if not source_id or not dataset:
+                raise TwinError(
+                    f"--replay takes <source>.<dataset>, not {replay!r}",
+                    code="runtime.bad_replay",
+                )
+            again = Replay(source_id, dataset)
+        settings = RuntimeSettings.from_env()
+        twin = open_twin(settings.store)
+        try:
+            clock = clock_for(twin.manifest(), os.environ)
+            try:
+                report = run_sync(
+                    twin, settings, os.environ, clock, sources=source or None, replay=again
+                )
+            finally:
+                clock.close()
+        finally:
+            twin.close()
+        if report.status == "failed":
+            # Recorded in the twin already; said here in the way every failed command says it.
+            error = report.error or {"code": SyncError.code, "message": "the run failed"}
+            raise SyncError(
+                error["message"], code=error["code"], detail={"report": report.as_dict()}
+            )
+        return report.as_dict()
+
+    _run("sync", work)
+
+
+@app.command()
 def api(
     host: Annotated[str, typer.Option(help="Address to listen on")] = "0.0.0.0",
     port: Annotated[int, typer.Option(help="Port to listen on")] = API_PORT,
