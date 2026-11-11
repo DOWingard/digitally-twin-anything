@@ -23,6 +23,7 @@ hold, take the same route and need nothing more.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import threading
 import time
@@ -496,17 +497,18 @@ class Store(Reads):
                     detail={"branch": branch, "selector": str(selector)},
                 )
             return chain.entries[seq]
+        # Anything else names a place on the branch, which is checked against
+        # the branch as it is now: a position is not known to be the same
+        # commit it was until the head has been looked at.
+        chain = self._index.refresh(conn, branch)
         if selector.kind == "seq":
             wanted = selector.seq or 0
-            if chain is None or wanted >= len(chain.entries):
-                chain = self._index.refresh(conn, branch)
             if wanted >= len(chain.entries):
                 raise UnknownVersion(
                     f"{branch} has no version #{wanted}; its head is #{chain.head.seq}",
                     detail={"branch": branch, "selector": str(selector)},
                 )
             return chain.entries[wanted]
-        chain = self._index.refresh(conn, branch)
         if selector.kind == "head":
             return chain.head
         position = bisect_right(chain.times, selector.time) - 1
@@ -577,7 +579,7 @@ class Store(Reads):
         """The commit log of a branch with everything recorded about each version.
 
         `extra` keeps the versions whose caller-defined fields hold each given
-        top-level key with an equal value.
+        top-level key with the same JSON value (`true` is not `1`).
         """
         self._ready()
         try:
@@ -586,18 +588,25 @@ class Store(Reads):
             raise invalid("bad_filter", f"unknown cause {cause!r}") from exc
         if extra is not None and not isinstance(extra, Mapping):
             raise invalid("bad_filter", "the extra filter is a mapping of key to value")
+        try:
+            wanted_extra = {
+                key: json.dumps(value, sort_keys=True) for key, value in (extra or {}).items()
+            }
+        except (TypeError, ValueError) as exc:
+            raise invalid(
+                "bad_filter", f"the extra filter holds a value that is not JSON: {exc}"
+            ) from exc
         with self._db.connect() as conn:
             found = self._resolve(conn, selector, branch)
-        missing = object()
         kept = [
             version
             for version in found
             if (wanted_cause is None or version.cause == wanted_cause)
             and (actor is None or version.actor == actor)
             and (run is None or version.run == run)
-            and (
-                extra is None
-                or all(version.extra.get(key, missing) == value for key, value in extra.items())
+            and all(
+                key in version.extra and json.dumps(version.extra[key], sort_keys=True) == text
+                for key, text in wanted_extra.items()
             )
         ]
         if newest_first:
