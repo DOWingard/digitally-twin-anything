@@ -19,8 +19,8 @@ import fsspec
 import pyarrow as pa
 import pyarrow.csv as pacsv
 import pyarrow.dataset as pads
-import pyarrow.fs as pafs
 import pyarrow.json as pajson
+import pyarrow.parquet as pq
 from fsspec.implementations.local import LocalFileSystem
 from fsspec.registry import known_implementations
 
@@ -106,7 +106,6 @@ class FileConnector(BaseConnector):
         super().__init__(source_id, location, redactor)
         self._datasets = datasets
         self._fs: fsspec.AbstractFileSystem | None = None
-        self._arrow_fs: pafs.FileSystem | None = None
         self._root = ""
         self._local = False
 
@@ -145,9 +144,6 @@ class FileConnector(BaseConnector):
             raise self._error(SourceConfigError, "the location is not a directory")
         self._fs = fs
         self._root = root.rstrip("/")
-        self._arrow_fs = (
-            pafs.LocalFileSystem() if self._local else pafs.PyFileSystem(pafs.FSSpecHandler(fs))
-        )
         self._log.info(
             "connector opened",
             source=self.source_id,
@@ -347,20 +343,29 @@ class FileConnector(BaseConnector):
     def _read_parquet(
         self, spec: FileDataset, path: str, request: ReadRequest
     ) -> Iterator[pa.Table]:
-        dataset = pads.dataset(path, filesystem=self._arrow_fs, format="parquet")
-        names = dataset.schema.names
+        dataset: pads.Dataset | None = None
+        buffer: pa.Buffer | None = None
+        if self._local:
+            dataset = pads.dataset(path, format="parquet")
+            schema = dataset.schema
+        else:
+            # Random access needs HTTP range requests, which not every server
+            # answers; a remote file is fetched once and read from memory.
+            buffer = pa.py_buffer(self._filesystem.cat_file(path))
+            schema = pq.read_schema(pa.BufferReader(buffer))
         needed = request.needed_columns()
         wanted = list(needed) if needed is not None else None
-        missing = [column for column in (wanted or ()) if column not in names]
-        if request.cursor_column is not None and request.cursor_column not in names:
+        missing = [column for column in (wanted or ()) if column not in schema.names]
+        if request.cursor_column is not None and request.cursor_column not in schema.names:
             missing.append(request.cursor_column)
         if missing:
             raise _MissingColumns(list(dict.fromkeys(missing)))
         condition = None
         if request.cursor_column is not None and request.since is not None:
-            condition = self._pushdown(
-                spec, dataset.schema.field(request.cursor_column), request.since
-            )
+            condition = self._pushdown(spec, schema.field(request.cursor_column), request.since)
+        if dataset is None:
+            yield pq.read_table(pa.BufferReader(buffer), columns=wanted, filters=condition)
+            return
         scanner = dataset.scanner(columns=wanted, filter=condition, batch_size=BATCH_ROWS)
         yielded = False
         for batch in scanner.to_batches():
