@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from dta_runtime.clock import ClockUnavailable, FixedClock
+from dta_runtime.sync import MappingInvalid
 from dta_runtime.twin import Twin
 from live_testkit import (
     LIVE,
@@ -449,8 +450,20 @@ class NoClock:
         return None
 
 
+class NoOffsetClock:
+    kind = "source:plant"
+
+    def now(self):
+        # A time that does not say where on earth it is the time.
+        return at(16).replace(tzinfo=None)
+
+    def close(self) -> None:
+        return None
+
+
+@pytest.mark.parametrize("clock", [NoClock(), NoOffsetClock()])
 def test_without_a_clock_nothing_is_read_and_nothing_is_written(
-    sync_twin: MakeTwin, tick: Tick, tmp_path: Path
+    sync_twin: MakeTwin, tick: Tick, tmp_path: Path, clock: Any
 ):
     _, _, sources, sync = plant(tmp_path, [("T1", at(5), 1.0)])
     twin = sync_twin(sources, sync=sync)
@@ -458,7 +471,7 @@ def test_without_a_clock_nothing_is_read_and_nothing_is_written(
     connect = Connecting()
 
     with pytest.raises(ClockUnavailable) as caught:
-        tick(twin, NoClock(), connect=connect)
+        tick(twin, clock, connect=connect)
 
     assert caught.value.code == "clock.unavailable"
     assert connect.opened == []
@@ -467,13 +480,27 @@ def test_without_a_clock_nothing_is_read_and_nothing_is_written(
     assert not (tmp_path / "artifacts").exists()
 
 
+def test_a_twin_without_sources_still_records_its_runs(sync_twin: MakeTwin, tick: Tick):
+    twin = sync_twin({}, sync=LIVE)
+    store = twin.store
+    before = store.head()
+
+    report = tick(twin, FixedClock(at(16)))
+
+    assert (report.status, report.versions_written, report.sources) == ("succeeded", 1, {})
+    (version,) = store.versions(run=report.run)
+    assert version.t == at(15)
+    assert set(store.diff(before, "head")) == {"TwinSyncRun"}
+    assert (report.watermark, report.rows_read) == (None, 0)
+
+
 def test_a_run_needs_the_time_between_runs(sync_twin: MakeTwin, tick: Tick, tmp_path: Path):
     _, _, sources, _ = plant(tmp_path, [("T1", at(5), 1.0)])
     twin = sync_twin(sources, sync={"backfill_interval": 900})
     head = twin.store.head()
     connect = Connecting()
 
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(MappingInvalid) as caught:
         tick(twin, FixedClock(at(16)), connect=connect)
 
     assert caught.value.code == "sync.mapping_invalid"
