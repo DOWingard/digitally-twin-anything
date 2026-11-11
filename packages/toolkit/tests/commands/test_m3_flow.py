@@ -129,6 +129,10 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
     assert {check["id"] for check in accepted["checks"]} == CHECKS
     contract = next(check for check in accepted["checks"] if check["id"] == "api.contract")
     assert contract["evidence"]["operations"] > 0 and contract["evidence"]["failures"] == 0
+    # Accepting a twin only reads it: no generated request goes to an operation that writes.
+    exercised = [entry["operation"] for entry in contract["evidence"]["per_operation"]]
+    assert exercised and all(operation.startswith("GET ") for operation in exercised)
+    assert all(not name.startswith("GET ") for name in contract["evidence"]["not_exercised"])
     reports = twin.root / "reports"
     assert (reports / "acceptance.json").is_file() and (reports / "acceptance.md").is_file()
     assert not (reports / "deficit.json").exists() and not (reports / "deficit.md").exists()
