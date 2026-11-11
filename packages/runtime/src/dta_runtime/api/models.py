@@ -7,11 +7,46 @@ these models describe that JSON for clients and agents.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 Direction = Literal["out", "in", "both"]
+
+
+JobState = Literal["queued", "running", "succeeded", "failed"]
+
+
+class JobError(BaseModel):
+    code: str = Field(description="Stable machine-readable error code")
+    message: str
+
+
+class JobOut(BaseModel):
+    """Work the API does in the background. Jobs are kept in the memory of the API
+    process, the last 200 of them; nothing in a job is a wall-clock time."""
+
+    id: str = Field(description="32 hexadecimal characters", examples=["9f2c" * 8])
+    kind: str = Field(description="What the job does: `sync` is one run of the sync pipeline")
+    state: JobState
+    params: dict[str, Any] = Field(
+        description="What the job was asked to do; for `sync`, `sources` and `replay`",
+        examples=[{"sources": None, "replay": None}],
+    )
+    idempotency_key: str | None = Field(description="The key the job was asked for with")
+    trace_id: str = Field(
+        description="Trace of the request that made the job; its work logs under it"
+    )
+    sequence: int = Field(description="Order in which this API process made its jobs")
+    duration_ms: int | None = Field(description="How long the work took, once it has ended")
+    result: dict[str, Any] | None = Field(
+        description="What the work gave back; for `sync`, the run's report"
+    )
+    error: JobError | None = Field(
+        description="Why the job failed: the run's error, or the error that stopped it. "
+        "`job.cancelled`: the API stopped before the job started; `job.unexpected`: an error "
+        "of the server, named by its type only"
+    )
 
 
 class Problem(BaseModel):
@@ -25,6 +60,9 @@ class Problem(BaseModel):
     trace_id: str | None = Field(description="Trace id of the request, for the logs")
     errors: list[dict[str, Any]] | None = Field(
         default=None, description="Constraint violations or invalid parameters"
+    )
+    job: JobOut | None = Field(
+        default=None, description="With `sync.busy`: the sync job that is queued or running"
     )
 
 
@@ -113,6 +151,64 @@ class TwinManifestInfo(BaseModel):
     hash: str | None
 
 
+class ClockOut(BaseModel):
+    """The twin's clock: where it reads the current time, and what it reads."""
+
+    kind: str = Field(
+        description="`wall`, or `source:<id>` for the clock of one of the twin's sources",
+        examples=["wall"],
+    )
+    available: bool = Field(description="Whether the clock could be read")
+    now: datetime | None = Field(
+        description="The clock's time, ISO 8601 UTC; null when it cannot be read",
+        examples=["2026-01-19T00:15:02Z"],
+    )
+
+
+class SourceFreshness(BaseModel):
+    id: str
+    status: str | None = Field(description="`ok`, `failing`, or null before it is first read")
+    watermark: datetime | None = Field(description="Latest data time taken from the source")
+    freshness_s: float | None = Field(description="Clock time less the watermark, in seconds")
+
+
+class LastRun(BaseModel):
+    uid: str = Field(examples=["twin_sync_run:20260119T000000Z-1a2b3c4d"])
+    status: str = Field(description="`succeeded`, `partial` or `failed`")
+    kind: str | None = Field(description="`incremental`, `replay` or `backfill`")
+    started_at: datetime | None = Field(description="Data time of the run's first version")
+    finished_at: datetime | None = Field(description="Data time of the run's last version")
+    clock_at: datetime | None = Field(description="What the clock told when the run began")
+    versions_written: int | None
+    rows_written: int | None
+    rows_rejected: int | None
+    rows_late: int | None
+    error: str | None
+
+
+class ActiveJob(BaseModel):
+    id: str
+    state: Literal["queued", "running"]
+
+
+class SyncHealth(BaseModel):
+    """How far a live twin is behind its sources."""
+
+    interval: str = Field(description="Time between sync runs, ISO 8601", examples=["PT15M"])
+    staleness: str | None = Field(
+        description="The shortest staleness the contract's questions allow, ISO 8601",
+        examples=["PT1H"],
+    )
+    freshness_s: float | None = Field(
+        description="The largest freshness of the sources; null when the clock cannot be read "
+        "or no source has a watermark"
+    )
+    fresh: bool | None = Field(description="Whether `freshness_s` is within `staleness`")
+    sources: list[SourceFreshness] = Field(description="The manifest's sources")
+    last_run: LastRun | None = Field(description="The latest run that recorded itself")
+    job: ActiveJob | None = Field(description="The sync job queued or running, if any")
+
+
 class TwinHealth(BaseModel):
     twin_id: str | None
     name: str | None
@@ -123,6 +219,101 @@ class TwinHealth(BaseModel):
     manifest: TwinManifestInfo
     ontology_hash: str
     type_signature: str
+    clock: ClockOut
+    sync: SyncHealth | None = Field(description="Null for a twin whose manifest sets no interval")
+
+
+class SyncReplay(BaseModel):
+    """A dataset to read again whole, whatever its cursor says."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1, max_length=200)
+    dataset: str = Field(min_length=1, max_length=200)
+
+
+class SyncRunRequest(BaseModel):
+    """What one run is asked to do; an empty body runs every source."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{}, {"sources": ["telemetry"]}]},
+    )
+
+    sources: list[Annotated[str, Field(min_length=1, max_length=200)]] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1_000,
+        description="Keep the run to the mappings of these sources; all if absent",
+    )
+    replay: SyncReplay | None = Field(
+        default=None,
+        description="Keep the run to the mappings that read this dataset, and read it whole",
+    )
+
+
+class JobAccepted(BaseModel):
+    job: JobOut
+
+
+class JobOne(BaseModel):
+    data: JobOut
+
+
+class JobList(BaseModel):
+    data: list[JobOut] = Field(description="Newest first")
+
+
+class SyncRunOne(BaseModel):
+    data: dict[str, Any] = Field(description="The run's stored values and its uid")
+    version: VersionOut
+
+
+class RejectsOut(BaseModel):
+    data: list[dict[str, Any]] = Field(
+        description="Rows set aside, in file order: run, source, mapping, type, uid, property, "
+        "rule, message, t, and `also` for further rules the row broke"
+    )
+    next_cursor: str | None = Field(description="Pass as `cursor` for the next page")
+    total: int = Field(description="Lines that pass the filters")
+    skipped: int = Field(description="Lines of the file that are not JSON objects")
+
+
+class DatasetOut(BaseModel):
+    name: str
+    cursor_column: str | None
+    cursor: str | None = Field(description="How far it has been read: a time or a number")
+    rows_read: int | None
+    last_read_at: datetime | None
+
+
+class MappingOut(BaseModel):
+    id: str
+    dataset: str | None
+    object_type: str | None
+    kind: Literal["static", "state", "event"]
+    properties: list[str]
+
+
+class SourceOut(BaseModel):
+    id: str
+    connector: str | None
+    description: str | None
+    status: str | None = Field(description="`ok`, `failing`, `disabled`; null before it is read")
+    last_error: str | None
+    watermark: datetime | None
+    last_success_at: datetime | None
+    freshness_s: float | None
+    datasets: list[DatasetOut]
+    mappings: list[MappingOut]
+
+
+class SourceList(BaseModel):
+    data: list[SourceOut] = Field(
+        description="In the manifest's order; sources it no longer names last, disabled"
+    )
+    clock: ClockOut
+    version: VersionOut
 
 
 class ManifestOut(BaseModel):

@@ -108,10 +108,13 @@ def json_response(
     document: Mapping[str, Any],
     version: VersionRef | None = None,
     headers: Mapping[str, str] | None = None,
+    status: int = 200,
 ) -> Response:
     merged = dict(version_headers(version)) if version is not None else {}
     merged.update(headers or {})
-    return Response(content=dumps(document), media_type=JSON_MEDIA, headers=merged)
+    return Response(
+        content=dumps(document), status_code=status, media_type=JSON_MEDIA, headers=merged
+    )
 
 
 class _Chunks:

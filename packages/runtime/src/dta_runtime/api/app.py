@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -16,14 +17,18 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 
+from ..clock import Clock
 from ..graph import GraphCache
 from ..settings import ENV_API_TOKEN, MIN_TOKEN_LENGTH, RuntimeSettings
+from ..sync.extract import Connect
 from ..twin import Twin, open_twin
 from .docs import API_PREFIX, OPEN_PATHS, build_openapi
+from .jobs import JobRunner
+from .live import Clocks
 from .middleware import ApiMiddleware
 from .models import Health
 from .problems import error_response, problem
-from .routes import block, graph, history, lifecycle, meta, objects
+from .routes import block, graph, history, lifecycle, meta, objects, sync
 from .services import Services
 
 log = Log("api")
@@ -69,12 +74,16 @@ def create_app(
     settings: RuntimeSettings,
     twin: Twin | None = None,
     *,
+    clock: Clock | None = None,
+    connect: Connect | None = None,
     graph_cache_versions: int = GRAPH_CACHE_VERSIONS,
 ) -> FastAPI:
     """The API of the twin whose store `settings` names.
 
     The twin is opened when the application starts and closed when it stops.
-    A twin passed in is used as it is and left open.
+    A twin passed in is used as it is and left open. So is a clock: by default
+    the twin's clock is the one its manifest names. `connect` opens the
+    sources of a sync run; by default the real connectors do.
     """
     if not settings.api_token or len(settings.api_token) < MIN_TOKEN_LENGTH:
         log.error("the API token is missing or too short", name=ENV_API_TOKEN)
@@ -106,23 +115,33 @@ def create_app(
         # worker instead of failing for want of a connection.
         workers = settings.store.pool_size + settings.store.pool_overflow
         anyio.to_thread.current_default_thread_limiter().total_tokens = workers
-        app.state.services = Services(
+        jobs = JobRunner()
+        jobs.start()
+        services = Services(
             twin=opened,
             settings=settings,
             graphs=GraphCache(opened.store, capacity=graph_cache_versions),
+            jobs=jobs,
+            clocks=Clocks(clock, os.environ),
+            connect=connect,
         )
+        app.state.services = services
         log.info(
             "API started",
             database=settings.store.database,
             workers=workers,
             graph_cache_versions=graph_cache_versions,
             logs_dir=str(settings.logs_dir),
+            clock_given=clock is not None,
             elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
         )
         try:
             yield
         finally:
-            graphs = app.state.services.graphs
+            # The job in progress may be writing to the twin: it ends before the store closes.
+            await anyio.to_thread.run_sync(jobs.shutdown)
+            services.clocks.close()
+            graphs = services.graphs
             if twin is None:
                 opened.close()
             log.info(
@@ -135,10 +154,11 @@ def create_app(
     app = FastAPI(
         title="Digital twin API",
         version=_version(),
-        description="Read access to a digital twin: a versioned, typed graph of a real system. "
+        description="Access to a digital twin: a versioned, typed graph of a real system. "
         "Every route but /healthz needs `Authorization: Bearer <token>`. Data is read at a "
         "version chosen with `at` and `branch`; each response says which version it describes. "
-        "Errors are RFC 9457 problem documents with a stable `code`.",
+        "A live twin is kept in step with its sources by sync runs, started as background "
+        "jobs. Errors are RFC 9457 problem documents with a stable `code`.",
         lifespan=lifespan,
         openapi_url=None,
         docs_url=None,
@@ -148,7 +168,7 @@ def create_app(
     app.add_exception_handler(RequestValidationError, _on_invalid_request)
     app.add_exception_handler(StarletteHTTPException, _on_http_error)
 
-    for module in (meta, history, objects, graph, block, lifecycle):
+    for module in (meta, history, objects, graph, block, lifecycle, sync):
         app.include_router(module.router)
 
     @app.get(f"{API_PREFIX}/openapi.json", include_in_schema=False)

@@ -1,4 +1,10 @@
-"""The API answers as its OpenAPI document says, for generated requests to every operation."""
+"""The API answers as its OpenAPI document says, for generated requests to every operation
+that reads.
+
+Only GET operations are exercised: the operations that write (starting a sync run) would
+start work in the twin under test with every generated request. They are covered by the
+tests of the sync routes, which check their answers against the same models.
+"""
 
 from __future__ import annotations
 
@@ -43,7 +49,7 @@ def api_schema(
         yield loaded
 
 
-schema = schemathesis.pytest.from_fixture("api_schema")
+schema = schemathesis.pytest.from_fixture("api_schema").include(method="GET")
 
 
 @schema.parametrize()
@@ -77,7 +83,19 @@ def test_the_document_describes_every_route(app_client: TestClient, auth: dict[s
         "/api/v1/block/edges/{edge_type}",
         "/api/v1/block/slice/{type}",
         "/api/v1/lifecycle/logs",
+        "/api/v1/lifecycle/jobs",
+        "/api/v1/lifecycle/jobs/{id}",
+        "/api/v1/sync/runs",
+        "/api/v1/sync/runs/{uid}",
+        "/api/v1/sync/runs/{uid}/rejects",
+        "/api/v1/sync/sources",
     }
+    assert set(document["paths"]["/api/v1/sync/runs"]) == {"get", "post"}
+    started = document["paths"]["/api/v1/sync/runs"]["post"]
+    assert {"200", "202", "400", "409"} <= set(started["responses"])
+    assert started["requestBody"]["content"]["application/json"]["schema"]
+    health = document["components"]["schemas"]["TwinHealth"]["properties"]
+    assert {"clock", "sync"} <= set(health)
     assert document["components"]["securitySchemes"]["bearer"]["scheme"] == "bearer"
     assert document["paths"]["/healthz"]["get"]["security"] == []
     for path, operations in document["paths"].items():
