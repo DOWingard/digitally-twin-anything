@@ -20,6 +20,10 @@ leaves a state the same command repairs when it is run again:
 - close:  state file (batch closed), then the ledger is dropped. While a batch
           is open the ledger therefore always exists, and its absence is
           itself refused.
+
+Each write of the manifest or the state file is itself announced before it is
+made, so that a process dying inside one (file replaced, ledger not yet told)
+is completed by the next command instead of being taken for a foreign change.
 """
 
 from __future__ import annotations
@@ -31,13 +35,12 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from dta_core.log import Log
-from dta_core.manifest import Manifest, manifest_hash
+from dta_core.manifest import Manifest, dump_manifest, manifest_hash
 
 from ..workspace import Workspace
 from ..workspace import now as _wall_clock
 from .catalogue import require_holder, require_task_id
 from .checks import (
-    STATE_KEY,
     Output,
     apply,
     discard_stale_ledger,
@@ -48,8 +51,10 @@ from .checks import (
     own_reasons,
     pin_reasons,
     read_manifest,
+    state_key,
     zone_reasons,
 )
+from .durable import critical, write_recorded
 from .errors import TaskError, reason, refusal
 from .planning import build_plan, describe_plan
 from .state import (
@@ -73,6 +78,7 @@ from .zone import (
     inspect_zone,
     snapshot,
     spec_document,
+    spec_leftovers,
     task_dir,
 )
 
@@ -131,7 +137,7 @@ def open_batch(
         raise TaskError(
             "a store version is 1 to 200 printable characters", code="tasks.store_version.invalid"
         )
-    with workspace.exclusive():
+    with critical(workspace):
         state = load_state(workspace)
         current = state.current()
         if current is not None:
@@ -286,7 +292,7 @@ def claim(
     require_holder(holder)
     _require_ttl(ttl)
     workspace.require()
-    with workspace.exclusive():
+    with critical(workspace):
         state = load_state(workspace)
         batch, task = _locate(state, task_id)
         moment = _now()
@@ -342,6 +348,8 @@ def claim(
                     paths=sorted([*inputs.links, *inputs.special]),
                 )
             document = spec_document(batch.id, task)
+            for leftover in spec_leftovers(base):
+                remove_entry(leftover)
             workspace.atomic_write(base / SPEC_FILE, document)
             _checkpoint("claim.spec_written")
             task.spec_sha256 = sha256_bytes(document)
@@ -402,7 +410,7 @@ def renew(workspace: Workspace, task_id: str, holder: str, token: str, ttl: int)
     require_holder(holder)
     _require_ttl(ttl)
     workspace.require()
-    with workspace.exclusive():
+    with critical(workspace):
         state = load_state(workspace)
         batch, task = _locate(state, task_id)
         moment = _now()
@@ -443,7 +451,7 @@ def submit(workspace: Workspace, task_id: str, token: str) -> dict[str, Any]:
     """Hand a finished task over. Every check runs; all failures are reported together."""
     require_task_id(task_id)
     workspace.require()
-    with workspace.exclusive():
+    with critical(workspace):
         state = load_state(workspace)
         batch, task = _locate(state, task_id)
         moment = _now()
@@ -580,7 +588,12 @@ def _merge_one(
         )
         return reasons
 
-    workspace.save_manifest(merged)
+    write_recorded(
+        workspace,
+        workspace.manifest_path,
+        dump_manifest(merged),
+        write=lambda: workspace.save_manifest(merged),
+    )
     _checkpoint("merge.manifest_written")
     moment = _now()
     task.status = "merged"
@@ -612,7 +625,7 @@ def merge(
     if task_id is not None:
         require_task_id(task_id)
     workspace.require()
-    with workspace.exclusive():
+    with critical(workspace):
         state = load_state(workspace)
         batch = state.current()
         if batch is None:
@@ -697,7 +710,7 @@ def abort(
     if task_id is not None:
         require_task_id(task_id)
     workspace.require()
-    with workspace.exclusive():
+    with critical(workspace):
         state = load_state(workspace)
         batch = state.current()
         if batch is None:
@@ -740,7 +753,7 @@ def abort(
         # moment at which what happened to the shared files can be told.
         findings = ledger_reasons(workspace)
         state_file_changed = any(
-            STATE_KEY in entry["detail"].get("paths", []) for entry in findings
+            state_key(workspace) in entry["detail"].get("paths", []) for entry in findings
         )
         if findings:
             log.warn("batch is being aborted with shared files disturbed", findings=findings)
@@ -817,7 +830,7 @@ def status(workspace: Workspace, verify: bool = False) -> dict[str, Any]:
             ],
         }
     if verify:
-        with workspace.exclusive():
+        with critical(workspace):
             state = load_state(workspace)
             batch = state.current()
             problems: list[dict[str, Any]] = []

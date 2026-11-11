@@ -1,6 +1,5 @@
-import json
-
 import pytest
+import yaml
 from dta_core.manifest import parse_manifest
 from dta_toolkit.tasks.catalogue import TaskSpec
 from dta_toolkit.tasks.result import apply_patch, side_effect_reasons
@@ -114,7 +113,7 @@ def test_two_processes_merging_at_once_lose_nothing(make_ws, mode):
         assert [outcome.code for outcome in outcomes] == [0, 0], [o.payload for o in outcomes]
 
         # Both patches are in the manifest, and the manifest is whole.
-        manifest = parse_manifest(json.loads(json.dumps(_plain(ws))))
+        manifest = parse_manifest(yaml.safe_load(ws.manifest_bytes()))
         assert {k for k, s in manifest.sources.items() if s.profile} == set(expected)
         assert _profiled(ws) == expected
 
@@ -129,12 +128,6 @@ def test_two_processes_merging_at_once_lose_nothing(make_ws, mode):
             assert ws.merge()["batch_closed"] is True
         assert ws.status()["open_batch"] is None
         assert not ws.workspace.ledger_path.exists()
-
-
-def _plain(ws):
-    import yaml
-
-    return yaml.safe_load(ws.workspace.manifest_path.read_text())
 
 
 def test_agents_working_at_once_and_a_merger_end_with_every_result_in(make_ws, sample):
@@ -339,16 +332,11 @@ def test_a_merge_killed_between_the_manifest_and_the_state_recovers_on_rerun(ws)
     assert rerun["batch_closed"] is True
     assert _profiled(ws) == {"erp": 3, "sensors": 7, "sheets": 6}
     # Applying the first patch a second time changed nothing.
-    assert ws.manifest().sources["erp"] == parse_manifest(_load(after_crash)).sources["erp"]
+    recovered = parse_manifest(yaml.safe_load(after_crash))
+    assert ws.manifest().sources["erp"] == recovered.sources["erp"]
     assert ws.task("profile-erp")["status"] == "merged"
     assert len(ws.status()["proposals"]) == 3
     assert not ws.workspace.ledger_path.exists()
-
-
-def _load(raw):
-    import yaml
-
-    return yaml.safe_load(raw)
 
 
 def test_a_merge_killed_in_the_middle_of_a_batch_recovers_on_rerun(ws):

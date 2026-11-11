@@ -38,12 +38,10 @@ from .result import (
     side_effect_reasons,
 )
 from .state import OntologyPin, TaskRecord
-from .tree import read_plain_file, scan, sha256_bytes
+from .tree import Scan, is_real_dir, read_plain_file, scan, sha256_bytes
 from .zone import OUTPUT_DIR, RESULT_FILE, Finding, task_dir
 
 log = Log("tasks.checks")
-
-STATE_KEY = ".dta/tasks.json"
 
 
 # -- pins ---------------------------------------------------------------------
@@ -146,9 +144,15 @@ def ledger_reasons(workspace: Workspace) -> list[dict[str, Any]]:
     return reasons
 
 
+def state_key(workspace: Workspace) -> str:
+    """The name under which the ledger knows the task state file."""
+    return str(workspace.tasks_state_path.relative_to(workspace.root))
+
+
 def state_file_changed(workspace: Workspace) -> bool:
     """True when the task state file itself differs from the ledger."""
-    return any(entry["path"] == STATE_KEY for entry in workspace.foreign_changes())
+    key = state_key(workspace)
+    return any(entry["path"] == key for entry in workspace.foreign_changes())
 
 
 def discard_stale_ledger(workspace: Workspace) -> None:
@@ -163,13 +167,13 @@ def discard_stale_ledger(workspace: Workspace) -> None:
     if not workspace.ledger_path.is_file():
         return
     if state_file_changed(workspace):
-        log.error("task state changed outside the toolkit", path=STATE_KEY)
+        log.error("task state changed outside the toolkit", path=state_key(workspace))
         raise refusal(
             "tasks.state.tampered",
             "the task state file was changed or removed outside the toolkit while a batch "
             "was being tracked; inspect .dta/tasks.json, then delete .dta/ledger.json to "
             "accept it as it is",
-            path=STATE_KEY,
+            path=state_key(workspace),
         )
     workspace.drop_ledger()
     log.warn("ledger left behind by an interrupted command was discarded")
@@ -224,10 +228,13 @@ def examine_output(workspace: Workspace, task: TaskRecord, *, sealed: bool) -> O
     computed, so what is parsed is exactly what the tree digest covers. With
     `sealed`, the tree must still be the one that was submitted.
     """
-    out_dir = task_dir(workspace, task.spec.id) / OUTPUT_DIR
+    base = task_dir(workspace, task.spec.id)
+    out_dir = base / OUTPUT_DIR
     where = f"tasks/{task.spec.id}/{OUTPUT_DIR}"
-    raw = read_plain_file(out_dir / RESULT_FILE)
-    tree = scan(out_dir)
+    # A link anywhere on the way would have the walk read some other directory.
+    reachable = is_real_dir(workspace.tasks_dir) and is_real_dir(base)
+    raw = read_plain_file(out_dir / RESULT_FILE) if reachable else None
+    tree = scan(out_dir) if reachable else Scan(exists=False)
     if not tree.exists:
         return Output(
             None, None, [reason("tasks.output.missing", f"{where} is missing or not a directory")]

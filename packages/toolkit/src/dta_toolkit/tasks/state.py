@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..workspace import Workspace
 from .catalogue import TaskSpec
+from .durable import write_recorded
 from .errors import TaskError
 
 log = Log("tasks.state")
@@ -133,4 +134,4 @@ def load_state(workspace: Workspace) -> TasksState:
 
 def save_state(workspace: Workspace, state: TasksState) -> None:
     """Replace the state file. The caller must hold the workspace lock."""
-    workspace.atomic_write(workspace.tasks_state_path, state.model_dump_json(indent=2) + "\n")
+    write_recorded(workspace, workspace.tasks_state_path, state.model_dump_json(indent=2) + "\n")

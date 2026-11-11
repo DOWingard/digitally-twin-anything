@@ -195,17 +195,23 @@ class Harness:
             outcomes.append(_outcome(process.returncode, stdout, stderr))
         return outcomes
 
-    def crash(self, gap: str, *args: str) -> int:
-        """Run a command in its own process and kill it at the named gap between two writes."""
+    def _killed(self, option: str, where: str, args: tuple[str, ...]) -> None:
         done = subprocess.run(
-            [sys.executable, str(_LAUNCHER), "--die-at", gap, *self._argv(args)],
+            [sys.executable, str(_LAUNCHER), option, where, *self._argv(args)],
             capture_output=True,
             text=True,
             env=self._env,
             timeout=120,
         )
-        assert done.returncode == 70, f"the command never reached {gap}: {done.stdout}"
-        return done.returncode
+        assert done.returncode == 70, f"the command never reached {where}: {done.stdout}"
+
+    def crash(self, gap: str, *args: str) -> None:
+        """Run a command in its own process and kill it at the named gap between two writes."""
+        self._killed("--die-at", gap, args)
+
+    def crash_recording(self, name: str, *args: str) -> None:
+        """Kill a command after it replaced the named file, before the ledger learned of it."""
+        self._killed("--die-recording", name, args)
 
     # -- the steps of a task's life ----------------------------------------
 

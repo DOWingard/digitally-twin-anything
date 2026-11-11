@@ -101,6 +101,15 @@ def spec_document(batch_id: str, task: TaskRecord) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+def _is_spec_leftover(name: str) -> bool:
+    """True for the temporary file an interrupted write of `task.json` leaves behind."""
+    return name.startswith(f".{SPEC_FILE}.") and name.endswith(".tmp")
+
+
+def spec_leftovers(base: Path) -> list[Path]:
+    return [base / name for name in sorted(os.listdir(base)) if _is_spec_leftover(name)]
+
+
 def inspect_task(
     workspace: Workspace, batch: Batch, task: TaskRecord, *, skip_output: bool = False
 ) -> list[Finding]:
@@ -113,13 +122,16 @@ def inspect_task(
         return []
     base = task_dir(workspace, task.spec.id)
     where = f"tasks/{task.spec.id}"
+    # Nothing is read or written through a link, at any level.
+    if not is_real_dir(workspace.tasks_dir):
+        return [Finding("zone", "tasks", "missing or not a directory")]
     if not is_real_dir(base):
         return [Finding("zone", where, "missing or not a directory")]
 
     findings = []
     names = sorted(os.listdir(base))
     for name in names:
-        if name not in (SPEC_FILE, INPUT_DIR, OUTPUT_DIR):
+        if name not in (SPEC_FILE, INPUT_DIR, OUTPUT_DIR) and not _is_spec_leftover(name):
             findings.append(Finding("zone", f"{where}/{name}", "not part of a task directory"))
     if not is_real_dir(base / INPUT_DIR):
         findings.append(Finding("input", f"{where}/{INPUT_DIR}", "missing or not a directory"))
