@@ -24,6 +24,9 @@ from typer.testing import CliRunner
 _LAUNCHER = Path(__file__).with_name("launch.py")
 _DTA = Path(sys.executable).with_name("dta")
 ONTOLOGY_FILE = "ontology/domain.yaml"
+# The most processes any test starts together. The machine is shared with other
+# test runs; a race is made more telling by repeating it, not by widening it.
+MAX_AT_ONCE = 4
 # Every way the program changes what a later process would find on disk.
 # Flushing a file to disk is left out: it changes nothing a reader could see.
 _CHANGES = (
@@ -226,6 +229,7 @@ class Harness:
 
     def race(self, *commands: tuple[str, ...]) -> list[Outcome]:
         """Run several commands at once, each in its own process, released together."""
+        assert len(commands) <= MAX_AT_ONCE, f"at most {MAX_AT_ONCE} processes at a time"
         line = self.root.parent / f"line-{time.monotonic_ns()}"
         line.mkdir()
         start = line / "go"

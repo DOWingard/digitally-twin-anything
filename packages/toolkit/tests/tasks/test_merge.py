@@ -130,11 +130,11 @@ def test_two_processes_merging_at_once_lose_nothing(make_ws, mode):
 
 
 def test_agents_working_at_once_and_a_merger_end_with_every_result_in(make_ws, sample):
-    count = 6
+    count = 4
     sample["sources"] = {
         f"s{n}": {"connector": "file", "location": f"{n}.csv"} for n in range(count)
     }
-    for round_number in range(3):
+    for round_number in range(6):
         ws = make_ws(f"busy-{round_number}", sample)
         ws.open("3")
         tokens = {}
@@ -145,13 +145,16 @@ def test_agents_working_at_once_and_a_merger_end_with_every_result_in(make_ws, s
         ):
             tokens[n] = outcome.result["token"]
             ws.write_result(f"profile-s{n}", ws.profile_patch(f"s{n}", rows=n + 1))
-        # Everybody submits while two mergers are already running.
+        # Two results are in already; the other two are submitted while two
+        # mergers are running, so that the mergers have work from the start.
+        for n in (0, 1):
+            assert ws.submit(f"profile-s{n}", tokens[n]).code == 0
         outcomes = ws.race(
-            *[("submit", f"profile-s{n}", "--token", tokens[n]) for n in range(count)],
+            *[("submit", f"profile-s{n}", "--token", tokens[n]) for n in (2, 3)],
             ("merge", "--all"),
             ("merge", "--all"),
         )
-        assert [outcome.code for outcome in outcomes] == [0] * (count + 2)
+        assert [outcome.code for outcome in outcomes] == [0] * 4
         ws.merge()  # whatever was submitted after the mergers had passed
         assert _profiled(ws) == {f"s{n}": n + 1 for n in range(count)}
         assert ws.status()["open_batch"] is None

@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from dta_toolkit.tasks import lifecycle
 
-RACERS = 8
-ROUNDS = 12
+RACERS = 4
+ROUNDS = 24
 
 
 def _digest(token):
@@ -65,7 +65,7 @@ def test_claims_of_different_tasks_at_once_are_all_kept(make_ws, sample):
     sample["sources"] = {
         f"s{n}": {"connector": "file", "location": f"{n}.csv"} for n in range(RACERS)
     }
-    for round_number in range(4):
+    for round_number in range(8):
         ws = make_ws(f"spread-{round_number}", sample)
         ws.open("3")
         outcomes = ws.race(
@@ -80,17 +80,17 @@ def test_claims_of_different_tasks_at_once_are_all_kept(make_ws, sample):
 
 
 def test_a_claim_and_a_takeover_attempt_racing_leave_one_holder(make_ws):
-    for round_number in range(4):
+    for round_number in range(6):
         ws = make_ws(f"mixed-{round_number}")
         ws.open("3")
         first = ws.claim("profile-erp", holder="first", ttl=1)
         time.sleep(1.2)
         outcomes = ws.race(
-            *[("claim", "profile-erp", "--holder", f"agent-{n}") for n in range(4)],
+            *[("claim", "profile-erp", "--holder", f"agent-{n}") for n in range(3)],
             ("claim", "profile-erp", "--holder", "first", "--renew", "--token", first),
         )
-        takeovers = [outcome for outcome in outcomes[:4] if outcome.code == 0]
-        renewal = outcomes[4]
+        takeovers = [outcome for outcome in outcomes[:3] if outcome.code == 0]
+        renewal = outcomes[3]
         record = ws.task("profile-erp")
         # Either the old holder renewed first and keeps the task, or exactly one
         # newcomer took it over and the old token is dead. Never both.
