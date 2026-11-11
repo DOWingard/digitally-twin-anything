@@ -194,6 +194,42 @@ def test_a_version_is_never_earlier_than_what_it_holds(sync_twin: MakeTwin, run:
     assert store.head() == head
 
 
+def test_without_an_interval_a_reduced_value_is_valid_at_the_time_of_its_version(
+    sync_twin: MakeTwin, run: Run
+):
+    twin = sync_twin(network_sources(), sync={"aggregation": "mean"})
+    run(twin, Sources(**network_tables(READINGS)))
+    store = twin.store
+
+    levels = [value for signal, _, value in READINGS if signal == "T1.level"]
+    assert objects(store, "Tank")["node:T1"]["level"] == pytest.approx(sum(levels) / len(levels))
+    assert [version.t for version in sync_versions(store)] == [T0 + 50 * MINUTE]
+    assert store.get("node:T1").provenance_of("level").t_valid == T0 + 50 * MINUTE
+
+
+def test_a_later_run_completes_an_interval_an_earlier_one_saw_part_of(
+    sync_twin: MakeTwin, run: Run
+):
+    rows: list[Reading] = [("T1.level", T0 + 20 * MINUTE, 1.0)]
+    twin = sync_twin(network_sources(), sync=BACKFILL)
+    run(twin, Sources(**network_tables(rows)))
+    store = twin.store
+    assert store.head().t == T0 + 30 * MINUTE
+
+    # Another reading of the same interval arrives after the interval was written.
+    rows.append(("T1.level", T0 + 25 * MINUTE, 1.5))
+    report = run(twin, Sources(**network_tables(rows)))
+
+    assert report.mappings["scada.levels"].rows_read == 1
+    # It is recorded at the time the twin had reached, with the time it was true at.
+    assert changes_of(store, "node:T1", "level") == [
+        (T0 + 30 * MINUTE, 1.0),
+        (T0 + 30 * MINUTE, 1.5),
+    ]
+    assert store.get("node:T1").provenance_of("level").t_valid == T0 + 25 * MINUTE
+    assert [version.seq for version in sync_versions(store)] == [2, 3]
+
+
 def lab_source() -> dict[str, Any]:
     """A second feed that writes another property of the junctions, as estimates."""
     return source(
