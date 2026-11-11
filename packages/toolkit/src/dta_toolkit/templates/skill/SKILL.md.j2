@@ -96,8 +96,9 @@ Read `reference/recipes.md` before the first request of each kind. In short:
 | To | Use |
 |---|---|
 | see one object, or list and filter objects of a type | `/objects/{type}`, `/objects/{type}/{uid}` |
+| find an object when only part of its uid is known | `/objects?uid_like=` |
 | see what an object is connected to | `/objects/{type}/{uid}/links`, `/graph/neighbors` |
-| find how two objects are connected | `/graph/paths` |
+| find how two objects are connected, over all links or only those that pass a condition | `/graph/paths`, with `edge_where` |
 | cut out a part of the graph | `POST /graph/subgraph` |
 | see how a property changed | `/objects/{type}/{uid}/history` |
 | see what changed between two versions | `/history/diff` |
@@ -117,7 +118,7 @@ All endpoints, with parameters: `reference/api.md`. Error codes and what to do a
 1. Read the schema before naming a type or property.
 2. Pin the version for multi-step work.
 3. Ask for tables as Arrow or Parquet when you need more than a few hundred rows and can read them. In JSON every table is paged (100 rows unless `limit`): follow `next_cursor` to the end before you count or conclude anything.
-4. Let the twin do the filtering, the traversal and the history: use `where`, the graph endpoints and the slice endpoint instead of downloading everything and searching it yourself.
+4. Let the twin do the filtering, the sorting, the counting, the traversal and the history: use `where`, `sort`, `count=true`, the graph endpoints with `edge_where`, and the slice endpoint instead of downloading everything and searching it yourself.
 5. Every value has provenance (`include=provenance`): where it came from, whether it was observed, inferred, assumed or simulated, and when it was true. Quote it when the user asks how a number is known.
 6. Report what the twin says. If the data does not answer a question, say that; do not fill the gap with an estimate presented as the twin's. A null is "no value held", never zero. If a definition leaves a choice open (how to integrate, what counts as an occurrence, which time zone a day is in), state the choice you made with the answer.
 {% if live %}

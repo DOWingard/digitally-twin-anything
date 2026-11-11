@@ -30,22 +30,27 @@ Responses that read data name the version they read: `"version": {"id", "seq", "
 
 | Endpoint | Returns |
 |---|---|
-| `GET /objects/{type}?columns=&where=&sort=&include=provenance` | objects of a type (or of an abstract class), paged in uid order |
+| `GET /objects/{type}?columns=&where=&sort=&count=&include=provenance` | objects of a type (or of an abstract class), paged in uid order, or in the order of `sort` (`<property>`, or `-<property>` for descending; objects without a value last) |
+| `GET /objects?uid_like=&types=&include_meta=&count=` | `uid` and `type` of every object, of any type, whose uid matches an SQL pattern (`%` any run of characters, `_` one), in uid order; the twin's own record types are left out unless `types` names them or `include_meta=true` |
 | `GET /objects/{type}/{uid}?include=provenance` | one object |
 | `GET /object/{uid}` | one object, whatever its type |
-| `GET /objects/{type}/{uid}/links?direction=out\|in\|both&edge_types=` | the object's edges and what is at their other end |
+| `GET /objects/{type}/{uid}/links?direction=out\|in\|both&edge_types=&edge_where=` | the object's edges and what is at their other end |
 | `GET /objects/{type}/{uid}/history?range=&properties=` | one row per version in which the object changed |
 
 `where` is repeated: `<property>:<op>:<value>` with `eq ne lt le gt ge in like null notnull`.
+
+`count=true` adds the number of rows of the whole listing, all pages: `total` in JSON, the header `x-dta-total` in every format.
 
 ## Graph
 
 | Endpoint | Returns |
 |---|---|
-| `GET /graph/neighbors?seed=&depth=&direction=&edge_types=&limit=` | nodes within `depth` hops of the seeds, with type and depth, and the edges between them |
-| `GET /graph/paths?source=&target=&max_depth=&k=&weight=&direction=&edge_types=` | up to `k` simple paths of at most `max_depth` hops (default 6, at most 64), shortest first; each path has `nodes`, `edges` (each with `src`, `dst`, `edge_type`, `link_uid`), `hops` and `cost`; links cannot be left out by a property (see the recipes) |
-| `POST /graph/subgraph` body `{seeds, depth, direction, edge_types, node_types, limit, properties}`; `part=nodes\|edges` picks the table for Arrow and Parquet | the part of the graph reached from the seeds |
-| `GET /graph/edges?edge_types=` | every edge: `src`, `dst`, `edge_type`, `link_uid` |
+| `GET /graph/neighbors?seed=&depth=&direction=&edge_types=&edge_where=&limit=` | nodes within `depth` hops of the seeds, with type and depth, and the edges between them |
+| `GET /graph/paths?source=&target=&max_depth=&k=&weight=&direction=&edge_types=&edge_where=` | up to `k` simple paths of at most `max_depth` hops (default 6, at most 64), shortest first; each path has `nodes`, `edges` (each with `src`, `dst`, `edge_type`, `link_uid`), `hops` and `cost` |
+| `POST /graph/subgraph` body `{seeds, depth, direction, edge_types, edge_where, node_types, limit, properties}`; `part=nodes\|edges` picks the table for Arrow and Parquet | the part of the graph reached from the seeds |
+| `GET /graph/edges?edge_types=&edge_where=` | every edge: `src`, `dst`, `edge_type`, `link_uid` |
+
+`edge_where` is repeated: `<LinkType>.<property>:<op>:<value>`, with the operators of `where`. A link of that type is followed, and returned, only when it passes; the name may be an abstract class, which stands for every link type under it. Links of types the filter does not name, and references, are not affected: combine it with `edge_types` to follow nothing else.
 
 ## History
 

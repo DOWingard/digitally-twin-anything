@@ -227,6 +227,17 @@ def test_every_endpoint_the_skill_mentions_is_in_its_own_reference(document: Any
         assert mentioned and mentioned <= listed, (name, sorted(mentioned - listed))
 
 
+def test_the_skill_teaches_filters_on_links_and_not_a_search_by_hand():
+    skill = render(manifest())
+    recipes, api, errors = (
+        skill.files[f"reference/{name}.md"] for name in ("recipes", "api", "errors")
+    )
+    assert "edge_where=<LinkType>.<property>:eq:<value>" in recipes
+    assert "cannot leave out links" not in recipes
+    assert "`GET /objects?uid_like=" in api and "x-dta-total" in api
+    assert "`graph.bad_edge_filter`" in errors and "api.sort_too_large" not in errors
+
+
 def test_text_from_the_manifest_cannot_break_the_front_matter():
     document = manifest(twin={"id": "x", "name": 'Odd: "name"\n---\nname: other'})
     front = front_matter(render(document).files[SKILL_FILE])

@@ -102,8 +102,15 @@ curl -sS -H "$AUTH" --get "$API/objects/<Type>" \
 curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>?at=$VERSION&include=provenance"
 # an object whose type you do not know
 curl -sS -H "$AUTH" "$API/object/<uid>?at=$VERSION"
+# objects of any type by a part of their uid, and how many there are
+curl -sS -H "$AUTH" --get "$API/objects" --data-urlencode "uid_like=%<text>%" \
+  --data-urlencode "at=$VERSION" --data-urlencode "count=true"
+# how many objects a filter matches, without reading them
+curl -sS -H "$AUTH" --get "$API/objects/<Type>" --data-urlencode "where=<p1>:gt:10" \
+  --data-urlencode "at=$VERSION" --data-urlencode "count=true" --data-urlencode "limit=1"
 ```
 
+- `sort=<property>` orders the listing by that property (`-<property>` descending); objects without a value come last, ties in uid order. `count=true` adds `total`, the number of rows of the whole listing: use it instead of paging to the end when only the number is wanted.
 - A JSON table is `{"data": [...], "next_cursor": ..., "version": {...}}`: 100 rows unless `limit` says otherwise. This holds for every table, not only object listings: `/graph/edges`, `/block/*`, versions and logs are paged the same way, and a short first page is not an error. While `next_cursor` is not null, repeat the request with `cursor=<next_cursor>`; the cursor keeps reading the version of the first page.
 - Filter operators: `eq ne lt le gt ge in like null notnull`. A value is read by the property's kind (number, `true`/`false`, ISO time with offset, date, text). `like` takes an SQL pattern (`%` any run, `_` one character).
 - An abstract type (listed under the schema's abstract classes) can be listed too: the rows are its concrete kinds, with the properties they share and a `_type` column.
@@ -120,6 +127,10 @@ curl -sS -H "$AUTH" "$API/objects/<Type>/<uid>/links?at=$VERSION&direction=both"
 curl -sS -H "$AUTH" "$API/graph/neighbors?seed=<uid>&depth=2&at=$VERSION"
 # up to 3 shortest paths between two objects, at most 30 hops, over chosen kinds of edge
 curl -sS -H "$AUTH" "$API/graph/paths?source=<uid>&target=<uid>&max_depth=30&k=3&edge_types=<LinkType>,<LinkType>&at=$VERSION"
+# the same, following a link of one type only when it passes a condition
+curl -sS -H "$AUTH" --get "$API/graph/paths" --data-urlencode "source=<uid>" --data-urlencode "target=<uid>" \
+  --data-urlencode "max_depth=30" --data-urlencode "edge_types=<LinkType>,<LinkType>" \
+  --data-urlencode "edge_where=<LinkType>.<property>:eq:<value>" --data-urlencode "at=$VERSION"
 ```
 
 ```python
@@ -139,7 +150,7 @@ all_edges = table("/graph/edges", at=version)
 - `max_depth` on `/graph/paths` is 6 unless given, and at most 64. An empty `paths` list means "no path within that many hops", not "not connected": raise `max_depth` before concluding anything.
 - `weight=<numeric link property>` on `/graph/paths` ranks paths by the sum of that property instead of by hops.
 - A path's edges are listed in the direction walked. With `direction=both` an edge's `src` and `dst` can therefore be the reverse of the link's own ends.
-- The path search cannot leave out links by a property (closed, out of service, or whatever a question's definition excludes). When a definition excludes some links: list them first (`/objects/<LinkType>?where=<property>:ne:<value>`), then either ask for several paths (`k`) and drop every path that uses one, or pull `/graph/edges`, remove them and search the rest yourself. Do this even when the first path returned looks right.
+- `edge_where=<LinkType>.<property>:<op>:<value>` (repeated; the operators of `where`) leaves out the links of that type that do not pass: closed, out of service, or whatever a question's definition excludes. It works on `/graph/paths`, `/graph/neighbors`, `/graph/subgraph` (in the body), `/graph/edges` and an object's `links`. When a definition excludes some links, pass it; do not search first and discard afterwards. Links of types the filter does not name are followed as before, so name every link type the definition speaks of, or restrict `edge_types` as well. A link without a value for the property does not pass `eq`; add a second request with `null` if the definition counts such links in.
 - If a traversal is refused as too broad (`graph.too_broad`), lower `depth` or `limit`, or name `edge_types`.
 
 ## 4. Look at the past
