@@ -506,22 +506,46 @@ class Loader:
 
     # -- the run ------------------------------------------------------------------
 
+    def _closing_key(self) -> int | None:
+        """The interval of the latest reading, which the run's last version stands for.
+
+        A run ends at the time its data reaches, whether or not the last
+        readings changed anything, so the twin's time does not depend on that.
+        """
+        interval_us = self.plan.interval_us
+        latest = max(self.prepared.cursors.values(), default=None)
+        if latest is None or interval_us is None or not self.prepared.timed:
+            return None
+        return bucket_end_us((latest - EPOCH) // timedelta(microseconds=1), interval_us)
+
     def run(self) -> None:
         keys: list[int | None] = list(self.prepared.keys)
-        if not keys and self.must_record:
+        closing = self._closing_key()
+        if closing is not None and (not keys or keys[-1] < closing):
+            keys.append(closing)
+        elif not keys and self.must_record:
             keys = [None]
-        total = len(keys)
         started = reported = time.monotonic()
-        for position, key in enumerate(keys):
+        position = 0
+        while position < len(keys):
+            key = keys[position]
             bucket = Bucket(None) if key is None else self._assemble(key)
-            self._write(bucket, last=position == total - 1)
+            self._write(bucket, last=position == len(keys) - 1)
+            position += 1
+            if self._due:
+                # A row set aside leaves the next row of its series due at an interval
+                # that may have had nothing else to write. It lies before the closing
+                # interval, so the last interval stays the last.
+                missing = set(self._due).difference(keys)
+                if missing:
+                    keys[position:] = sorted({*keys[position:], *missing})
             now = time.monotonic()
-            if now - reported >= _PROGRESS_EVERY_S and position + 1 < total:
+            if now - reported >= _PROGRESS_EVERY_S and position < len(keys):
                 reported = now
                 log.info(
                     "loading",
-                    intervals_done=position + 1,
-                    intervals=total,
+                    intervals_done=position,
+                    intervals=len(keys),
                     versions_written=len(self.versions),
                     rows_written=self.rows_written,
                     rows_set_aside=sum(self.dropped),
