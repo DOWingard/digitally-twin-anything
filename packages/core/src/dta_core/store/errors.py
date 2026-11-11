@@ -46,7 +46,7 @@ class OntologyMismatch(StoreError):
 class InvalidInput(StoreError):
     """An argument is malformed. The specific code is passed by the raiser:
     `store.invalid_meta`, `store.invalid_provenance`, `store.naive_datetime`,
-    `store.bad_time`, `store.bad_selector`, `store.bad_filter`,
+    `store.bad_time`, `store.bad_selector`, `store.bad_filter`, `store.bad_order`,
     `store.bad_branch_name`, `store.invalid_settings`."""
 
     code = "store.invalid_input"
