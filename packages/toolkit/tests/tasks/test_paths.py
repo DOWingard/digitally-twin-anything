@@ -139,12 +139,14 @@ def test_pin_ignores_own_keys_and_sees_everything_else():
 
 
 def test_pinned_paths_do_not_move_when_own_keys_appear_under_an_empty_parent():
-    owns = ["models.m1.candidates"]
+    owns = ["models.demand.candidates"]
     before = {"models": {}}
-    after = {"models": {"m1": {"candidates": {"c": {"family": "arima"}}}}}
-    assert pinned_paths(before, ["models.m1"], owns) == pinned_paths(after, ["models.m1"], owns)
-    foreign = {"models": {"m1": {"target": "Pump.flow"}}}
-    assert pinned_paths(foreign, ["models.m1"], owns) == ["models.m1.target"]
+    after = {"models": {"demand": {"candidates": {"c": {"family": "arima"}}}}}
+    assert pinned_paths(before, ["models.demand"], owns) == pinned_paths(
+        after, ["models.demand"], owns
+    )
+    foreign = {"models": {"demand": {"target": "Pump.flow"}}}
+    assert pinned_paths(foreign, ["models.demand"], owns) == ["models.demand.target"]
 
 
 def test_owned_patterns_cut_matching_children_only():

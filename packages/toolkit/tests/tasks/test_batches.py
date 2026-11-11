@@ -29,9 +29,9 @@ def test_a_task_does_not_conflict_with_itself():
 
 def test_two_writers_of_one_key_are_split_in_id_order():
     tasks = [
-        _task("t2", owns=["models.m1.candidates"]),
-        _task("t1", owns=["models.m1.candidates"]),
-        _task("t3", owns=["models.m2.candidates"]),
+        _task("t2", owns=["models.demand.candidates"]),
+        _task("t1", owns=["models.demand.candidates"]),
+        _task("t3", owns=["models.price.candidates"]),
     ]
     assert plan_batches(tasks) == [["t1", "t3"], ["t2"]]
 
@@ -46,8 +46,8 @@ def test_a_writer_is_split_from_a_reader_of_the_same_key():
 
 
 def test_writing_a_parent_conflicts_with_writing_a_child():
-    parent = _task("p", owns=["models.m1"])
-    child = _task("c", owns=["models.m1.features"])
+    parent = _task("p", owns=["models.demand"])
+    child = _task("c", owns=["models.demand.features"])
     assert conflicts(parent, child)
     assert plan_batches([parent, child]) == [["c"], ["p"]]
 

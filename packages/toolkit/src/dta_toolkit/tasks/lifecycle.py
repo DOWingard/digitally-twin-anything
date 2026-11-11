@@ -164,21 +164,15 @@ def open_batch(
             staged = build_plan(manifest, stage, state)
             specs = staged.to_open()
             if not specs:
+                log.info("open refused: nothing left to open", stage=stage)
                 raise refusal(
                     "tasks.batch.nothing",
                     f"stage {stage} has no unmerged task left to open",
                     stage=stage,
                 )
             ontology = ontology_pin(workspace, manifest)
-            if workspace.tasks_dir.is_symlink() or (
-                workspace.tasks_dir.exists() and not is_real_dir(workspace.tasks_dir)
-            ):
-                raise TaskError("tasks/ is not a directory", code="tasks.zone.unusable")
-            workspace.tasks_dir.mkdir(exist_ok=True)
-            records = {}
-            for spec in specs:
-                _fresh_task_dir(workspace, spec.id)
-                records[spec.id] = TaskRecord(
+            records = {
+                spec.id: TaskRecord(
                     spec=spec,
                     pins=Pins(
                         manifest_reads=manifest_pin(manifest, spec),
@@ -186,6 +180,17 @@ def open_batch(
                         store_version=store_version,
                     ),
                 )
+                for spec in specs
+            }
+            # Everything that can fail has been computed; only now touch the directories.
+            if workspace.tasks_dir.is_symlink() or (
+                workspace.tasks_dir.exists() and not is_real_dir(workspace.tasks_dir)
+            ):
+                log.error("tasks/ is not a directory", path=str(workspace.tasks_dir))
+                raise TaskError("tasks/ is not a directory", code="tasks.zone.unusable")
+            workspace.tasks_dir.mkdir(exist_ok=True)
+            for task_id in records:
+                _fresh_task_dir(workspace, task_id)
             batch = Batch(
                 id=f"b{len(state.batches) + 1}",
                 stage=stage,
