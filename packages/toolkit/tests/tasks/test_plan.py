@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 from dta_core.manifest import Owner, Status, parse_manifest, required_fields
-from dta_core.manifest.checks import GateInputs, current_stage, evaluate_gates
+from dta_core.manifest.checks import GateInputs, current_stage, evaluate_gates, subject_of
 from dta_toolkit.tasks.catalogue import CATALOGUE, Kind, tasks_for
 from dta_toolkit.tasks.errors import TaskError
 
@@ -175,7 +175,7 @@ def test_plan_without_a_stage_takes_the_one_the_build_stands_at(make_ws):
 
     # Access is the one gate before design that only a command can pass.
     assert stage() == 2
-    workspace.record_gate(2, True)
+    workspace.record_gate(2, True, subject_hash=subject_of(2, workspace.load_manifest()))
     assert stage() == 4
     before = workspace.fingerprint()
     assert ws.run("plan").result == _plan(ws, "4")
