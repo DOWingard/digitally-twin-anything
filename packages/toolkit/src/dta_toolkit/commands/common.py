@@ -1,8 +1,11 @@
-"""Helpers shared by the commands: gate inputs, the summary, and check failures."""
+"""Helpers shared by the commands: gate inputs, the summary, check failures, the stack's
+environment and keeping its values out of everything printed."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import contextlib
+import time
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -21,12 +24,75 @@ from dta_core.manifest.checks import (
 )
 from dta_core.ontology import OntologyError, load_ontology, type_signature
 
+from ..envfile import read_env, scrub
 from ..output import session
+from ..stack import Stack
 from ..workspace import Workspace
 
 log = Log("commands")
 
 ONTOLOGY_UNUSABLE = "ontology.unusable"
+ENV_MISSING = "env.missing"
+
+
+def require_complete_env(stack: Stack) -> dict[str, str]:
+    """The workspace's `.env` values, or a check failure naming every required name it lacks.
+
+    Compose interpolates the whole stack file, so even a command that starts
+    nothing but a one-off container needs every variable the file names.
+    """
+    values = read_env(stack.env_file)
+    absent = [name for name in stack.plan.required_env() if not values.get(name)]
+    if absent:
+        log.error("the stack's environment is incomplete", missing=absent)
+        raise CheckFailed(
+            f"{stack.env_file.name} does not set {', '.join(absent)}",
+            code=ENV_MISSING,
+            detail={"missing": absent, "env_file": str(stack.env_file)},
+        )
+    return values
+
+
+def scrub_values(value: Any, env: Mapping[str, str]) -> Any:
+    """`value` with every value of the environment file masked in every string, at any depth.
+
+    Runtime documents may quote a resolved location or a connection error, and
+    such text can carry a value that came from `.env`.
+    """
+    if isinstance(value, str):
+        return scrub(value, env)
+    if isinstance(value, dict):
+        return {key: scrub_values(item, env) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [scrub_values(item, env) for item in value]
+    return value
+
+
+@contextlib.contextmanager
+def timed(logger: Log, what: str, **context: Any) -> Iterator[dict[str, Any]]:
+    """Log the start and the end of a long step with its duration; failures with their context.
+
+    The yielded dictionary may be filled with fields to log at the end.
+    """
+    started = time.perf_counter()
+    extra: dict[str, Any] = {}
+    logger.debug(f"{what} started", **context)
+    try:
+        yield extra
+    except Exception as exc:
+        logger.error(
+            f"{what} failed",
+            exc=exc,
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
+            **context,
+        )
+        raise
+    logger.info(
+        f"{what} finished",
+        duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
+        **context,
+        **extra,
+    )
 
 
 def ontology_checks(workspace: Workspace, manifest: Manifest) -> list[Finding]:
@@ -56,6 +122,12 @@ def ontology_checks(workspace: Workspace, manifest: Manifest) -> list[Finding]:
 def all_findings(workspace: Workspace, manifest: Manifest) -> list[Finding]:
     """Findings of the manifest's own checks and of those against its ontology, in one order."""
     return gate_inputs(workspace, manifest).findings
+
+
+def ontology_path(workspace: Workspace, manifest: Manifest) -> Path | None:
+    """Where the manifest's ontology file is, or None when the manifest names none."""
+    relative = manifest.ontology.path if manifest.ontology else None
+    return workspace.root / relative if relative else None
 
 
 def gate_inputs(workspace: Workspace, manifest: Manifest) -> GateInputs:
