@@ -414,6 +414,11 @@ def test_a_table_read_takes_columns_filters_and_paging(store: Store):
     assert found("node:j1", at="#1") == []
     assert found("nobody%") == []
     assert found("' OR '1'='1") == []
+    assert store.count_found("node:%") == 5
+    assert store.count_found("%1") == 2
+    assert store.count_found("%1", types=["Tank"]) == 1
+    assert store.count_found("%1", types=[]) == 0
+    assert store.count_found("node:j1", at="#1") == 0
 
     with_prov = store.table("Tank", columns=["level"], prov=True, limit=1)
     assert with_prov.schema.names == ["uid", "level", "_prov"]
@@ -444,6 +449,8 @@ def test_a_table_read_takes_columns_filters_and_paging(store: Store):
         (lambda: store.find(5), "store.bad_filter"),
         (lambda: store.find("node:%", limit=-1), "store.bad_filter"),
         (lambda: store.find("node:%", types="Tank"), "store.bad_filter"),
+        (lambda: store.count_found(5), "store.bad_filter"),
+        (lambda: store.count_found("node:%", types="Tank"), "store.bad_filter"),
         (lambda: store.count("Tank", filter={"depth": 1}), "store.unknown_property"),
     ]:
         with pytest.raises((InvalidInput, UnknownType, UnknownProperty)) as caught:

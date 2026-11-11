@@ -298,6 +298,22 @@ class Reads:
         }
         return StoredObject(uid, type_name, values, provenance, version.ref)
 
+    @staticmethod
+    def _found(uid_like: str, types: Sequence[str] | None) -> tuple[str, list[Any]] | None:
+        """WHERE clause and parameters of a search by uid; None when it can match nothing."""
+        if not isinstance(uid_like, str):
+            raise invalid("bad_filter", "a uid pattern is text")
+        if types is not None:
+            if isinstance(types, str) or not all(isinstance(name, str) for name in types):
+                raise invalid("bad_filter", "types is a list of type names")
+            if not types:
+                return None
+        clauses, parameters = [f"`{UID_FIELD}` LIKE %s"], [uid_like]
+        if types is not None:
+            clauses.append(f"`type` IN ({', '.join(['%s'] * len(types))})")
+            parameters.extend(types)
+        return " AND ".join(clauses), parameters
+
     @public
     def find(
         self,
@@ -314,35 +330,49 @@ class Reads:
         objects of those types. One statement, whatever the number of types.
         """
         schema = pa.schema([pa.field(UID_FIELD, pa.string()), pa.field("type", pa.string())])
-        if not isinstance(uid_like, str):
-            raise invalid("bad_filter", "a uid pattern is text")
         for label, number in (("limit", limit), ("offset", offset)):
             if number is not None and (
                 isinstance(number, bool) or not isinstance(number, int) or number < 0
             ):
                 raise invalid("bad_filter", f"{label} must be a non-negative integer")
-        if types is not None:
-            if isinstance(types, str) or not all(isinstance(name, str) for name in types):
-                raise invalid("bad_filter", "types is a list of type names")
-            if not types:
-                return schema.empty_table()
-        clauses, parameters = [f"`{UID_FIELD}` LIKE %s"], [uid_like]
-        if types is not None:
-            clauses.append(f"`type` IN ({', '.join(['%s'] * len(types))})")
-            parameters.extend(types)
+        selection = self._found(uid_like, types)
+        if selection is None:
+            return schema.empty_table()
+        where, parameters = selection
         skipped = offset or 0
         most = _NO_LIMIT - skipped
         with self._reading("find") as conn:
             version = self._one(conn, at, branch)
             rows = conn.query(
                 f"SELECT `{UID_FIELD}`, `type` FROM `{ddl.OBJECT_TABLE}` AS OF %s "
-                f"WHERE {' AND '.join(clauses)} ORDER BY `{UID_FIELD}` LIMIT %s OFFSET %s",
+                f"WHERE {where} ORDER BY `{UID_FIELD}` LIMIT %s OFFSET %s",
                 [version.id, *parameters, most if limit is None else min(limit, most), skipped],
             )
         cells = _transpose(rows, 2)
         return pa.Table.from_arrays(
             [codec.text_column(cells[0]), codec.text_column(cells[1])], schema=schema
         )
+
+    @public
+    def count_found(
+        self,
+        uid_like: str,
+        types: Sequence[str] | None = None,
+        at: At = "head",
+        branch: str = LIVE_BRANCH,
+    ) -> int:
+        """How many objects `find` would give for the same pattern and types."""
+        selection = self._found(uid_like, types)
+        if selection is None:
+            return 0
+        where, parameters = selection
+        with self._reading("count_found") as conn:
+            version = self._one(conn, at, branch)
+            found = conn.scalar(
+                f"SELECT COUNT(*) FROM `{ddl.OBJECT_TABLE}` AS OF %s WHERE {where}",
+                [version.id, *parameters],
+            )
+        return int(found or 0)
 
     # -- one type -----------------------------------------------------------
 

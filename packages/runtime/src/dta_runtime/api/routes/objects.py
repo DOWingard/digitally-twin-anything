@@ -272,7 +272,7 @@ def find_objects(
             # This page reaches the end of the selection, so it gives the total itself.
             total = offset + table.num_rows
         else:
-            total = services.store.find(uid_like, types=covered, at=version).num_rows
+            total = services.store.count_found(uid_like, types=covered, at=version)
     log.debug(
         "objects found by uid",
         types=None if covered is None else len(covered),
