@@ -19,6 +19,7 @@ dev = [
     "dta-toolkit",
     "dta-runtime",
     "schemathesis>=4.0",
+    "selenium>=4.25",
 ]
 
 [tool.uv.sources]
