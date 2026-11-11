@@ -13,10 +13,15 @@ from starlette.responses import Response
 
 from ...graph import (
     LOCAL_DEPTH,
+    EdgeFilter,
+    GraphSnapshot,
     Neighbourhood,
     cached_neighbourhood,
     edge_weights,
+    follow_mask,
+    keep_passing,
     local_neighbourhood,
+    passing_links,
     resolve_types,
     select_kinds,
     shortest_paths,
@@ -25,10 +30,21 @@ from ...graph.local import IN_CHUNK
 from ...graph.result import ordered_edges
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, tabular, versioned
+from ..filters import edge_where_identity, parse_edge_where
 from ..formats import json_response, negotiate, rows, table_response
 from ..models import GraphOut, Page, PathsOut, SubgraphRequest
 from ..paging import paged_response, start
-from ..params import At, Branch, Cursor, EdgeTypes, FormatParam, Limit, page_limit, split_list
+from ..params import (
+    At,
+    Branch,
+    Cursor,
+    EdgeTypes,
+    EdgeWhere,
+    FormatParam,
+    Limit,
+    page_limit,
+    split_list,
+)
 from ..problems import ApiError
 from ..services import Services
 from ..tables import fingerprint, json_properties, mark_json, version_json
@@ -69,6 +85,22 @@ def known_seeds(
     return {uid: found[uid] for uid in wanted}
 
 
+def filter_mask(
+    services: Services,
+    ontology: Ontology,
+    version: VersionRef,
+    snapshot: GraphSnapshot,
+    edge_filter: EdgeFilter | None,
+) -> dict[str, Any]:
+    """The `mask` and `mask_key` arguments of a traversal of the cached graph under a filter."""
+    if not edge_filter:
+        return {}
+    return {
+        "mask": follow_mask(services.store, ontology, version, snapshot, edge_filter),
+        "mask_key": edge_filter.key,
+    }
+
+
 def graph_response(
     result: Neighbourhood,
     nodes: pa.Table,
@@ -101,7 +133,8 @@ def graph_response(
     summary="Objects within some hops of others",
     description="Nodes with their type and depth, and the edges leaving nodes nearer than "
     "`depth` in the direction followed. Up to depth 2 the answer is read from the tables; "
-    "deeper, from the version's cached graph. `limit` bounds the nodes, nearest first; "
+    "deeper, from the version's cached graph; both give the same answer. `edge_where` "
+    "follows only the links that pass it. `limit` bounds the nodes, nearest first; "
     "`truncated` says whether some were left out.",
     response_model=GraphOut,
     responses=tabular(400, 404),
@@ -113,6 +146,7 @@ def neighbors(
     depth: Annotated[int, Query(ge=0, le=MAX_DEPTH, description="Hops from the seeds")] = 1,
     direction: Direction = "both",
     edge_types: EdgeTypes = None,
+    edge_where: EdgeWhere = None,
     limit: NodeLimit = 1_000,
     at: At = "head",
     branch: Branch = LIVE_BRANCH,
@@ -124,14 +158,23 @@ def neighbors(
     ontology = services.ontology(version)
     kinds = split_list(edge_types)
     select_kinds(ontology, kinds)
+    edge_filter = parse_edge_where(edge_where, ontology)
     seeds = known_seeds(services, ontology, version, split_list(seed) or [])
     if depth <= LOCAL_DEPTH:
         result = local_neighbourhood(
-            services.store, ontology, version, seeds, depth, direction, kinds, limit
+            services.store, ontology, version, seeds, depth, direction, kinds, limit, edge_filter
         )
     else:
         snapshot = services.graphs.get(version, ontology)
-        result = cached_neighbourhood(snapshot, seeds, depth, direction, kinds, limit)
+        result = cached_neighbourhood(
+            snapshot,
+            seeds,
+            depth,
+            direction,
+            kinds,
+            limit,
+            **filter_mask(services, ontology, version, snapshot, edge_filter),
+        )
     return graph_response(result, result.nodes, chosen, part, version)
 
 
@@ -143,7 +186,8 @@ def neighbors(
     "`weight` "
     "a path costs its number of hops; with it, the sum over its edges of that numeric "
     "property of their link type. An edge without the property costs `default_weight`, or is "
-    "not followed when none is given. Paths are distinct sequences of nodes; between two "
+    "not followed when none is given. `edge_where` follows only the links that pass it. "
+    "Paths are distinct sequences of nodes; between two "
     "nodes the cheapest edge is reported, in its stored direction.",
     response_model=PathsOut,
     responses=versioned(400, 404),
@@ -176,6 +220,7 @@ def paths(
     ] = None,
     direction: Direction = "both",
     edge_types: EdgeTypes = None,
+    edge_where: EdgeWhere = None,
     at: At = "head",
     branch: Branch = LIVE_BRANCH,
 ) -> Response:
@@ -183,6 +228,7 @@ def paths(
     ontology = services.ontology(version)
     kinds = split_list(edge_types)
     select_kinds(ontology, kinds)
+    edge_filter = parse_edge_where(edge_where, ontology)
     known_seeds(services, ontology, version, [source, target])
     snapshot = services.graphs.get(version, ontology)
     weights = None
@@ -198,6 +244,7 @@ def paths(
         kinds,
         weights,
         weight_key=(weight, default_weight),
+        **filter_mask(services, ontology, version, snapshot, edge_filter),
     )
     return json_response(
         {
@@ -287,7 +334,8 @@ def with_properties(
     description="Breadth-first from the seeds over the version's cached graph. Nodes with "
     "type, depth and the properties asked for, and the edges among them leaving nodes nearer "
     "than `depth`. `node_types` keeps only nodes of those types besides the seeds, the "
-    "traversal itself passing through every node. `limit` bounds the nodes, nearest first.",
+    "traversal itself passing through every node. `edge_where` follows only the links that "
+    "pass it. `limit` bounds the nodes, nearest first.",
     response_model=GraphOut,
     responses=tabular(400, 404),
 )
@@ -305,12 +353,20 @@ def subgraph(
     ontology = services.ontology(version)
     kinds = split_list(body.edge_types)
     select_kinds(ontology, kinds)
+    edge_filter = parse_edge_where(body.edge_where, ontology)
     node_types = _node_types(ontology, split_list(body.node_types))
     properties = split_list(body.properties)
     seeds = known_seeds(services, ontology, version, body.seeds)
     snapshot = services.graphs.get(version, ontology)
     result = cached_neighbourhood(
-        snapshot, seeds, body.depth, body.direction, kinds, body.limit, node_types
+        snapshot,
+        seeds,
+        body.depth,
+        body.direction,
+        kinds,
+        body.limit,
+        node_types,
+        **filter_mask(services, ontology, version, snapshot, edge_filter),
     )
     nodes = result.nodes
     if properties:
@@ -322,7 +378,8 @@ def subgraph(
     "/edges",
     summary="The edge projection of the graph",
     description="`src`, `dst`, `edge_type` and `link_uid` (null for a reference) of every "
-    "edge, or of the edge types named.",
+    "edge, or of the edge types named; with `edge_where`, of a filtered link type only the "
+    "edges whose link passes.",
     response_model=Page,
     responses=tabular(400, 404),
 )
@@ -330,6 +387,7 @@ def edges(
     request: Request,
     services: ServicesDep,
     edge_types: EdgeTypes = None,
+    edge_where: EdgeWhere = None,
     at: At = "head",
     branch: Branch = LIVE_BRANCH,
     limit: Limit = None,
@@ -339,7 +397,13 @@ def edges(
     chosen = negotiate(fmt, request.headers.get("accept"))
     per_page = page_limit(chosen, limit)
     kinds = split_list(edge_types)
-    query = fingerprint("edges", kinds)
+    query = fingerprint("edges", kinds, *edge_where_identity(edge_where))
     version, position = start(services, cursor, "edges", query, at, branch)
-    table = ordered_edges(services.store.edges(kinds, at=version))
-    return paged_response(table, chosen, version, per_page, position, "edges", query)
+    table = services.store.edges(kinds, at=version)
+    if edge_where:
+        ontology = services.ontology(version)
+        edge_filter = parse_edge_where(edge_where, ontology)
+        if edge_filter:
+            passing = passing_links(services.store, ontology, version, edge_filter)
+            table = keep_passing(table, passing)
+    return paged_response(ordered_edges(table), chosen, version, per_page, position, "edges", query)
