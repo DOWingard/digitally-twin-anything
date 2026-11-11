@@ -8,10 +8,16 @@ manifest gives the same stack on any machine. What differs between machines
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import subprocess
+import time
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+from typing import Any
 
 from dta_core.errors import DtaError
 from dta_core.log import Log
@@ -20,10 +26,38 @@ from dta_core.manifest.models import ConnectorKind
 from dta_core.sources import PLACEHOLDER, placeholders
 from jinja2 import Environment, StrictUndefined
 
+from .envfile import missing, read_env, scrub
+from .workspace import Workspace
+
 log = Log("stack")
 
 STORE_PASSWORD_ENV = "DTA_STORE_PASSWORD"
 COMPOSE_FILE = "compose.yaml"
+STORE_SERVICE = "store"
+API_SERVICE = "api"
+UI_SERVICE = "ui"
+RUNTIME_COMMAND = "dta-runtime"
+UP_TIMEOUT_S = 300.0
+_COMMAND_TIMEOUT_S = 120.0
+_STDERR_TAIL = 2000
+# What `docker` itself needs from the caller's environment. Nothing else is
+# passed on, so the values compose fills in come from the .env file alone and
+# a variable that happens to be set in the caller's shell cannot override it.
+_PASSED_ENV = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "TMPDIR",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_CERT_PATH",
+    "SSH_AUTH_SOCK",
+)
 _TEMPLATE = "templates/stack/compose.yaml.j2"
 _FILE_SCHEME = "file://"
 _DATABASE_MAX = 64
@@ -31,9 +65,11 @@ _NETWORK_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 
 
 class StackError(DtaError):
-    """The manifest cannot be turned into a stack."""
+    """The manifest cannot be turned into a stack, or a command against the stack failed."""
 
     code = "stack.invalid"
+    # Set when a compose command exited with an error: what it printed may still matter.
+    completed: subprocess.CompletedProcess[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -193,3 +229,220 @@ def compose_command(plan: StackPlan, stack_dir: Path, env_file: Path) -> list[st
         "--file",
         str(stack_dir / COMPOSE_FILE),
     ]
+
+
+class Stack:
+    """The stack of one workspace on this machine, and every command run against it.
+
+    All access to a twin's sources and store goes through here: the toolkit
+    itself never opens either, it runs the twin's own image inside the stack,
+    where addresses, credentials and networks are the ones the twin will use.
+    """
+
+    def __init__(self, workspace: Workspace, manifest: Manifest) -> None:
+        self.workspace = workspace
+        self.plan = plan_stack(manifest)
+        self.compose_path = workspace.stack_dir / COMPOSE_FILE
+        self.env_file = workspace.env_path
+
+    # -- files ---------------------------------------------------------------
+
+    def write(self) -> bool:
+        """Bring the compose file in line with the manifest. True when it changed."""
+        text = render_compose(self.plan)
+        with self.workspace.exclusive():
+            if self.compose_path.is_file() and self.compose_path.read_text("utf-8") == text:
+                return False
+            self.workspace.atomic_write(self.compose_path, text)
+        log.info("compose file written", path=str(self.compose_path), project=self.plan.project)
+        return True
+
+    def missing_env(self) -> list[str]:
+        """Variables the stack needs that the workspace's .env does not set."""
+        return missing(self.plan.required_env(), read_env(self.env_file))
+
+    def require_env(self) -> None:
+        absent = self.missing_env()
+        if absent:
+            log.error("the stack's environment is incomplete", missing=absent)
+            raise StackError(
+                f"{self.env_file.name} does not set {', '.join(absent)}",
+                code="stack.env_missing",
+                detail={"missing": absent, "env_file": str(self.env_file)},
+            )
+
+    # -- docker compose ------------------------------------------------------
+
+    def compose(
+        self,
+        *args: str,
+        input: str | None = None,
+        timeout: float | None = _COMMAND_TIMEOUT_S,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run `docker compose <args>` for this stack and return it when it exits with 0."""
+        if shutil.which("docker") is None:
+            log.error("docker is not installed or not on the PATH")
+            raise StackError("the docker command is not available", code="stack.docker_unavailable")
+        self.require_env()
+        if not self.compose_path.is_file():
+            self.write()
+        command = [*compose_command(self.plan, self.workspace.stack_dir, self.env_file), *args]
+        environment = {name: os.environ[name] for name in _PASSED_ENV if name in os.environ}
+        started = time.perf_counter()
+        try:
+            done = subprocess.run(
+                command,
+                input=input,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=environment,
+                cwd=self.workspace.root,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            log.error("compose command timed out", args=list(args), timeout_s=timeout)
+            raise StackError(
+                f"`docker compose {' '.join(args)}` did not finish within {timeout:g} s",
+                code="stack.timeout",
+                detail={"args": list(args), "timeout_s": timeout},
+            ) from exc
+        except OSError as exc:
+            log.error("docker could not be started", exc=exc)
+            raise StackError(
+                f"docker could not be started: {type(exc).__name__}",
+                code="stack.docker_unavailable",
+            ) from exc
+        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
+        if done.returncode != 0:
+            tail = scrub(done.stderr[-_STDERR_TAIL:], read_env(self.env_file))
+            code = "stack.command_failed"
+            if "Cannot connect to the Docker daemon" in done.stderr:
+                code = "stack.docker_unavailable"
+            log.error(
+                "compose command failed",
+                args=list(args),
+                exit_code=done.returncode,
+                elapsed_ms=elapsed_ms,
+                stderr=tail,
+                code=code,
+            )
+            error = StackError(
+                f"`docker compose {' '.join(args)}` failed with exit code {done.returncode}",
+                code=code,
+                detail={"args": list(args), "exit_code": done.returncode, "stderr": tail},
+            )
+            error.completed = done  # the caller may still want what was printed
+            raise error
+        log.debug("compose command finished", args=list(args), elapsed_ms=elapsed_ms)
+        return done
+
+    def up(self, *services: str, timeout: float = UP_TIMEOUT_S) -> None:
+        """Start the named services (all of them when none is named) and wait until healthy."""
+        self.write()
+        self.compose("up", "--detach", "--wait", *services, timeout=timeout)
+        log.info("stack services are up", services=list(services) or "all")
+
+    def down(self, *, volumes: bool = False) -> None:
+        """Stop and remove the stack's containers; its data too only when `volumes` is set."""
+        extra = ["--volumes"] if volumes else []
+        self.compose("down", "--remove-orphans", *extra, timeout=UP_TIMEOUT_S)
+        log.info("stack is down", volumes_removed=volumes)
+
+    def services(self) -> list[dict[str, Any]]:
+        """State of each container of the stack: service, state and health."""
+        done = self.compose("ps", "--all", "--format", "json")
+        rows: list[dict[str, Any]] = []
+        for line in done.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parsed = json.loads(line)
+            for entry in parsed if isinstance(parsed, list) else [parsed]:
+                rows.append(
+                    {
+                        "service": entry.get("Service"),
+                        "state": entry.get("State"),
+                        "health": entry.get("Health") or None,
+                        "container": entry.get("Name"),
+                    }
+                )
+        return sorted(rows, key=lambda row: str(row["service"]))
+
+    def logs(self, service: str | None = None, *, tail: int = 200) -> str:
+        """The last lines the stack's containers wrote, values of the .env file masked."""
+        names = [service] if service else []
+        done = self.compose("logs", "--no-color", "--tail", str(tail), *names)
+        return scrub(done.stdout, read_env(self.env_file))
+
+    # -- the twin's own commands --------------------------------------------
+
+    def runtime(
+        self,
+        *args: str,
+        input: str | None = None,
+        store: bool = True,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Run `dta-runtime <args>` in a one-off container of the stack; its JSON document.
+
+        With `store` the store is started first, as the command needs it; without,
+        nothing else is started, which is all a look at the sources needs.
+        A command that reports an error raises it under the runtime's own code.
+        """
+        self.write()
+        flags = ["--rm", "-T"] if store else ["--rm", "-T", "--no-deps"]
+        failed: StackError | None = None
+        try:
+            done = self.compose(
+                "run", *flags, API_SERVICE, RUNTIME_COMMAND, *args, input=input, timeout=timeout
+            )
+            stdout = done.stdout
+        except StackError as exc:
+            if exc.completed is None:
+                raise
+            failed, stdout = exc, exc.completed.stdout
+        document = _last_document(stdout)
+        if document is None:
+            if failed is not None:
+                raise failed
+            log.error("runtime command printed no document", command=args[0] if args else None)
+            raise StackError(
+                f"`{RUNTIME_COMMAND} {' '.join(args)}` printed no JSON document",
+                code="stack.bad_output",
+                detail={"args": list(args)},
+            )
+        if "error" in document:
+            reported = document["error"]
+            log.error(
+                "runtime command reported an error",
+                command=args[0] if args else None,
+                code=reported.get("code"),
+                trace_id=reported.get("trace_id"),
+            )
+            raise StackError(
+                str(reported.get("message") or "the command failed"),
+                code=str(reported.get("code") or "stack.runtime_failed"),
+                detail={
+                    "command": args[0] if args else None,
+                    "trace_id": reported.get("trace_id"),
+                    **(reported.get("detail") or {}),
+                },
+            ) from failed
+        if failed is not None:
+            raise failed
+        return document
+
+
+def _last_document(stdout: str) -> dict[str, Any] | None:
+    """The JSON object on the last non-empty line of a command's standard output."""
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None

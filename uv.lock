@@ -510,6 +510,8 @@ dependencies = [
     { name = "filelock" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "python-dotenv" },
+    { name = "schemathesis" },
     { name = "typer" },
 ]
 
@@ -519,6 +521,8 @@ requires-dist = [
     { name = "filelock", specifier = ">=3.16" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
+    { name = "python-dotenv", specifier = ">=1.0" },
+    { name = "schemathesis", specifier = ">=4.0" },
     { name = "typer", specifier = ">=0.15" },
 ]
 
