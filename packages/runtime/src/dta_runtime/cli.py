@@ -98,6 +98,9 @@ def install(
                 "actions": list(installed.actions),
                 "version": {"id": version.id, "seq": version.seq, "t": version.t.isoformat()},
                 "ontology": installed.twin.ontology.hash,
+                # Whether sync has written anything yet: a twin that holds data is kept
+                # in step by its runs and does not need its history loaded again.
+                "loaded": bool(installed.twin.store.versions(cause="sync", limit=1)),
             }
         finally:
             installed.twin.close()
