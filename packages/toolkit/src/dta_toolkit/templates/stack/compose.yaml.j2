@@ -1,0 +1,98 @@
+# Stack of the twin "{{ twin_id }}". Written by the toolkit from the manifest:
+# change the manifest and build again instead of editing this file.
+#
+# Every value that differs between machines, and every secret, comes from the
+# workspace's .env file; compose refuses to start while one is missing.
+# Host ports are bound to the loopback interface only.
+
+name: {{ project }}
+
+x-runtime: &runtime
+  image: {{ runtime_image }}
+  restart: unless-stopped
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  store:
+    image: {{ store_image }}
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      DOLT_ROOT_PASSWORD: ${{ '{' }}{{ store_password_env }}:?{{ store_password_env }} is required}
+      DOLT_ROOT_HOST: "%"
+    volumes:
+      - store-data:/var/lib/dolt
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - dolt --host 127.0.0.1 --port 3306 --user root --password "$$DOLT_ROOT_PASSWORD" --no-tls sql -q "select 1"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  api:
+    <<: *runtime
+    command: ["dta-runtime", "api"]
+    depends_on:
+      store:
+        condition: service_healthy
+    environment:
+      DTA_STORE_HOST: store
+      DTA_STORE_PORT: "3306"
+      DTA_STORE_USER: root
+      DTA_STORE_PASSWORD: ${{ '{' }}{{ store_password_env }}:?{{ store_password_env }} is required}
+      DTA_STORE_DATABASE: {{ database }}
+      DTA_API_TOKEN: ${{ '{' }}{{ token_env }}:?{{ token_env }} is required}
+      DTA_ARTIFACTS_DIR: /var/lib/dta/artifacts
+      DTA_LOGS_DIR: /var/log/dta
+{%- for name in source_env %}
+      {{ name }}: ${{ '{' }}{{ name }}:?{{ name }} is required}
+{%- endfor %}
+    volumes:
+      - artifacts:/var/lib/dta/artifacts
+      - logs:/var/log/dta
+{%- for mount in source_mounts %}
+      # A source that is a folder on this machine, readable and nothing more.
+      - {{ mount.host }}:{{ mount.container }}:ro
+{%- endfor %}
+    ports:
+      - "127.0.0.1:${{ '{' }}{{ api_port_env }}:?{{ api_port_env }} is required}:8000"
+    healthcheck:
+      test: ["CMD", "dta-runtime", "health", "api"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+{%- if ui %}
+
+  ui:
+    <<: *runtime
+    command: ["dta-runtime", "ui"]
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DTA_API_URL: http://api:8000
+      DTA_API_TOKEN: ${{ '{' }}{{ token_env }}:?{{ token_env }} is required}
+      DTA_LOGS_DIR: /var/log/dta
+    volumes:
+      - logs:/var/log/dta
+    ports:
+      - "127.0.0.1:${{ '{' }}{{ ui_port_env }}:?{{ ui_port_env }} is required}:8050"
+    healthcheck:
+      test: ["CMD", "dta-runtime", "health", "ui"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+{%- endif %}
+
+volumes:
+  store-data: {}
+  artifacts: {}
+  logs: {}

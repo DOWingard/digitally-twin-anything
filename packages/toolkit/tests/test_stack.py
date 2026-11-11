@@ -1,0 +1,173 @@
+"""The compose file of a twin is derived from its manifest alone."""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+from dta_core.manifest import Manifest, parse_manifest
+from dta_toolkit.stack import (
+    STORE_PASSWORD_ENV,
+    Mount,
+    StackError,
+    compose_command,
+    plan_stack,
+    render_compose,
+)
+
+
+def manifest(**sections: Any) -> Manifest:
+    document: dict[str, Any] = {
+        "twin": {"id": "water-static", "name": "Water"},
+        "sources": {
+            "registry": {
+                "connector": "sql",
+                "location": "postgresql://${REG_USER}:${REG_PASSWORD}@${REG_HOST}/registry",
+                "env": ["REG_USER", "REG_PASSWORD", "REG_HOST"],
+            },
+            "telemetry": {
+                "connector": "file",
+                "location": "file://${RECORDING_DIR}/telemetry",
+                "env": ["RECORDING_DIR"],
+            },
+            "feeds": {
+                "connector": "file",
+                "location": "file://${RECORDING_DIR}/feeds",
+                "options": {"datasets": {"meters": {"glob": "${METER_GLOB}", "format": "csv"}}},
+            },
+            "archive": {"connector": "file", "location": "file:///srv/archive/${REGION}/files"},
+            "remote": {"connector": "file", "location": "https://example.org/feeds"},
+        },
+    }
+    document.update(sections)
+    return parse_manifest(document, origin="test")
+
+
+def test_the_plan_names_everything_the_stack_needs():
+    plan = plan_stack(manifest())
+    assert plan.project == "dta-water-static"
+    assert plan.database == "twin_water_static"
+    assert plan.store_image == "dolthub/dolt-sql-server:2.7.3"
+    assert plan.source_env == (
+        "METER_GLOB",
+        "RECORDING_DIR",
+        "REGION",
+        "REG_HOST",
+        "REG_PASSWORD",
+        "REG_USER",
+    )
+    # One mount per local folder; a remote location needs none.
+    assert plan.source_mounts == (
+        Mount(host="/srv/archive", container="/srv/archive"),
+        Mount(host="${RECORDING_DIR:?RECORDING_DIR is required}", container="${RECORDING_DIR}"),
+    )
+    assert plan.required_env()[:4] == (
+        STORE_PASSWORD_ENV,
+        "DTA_API_TOKEN",
+        "DTA_API_PORT",
+        "DTA_UI_PORT",
+    )
+    assert set(plan.required_env()[4:]) == set(plan.source_env)
+
+
+def test_the_compose_file_holds_three_services_and_no_literal_secret():
+    text = render_compose(plan_stack(manifest()))
+    document = yaml.safe_load(text)
+    assert document["name"] == "dta-water-static"
+    assert set(document["services"]) == {"store", "api", "ui"}
+    assert set(document["volumes"]) == {"store-data", "artifacts", "logs"}
+    store, api, ui = (document["services"][name] for name in ("store", "api", "ui"))
+    assert "ports" not in store, "the store is reachable only inside the stack"
+    assert api["ports"] == ["127.0.0.1:${DTA_API_PORT:?DTA_API_PORT is required}:8000"]
+    assert ui["ports"] == ["127.0.0.1:${DTA_UI_PORT:?DTA_UI_PORT is required}:8050"]
+    assert api["environment"]["DTA_STORE_DATABASE"] == "twin_water_static"
+    assert api["environment"]["REG_PASSWORD"] == "${REG_PASSWORD:?REG_PASSWORD is required}"
+    assert "${RECORDING_DIR:?RECORDING_DIR is required}:${RECORDING_DIR}:ro" in api["volumes"]
+    assert "/srv/archive:/srv/archive:ro" in api["volumes"]
+    # The interface holds the token and reaches the twin through the API, not the store.
+    assert set(ui["environment"]) == {"DTA_API_URL", "DTA_API_TOKEN", "DTA_LOGS_DIR"}
+    assert api["depends_on"] == {"store": {"condition": "service_healthy"}}
+    assert ui["depends_on"] == {"api": {"condition": "service_healthy"}}
+    for service in (store, api, ui):
+        assert "healthcheck" in service and service["restart"] == "unless-stopped"
+    # Every value that could be a secret is a reference to a variable that must be set.
+    for service in (store, api, ui):
+        for name, value in service["environment"].items():
+            if any(word in name for word in ("PASSWORD", "TOKEN", "KEY", "SECRET")):
+                assert value.startswith("${") and ":?" in value, name
+
+
+def test_a_twin_without_the_interface_has_no_ui_service():
+    plan = plan_stack(manifest(interfaces={"ui": False}))
+    document = yaml.safe_load(render_compose(plan))
+    assert set(document["services"]) == {"store", "api"}
+    assert "DTA_UI_PORT" not in plan.required_env()
+
+
+def test_images_and_variable_names_come_from_the_manifest():
+    plan = plan_stack(
+        manifest(
+            runtime={"image": "registry.example.org/dta-runtime:9", "store_image": "dolt:x"},
+            interfaces={"token_env": "MY_TOKEN", "api_port_env": "MY_API", "ui_port_env": "MY_UI"},
+        )
+    )
+    document = yaml.safe_load(render_compose(plan))
+    assert document["services"]["api"]["image"] == "registry.example.org/dta-runtime:9"
+    assert document["services"]["store"]["image"] == "dolt:x"
+    assert document["services"]["api"]["environment"]["DTA_API_TOKEN"].startswith("${MY_TOKEN:?")
+    assert document["services"]["ui"]["ports"] == ["127.0.0.1:${MY_UI:?MY_UI is required}:8050"]
+
+
+def test_the_same_manifest_always_gives_the_same_file():
+    assert render_compose(plan_stack(manifest())) == render_compose(plan_stack(manifest()))
+
+
+def test_a_relative_local_source_and_a_missing_twin_id_are_refused():
+    with pytest.raises(StackError):
+        plan_stack(
+            manifest(sources={"local": {"connector": "file", "location": "file://data/files"}})
+        )
+    with pytest.raises(StackError):
+        plan_stack(manifest(twin={"name": "No id"}))
+
+
+ENV = {
+    STORE_PASSWORD_ENV: "p" * 24,
+    "DTA_API_TOKEN": "t" * 32,
+    "DTA_API_PORT": "18700",
+    "DTA_UI_PORT": "18701",
+    "METER_GLOB": "meters/*.csv",
+    "RECORDING_DIR": "/srv/recording",
+    "REGION": "north",
+    "REG_HOST": "db",
+    "REG_PASSWORD": "r" * 24,
+    "REG_USER": "reader",
+}
+
+
+def _config(tmp_path: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    plan = plan_stack(manifest())
+    (tmp_path / "compose.yaml").write_text(render_compose(plan), encoding="utf-8")
+    env_file = tmp_path / ".env"
+    env_file.write_text("".join(f"{name}={value}\n" for name, value in env.items()))
+    return subprocess.run(
+        [*compose_command(plan, tmp_path, env_file), "config", "--quiet"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="needs the docker command")
+def test_compose_accepts_the_file_and_refuses_to_start_without_a_variable(tmp_path: Path):
+    accepted = _config(tmp_path, ENV)
+    assert accepted.returncode == 0, accepted.stderr
+    for missing in (STORE_PASSWORD_ENV, "DTA_API_TOKEN", "DTA_UI_PORT", "REG_PASSWORD"):
+        refused = _config(tmp_path, {k: v for k, v in ENV.items() if k != missing})
+        assert refused.returncode != 0
+        assert missing in refused.stderr
