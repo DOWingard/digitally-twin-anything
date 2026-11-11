@@ -139,3 +139,34 @@ def test_a_derived_entry_on_a_computed_value_is_not_stale():
         "sources.plant.nothing",
         "sources.plant.profile.datasets",
     ]
+
+
+def test_a_live_twin_needs_a_refresh_period_only_of_sources_that_deliver_timed_rows():
+    """A register read whole and compared has no period at which something new appears."""
+    register = {
+        "connector": "sql",
+        "location": "postgresql://${DB_USER}@db/assets",
+        "mappings": {
+            "tanks": {"dataset": "tanks", "object_type": "Tank", "identity": ["id"]},
+        },
+    }
+    historian = {
+        "connector": "file",
+        "location": "file:///data/readings",
+        "mappings": {
+            "levels": {
+                "dataset": "levels",
+                "object_type": "Tank",
+                "identity": ["tank"],
+                "valid_time": "ts",
+            },
+        },
+    }
+    document = _draft(tier="live")
+    document["sources"] = {"register": register, "historian": historian}
+    missing = _paths(gaps(parse_manifest(document)))
+    assert "sources.historian.refresh_period" in missing
+    assert "sources.register.refresh_period" not in missing
+
+    document["contract"]["tier"] = "static"
+    assert "sources.historian.refresh_period" not in _paths(gaps(parse_manifest(document)))

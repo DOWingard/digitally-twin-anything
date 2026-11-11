@@ -282,7 +282,9 @@ class Source(Base):
     location: str | None = req(Owner.agent, "Address with ${VARIABLE} placeholders; never a secret")
     env: list[str] = opt(Owner.agent, "Names of the variables the connector needs", list)
     options: dict[str, Any] = opt(Owner.agent, "Connector settings such as format or paging", dict)
-    refresh_period: timedelta | None = req(Owner.agent, "How often the source changes", when="live")
+    refresh_period: timedelta | None = req(
+        Owner.agent, "How often the source hands over something new", when="live_series"
+    )
     rate_limit_period: timedelta | None = opt(Owner.agent, "Shortest allowed gap between reads")
     edits_past: bool = opt(Owner.agent, "The source rewrites its own history", False)
     host_local: bool = opt(Owner.agent, "A changing file on the user's machine", False)

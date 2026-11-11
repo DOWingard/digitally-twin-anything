@@ -60,8 +60,22 @@ def _is_executor(_manifest: Manifest, parent: BaseModel) -> bool:
 
 # Named conditions a required field can depend on. Each takes the whole manifest
 # and the object that holds the field.
+def _is_live_series(manifest: Manifest, node: BaseModel) -> bool:
+    """A source of a live twin that delivers rows with a time of their own.
+
+    Only such a source has a period at which something new appears. One that
+    is read whole and compared, such as a register edited now and then, has
+    none: each run sees it as it is.
+    """
+    mappings = getattr(node, "mappings", None) or {}
+    return _is_live(manifest, node) and any(
+        mapping.valid_time is not None for mapping in mappings.values()
+    )
+
+
 CONDITIONS: dict[str, Callable[[Manifest, BaseModel], bool]] = {
     "live": _is_live,
+    "live_series": _is_live_series,
     "forecast": _is_forecast,
     "objective": _needs_objective,
     "webhook": _is_webhook,
