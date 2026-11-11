@@ -28,6 +28,11 @@ class JobOut(BaseModel):
 
     id: str = Field(description="32 hexadecimal characters", examples=["9f2c" * 8])
     kind: str = Field(description="What the job does: `sync` is one run of the sync pipeline")
+    lane: str = Field(
+        description="The queue the job waits in: jobs of one lane run one at a time, in "
+        "order; `sync` holds the sync runs, `compute` everything else that takes long",
+        examples=["sync"],
+    )
     state: JobState
     params: dict[str, Any] = Field(
         description="What the job was asked to do; for `sync`, `sources` and `replay`",

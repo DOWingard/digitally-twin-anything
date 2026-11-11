@@ -35,6 +35,7 @@ POST_LIMIT_MS = 200.0
 JOB_FIELDS = {
     "id",
     "kind",
+    "lane",
     "state",
     "params",
     "idempotency_key",

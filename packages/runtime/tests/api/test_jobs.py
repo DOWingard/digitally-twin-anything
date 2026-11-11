@@ -1,5 +1,5 @@
-"""Background jobs: listed and read through `/lifecycle/jobs`, run one at a time, the last 200
-kept, and stopped with the API."""
+"""Background jobs: listed and read through `/lifecycle/jobs`, run one at a time in each lane,
+the last 200 kept, and stopped with the API."""
 
 from __future__ import annotations
 
@@ -54,8 +54,10 @@ def test_jobs_are_listed_newest_first_and_filtered(live_api: MakeLive, plant_dir
     live = live_api(sources)
     sync = live.run({})
     runner = live.services.jobs
-    broken = runner.submit("probe", {"n": 1}, failing(DtaError("no", code="probe.refused")))
-    fine = runner.submit("probe", {"n": 2}, quick(2))
+    broken = runner.submit(
+        "probe", {"n": 1}, lane="sync", work=failing(DtaError("no", code="probe.refused"))
+    )
+    fine = runner.submit("probe", {"n": 2}, lane="sync", work=quick(2))
     finished(runner, fine.id)
 
     listed = live.ok(JOBS)["data"]
@@ -74,6 +76,14 @@ def test_jobs_are_listed_newest_first_and_filtered(live_api: MakeLive, plant_dir
     assert [(job["id"], job["result"]) for job in both] == [(fine.id, {"n": 2})]
     assert [job["id"] for job in live.ok(JOBS, params={"limit": 1})["data"]] == [fine.id]
     assert live.ok(JOBS, params={"state": "running"})["data"] == []
+    # A sync run waits in the sync lane; other work says which lane it waits in.
+    assert sync["lane"] == "sync"
+    slow = runner.submit("fit", {}, quick(3), lane="compute")
+    finished(runner, slow.id)
+    assert [job["id"] for job in live.ok(JOBS, params={"lane": "compute"})["data"]] == [slow.id]
+    in_sync = [job["id"] for job in live.ok(JOBS, params={"lane": "sync"})["data"]]
+    assert in_sync == [fine.id, broken.id, sync["id"]]
+    assert live.get(JOBS, params={"lane": "other"}).status_code == 400
 
     one = live.ok(f"{JOBS}/{fine.id}")
     assert one == {"data": listed[0]}
@@ -88,8 +98,8 @@ def test_past_200_jobs_the_oldest_finished_ones_are_dropped(live_api: MakeLive, 
     live = live_api(sources)
     runner = live.services.jobs
     gate = threading.Event()
-    blocker = runner.submit("probe", {"held": True}, held(gate))
-    queued = [runner.submit("probe", {"n": n}, quick(n)) for n in range(205)]
+    blocker = runner.submit("probe", {"held": True}, lane="sync", work=held(gate))
+    queued = [runner.submit("probe", {"n": n}, lane="sync", work=quick(n)) for n in range(205)]
 
     # Nothing has finished: every job is kept, beyond 200.
     assert runner.get(blocker.id)["state"] == "running"
@@ -107,14 +117,72 @@ def test_past_200_jobs_the_oldest_finished_ones_are_dropped(live_api: MakeLive, 
     assert live.ok(f"{JOBS}/{queued[5].id}")["data"]["result"] == {"n": 5}
 
 
+def test_a_long_job_of_one_lane_does_not_hold_up_the_other():
+    runner = JobRunner()
+    runner.start()
+    gate = threading.Event()
+    try:
+        fit = runner.submit("fit", {}, held(gate), lane="compute")
+        until_running(runner, fit.id)
+        behind = runner.submit("backtest", {}, quick(1), lane="compute")
+        # Sync runs go on while the fit holds its lane, in the order they were made.
+        runs = [runner.submit("sync", {"n": n}, quick(n), lane="sync") for n in range(3)]
+        done = [finished(runner, run.id) for run in runs]
+        assert [found["result"] for found in done] == [{"n": 0}, {"n": 1}, {"n": 2}]
+        assert runner.get(fit.id)["state"] == "running"
+        assert runner.get(behind.id)["state"] == "queued"
+        assert runner.active("fit").id == fit.id and runner.active("sync") is None
+        gate.set()
+        assert finished(runner, fit.id)["result"] == {"held": True}
+        assert finished(runner, behind.id)["result"] == {"n": 1}
+        with pytest.raises(ValueError, match="no lane 'gpu'"):
+            runner.submit("fit", {}, quick(2), lane="gpu")
+    finally:
+        gate.set()
+        runner.shutdown()
+
+
+def test_stopping_waits_for_the_job_in_progress_of_every_lane(log_lines: Path):
+    runner = JobRunner(shutdown_wait_s=30)
+    runner.start()
+    gate = threading.Event()
+    running = [
+        runner.submit("sync", {}, held(gate), lane="sync"),
+        runner.submit("fit", {}, held(gate), lane="compute"),
+    ]
+    for job in running:
+        until_running(runner, job.id)
+    waiting = [
+        runner.submit("sync", {}, quick(1), lane="sync"),
+        runner.submit("fit", {}, quick(2), lane="compute"),
+    ]
+    threading.Timer(0.3, gate.set).start()
+
+    runner.shutdown()
+
+    assert [runner.get(job.id)["state"] for job in running] == ["succeeded", "succeeded"]
+    assert [runner.get(job.id)["error"]["code"] for job in waiting] == ["job.cancelled"] * 2
+    waited = [
+        line["data"]["lane"]
+        for line in records(log_lines)
+        if line["message"] == "waiting for the job in progress before stopping"
+    ]
+    assert sorted(waited) == ["compute", "sync"]
+
+
 def test_what_goes_wrong_in_a_job_is_kept_as_a_code_and_a_message(log_lines: Path):
     runner = JobRunner()
     runner.start()
     try:
-        known = runner.submit("probe", {}, failing(DtaError("the store refused", code="store.x")))
-        odd = runner.submit("probe", {}, failing(ValueError(LEAK)))
+        known = runner.submit(
+            "probe", {}, lane="sync", work=failing(DtaError("the store refused", code="store.x"))
+        )
+        odd = runner.submit("probe", {}, lane="sync", work=failing(ValueError(LEAK)))
         told = runner.submit(
-            "probe", {}, lambda: Outcome(result={"r": 1}, error={"code": "c", "message": "m"})
+            "probe",
+            {},
+            lambda: Outcome(result={"r": 1}, error={"code": "c", "message": "m"}),
+            lane="sync",
         )
         assert finished(runner, known.id)["error"] == {
             "code": "store.x",
@@ -151,9 +219,9 @@ def test_stopping_cancels_what_is_queued_and_waits_for_the_job_in_progress(log_l
     runner = JobRunner(shutdown_wait_s=30)
     runner.start()
     gate = threading.Event()
-    running = runner.submit("probe", {}, held(gate))
+    running = runner.submit("probe", {}, lane="sync", work=held(gate))
     until_running(runner, running.id)
-    waiting = [runner.submit("probe", {"n": n}, quick(n)) for n in range(3)]
+    waiting = [runner.submit("probe", {"n": n}, lane="sync", work=quick(n)) for n in range(3)]
     threading.Timer(0.3, gate.set).start()
 
     runner.shutdown()
@@ -163,7 +231,7 @@ def test_stopping_cancels_what_is_queued_and_waits_for_the_job_in_progress(log_l
         found = runner.get(job.id)
         assert (found["state"], found["error"]["code"]) == ("failed", "job.cancelled")
     with pytest.raises(JobsClosed) as refused:
-        runner.submit("probe", {}, quick(9))
+        runner.submit("probe", {}, lane="sync", work=quick(9))
     assert refused.value.code == "job.closed"
     messages = [line["message"] for line in records(log_lines)]
     assert "queued jobs cancelled: the API is stopping" in messages
@@ -174,7 +242,7 @@ def test_a_job_that_outlasts_the_wait_is_left_to_its_thread(log_lines: Path):
     runner = JobRunner(shutdown_wait_s=0.2)
     runner.start()
     gate = threading.Event()
-    running = runner.submit("probe", {}, held(gate))
+    running = runner.submit("probe", {}, lane="sync", work=held(gate))
     try:
         until_running(runner, running.id)
         runner.shutdown()

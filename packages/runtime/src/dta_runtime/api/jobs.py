@@ -1,10 +1,16 @@
-"""Work the API does in the background, one job at a time, in the order the jobs were made.
+"""Work the API does in the background, in lanes: the jobs of a lane run one at a time, in
+the order they were made, and the lanes run side by side.
 
 A job is a kind, its parameters, a callable and the outcome of calling it;
 nothing here knows what any kind of work does. Jobs live in the memory of the
 API process: the last `KEEP` are kept, and a job that is queued or running is
 never dropped. Where a durable record of the work is needed, the work keeps it
 itself (a sync run records itself in the twin).
+
+Sync runs have a lane of their own, so that work which takes minutes (fitting
+and testing a model, running a scenario) never delays the run that keeps the
+twin's data fresh. Two jobs of different lanes may write at the same moment:
+each write is one commit under the store's own lock.
 
 No wall-clock time appears in a job: jobs are ordered by `sequence`, a counter
 of this process, and `duration_ms` is measured on a monotonic timer.
@@ -33,6 +39,12 @@ RUNNING = "running"
 SUCCEEDED = "succeeded"
 FAILED = "failed"
 ACTIVE = frozenset({QUEUED, RUNNING})
+
+# Runs of the sync pipeline, and nothing else.
+SYNC_LANE = "sync"
+# Everything else that takes long: fits, backtests, scenario runs, scheduled functions.
+COMPUTE_LANE = "compute"
+LANES = (SYNC_LANE, COMPUTE_LANE)
 
 KEEP = 200
 SHUTDOWN_WAIT_S = 30.0
@@ -63,6 +75,7 @@ Work = Callable[[], Outcome]
 class Job:
     id: str
     kind: str
+    lane: str
     params: dict[str, Any]
     idempotency_key: str | None
     trace_id: str
@@ -78,6 +91,7 @@ class Job:
         return {
             "id": self.id,
             "kind": self.kind,
+            "lane": self.lane,
             "state": self.state,
             "params": self.params,
             "idempotency_key": self.idempotency_key,
@@ -94,7 +108,7 @@ def _elapsed_ms(started: float) -> int:
 
 
 class JobRunner:
-    """Jobs and the one worker that runs them."""
+    """Jobs and the workers that run them, one worker for each lane."""
 
     def __init__(self, *, keep: int = KEEP, shutdown_wait_s: float = SHUTDOWN_WAIT_S) -> None:
         self._keep = keep
@@ -103,53 +117,61 @@ class JobRunner:
         self._lock = threading.Lock()
         self._jobs: OrderedDict[str, Job] = OrderedDict()
         self._sequence = itertools.count(1)
-        self._executor: ThreadPoolExecutor | None = None
+        self._executors: dict[str, ThreadPoolExecutor] = {}
         self._closing = False
 
     # -- life -----------------------------------------------------------------------
 
     def start(self) -> None:
         with self._lock:
-            if self._executor is not None:
+            if self._executors:
                 return
             self._closing = False
-            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dta-job")
-        log.info("job worker started", workers=1, keep=self._keep)
+            self._executors = {
+                lane: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"dta-job-{lane}")
+                for lane in LANES
+            }
+        log.info("job workers started", lanes=list(LANES), keep=self._keep)
 
     def shutdown(self) -> None:
-        """Cancel what is queued and wait, for a while, for the job in progress."""
+        """Cancel what is queued and wait, for a while, for the jobs in progress."""
         started = time.perf_counter()
         with self._lock:
-            if self._closing or self._executor is None:
+            if self._closing or not self._executors:
                 return
             self._closing = True
-            executor = self._executor
+            executors = list(self._executors.values())
             cancelled = [job for job in self._jobs.values() if job.state == QUEUED]
             for job in cancelled:
                 self._cancel(job)
-            running = next((job for job in self._jobs.values() if job.state == RUNNING), None)
+            in_progress = [job for job in self._jobs.values() if job.state == RUNNING]
         if cancelled:
             log.warn(
                 "queued jobs cancelled: the API is stopping",
                 jobs=[job.id for job in cancelled],
                 count=len(cancelled),
             )
-        executor.shutdown(wait=False, cancel_futures=True)
-        if running is not None:
+        for executor in executors:
+            executor.shutdown(wait=False, cancel_futures=True)
+        # One wait shared by the jobs in progress, not one each.
+        deadline = time.monotonic() + self._shutdown_wait_s
+        for running in in_progress:
             log.info(
                 "waiting for the job in progress before stopping",
                 job=running.id,
                 kind=running.kind,
+                lane=running.lane,
                 wait_s=self._shutdown_wait_s,
             )
-            if not running.done.wait(self._shutdown_wait_s):
+            if not running.done.wait(max(0.0, deadline - time.monotonic())):
                 log.warn(
                     "gave up waiting for the job in progress; it goes on in its thread",
                     job=running.id,
                     kind=running.kind,
+                    lane=running.lane,
                     waited_s=self._shutdown_wait_s,
                 )
-        log.info("job worker stopped", elapsed_ms=_elapsed_ms(started))
+        log.info("job workers stopped", elapsed_ms=_elapsed_ms(started))
 
     # -- jobs -----------------------------------------------------------------------
 
@@ -159,30 +181,35 @@ class JobRunner:
         params: Mapping[str, Any],
         work: Work,
         *,
+        lane: str,
         idempotency_key: str | None = None,
         trace_id: str | None = None,
     ) -> Job:
-        """A new job, queued behind those made before it."""
+        """A new job, queued behind those made before it in its lane."""
+        if lane not in LANES:
+            raise ValueError(f"no lane {lane!r}; the lanes are {', '.join(LANES)}")
         with self._lock:
-            if self._closing or self._executor is None:
+            if self._closing or not self._executors:
                 log.warn("a job was asked for while the API is not running", kind=kind)
                 raise JobsClosed("the API is stopping; no job can be started")
             job = Job(
                 id=secrets.token_hex(16),
                 kind=kind,
+                lane=lane,
                 params=dict(params),
                 idempotency_key=idempotency_key,
                 trace_id=trace_id or current_trace_id() or new_trace_id(),
                 sequence=next(self._sequence),
             )
             self._jobs[job.id] = job
-            # Handed to the worker under the lock, so the worker's order is the sequence.
-            self._executor.submit(self._execute, job, work)
+            # Handed to the worker under the lock, so the order in a lane is the sequence.
+            self._executors[lane].submit(self._execute, job, work)
             self._prune()
         log.info(
             "job created",
             job=job.id,
             kind=kind,
+            lane=lane,
             sequence=job.sequence,
             params=job.params,
             job_trace_id=job.trace_id,
@@ -199,13 +226,22 @@ class JobRunner:
             return job.document()
 
     def list(
-        self, *, kind: str | None = None, state: str | None = None, limit: int = 50
+        self,
+        *,
+        kind: str | None = None,
+        state: str | None = None,
+        lane: str | None = None,
+        limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Documents of the jobs kept, newest first."""
         found: list[dict[str, Any]] = []
         with self._lock:
             for job in reversed(self._jobs.values()):
-                if (kind is None or job.kind == kind) and (state is None or job.state == state):
+                if (
+                    (kind is None or job.kind == kind)
+                    and (state is None or job.state == state)
+                    and (lane is None or job.lane == lane)
+                ):
                     found.append(job.document())
                     if len(found) >= limit:
                         break
@@ -231,7 +267,7 @@ class JobRunner:
                     log.warn("job cancelled before it started: the API is stopping", job=job.id)
                     return
                 job.state = RUNNING
-            log.info("job started", job=job.id, kind=job.kind, sequence=job.sequence)
+            log.info("job started", job=job.id, kind=job.kind, lane=job.lane, sequence=job.sequence)
             started = time.perf_counter()
             result: dict[str, Any] | None = None
             # What the job holds if the work is interrupted by something that is not an error.

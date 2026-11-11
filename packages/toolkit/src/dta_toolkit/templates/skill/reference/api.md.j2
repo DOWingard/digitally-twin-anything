@@ -87,7 +87,7 @@ As JSON these are paged like every other table; as Arrow or Parquet they come wh
 
 | Endpoint | Returns |
 |---|---|
-| `GET /lifecycle/jobs?kind=&state=` | work the API does in the background, newest first: `id`, `kind`, `state` (`queued`, `running`, `succeeded`, `failed`), `result`, `error`, `trace_id`, `duration_ms` |
+| `GET /lifecycle/jobs?kind=&state=&lane=` | work the API does in the background, newest first: `id`, `kind`, `lane` (`sync` for sync runs, `compute` for other long work; the jobs of a lane run one at a time, in order), `state` (`queued`, `running`, `succeeded`, `failed`), `result`, `error`, `trace_id`, `duration_ms` |
 | `GET /lifecycle/jobs/{id}` | one job, as `{"data": {...}}` |
 | `GET /lifecycle/logs?level=&since=&context=&trace_id=&service=&limit=` | the twin's own structured log lines, newest first |
 

@@ -23,7 +23,7 @@ from dta_core.manifest.models import Source
 
 from ..sync import Replay, run
 from ..sync.report import FAILED
-from .jobs import Job, JobRunner, Outcome, Work
+from .jobs import SYNC_LANE, Job, JobRunner, Outcome, Work
 from .problems import ApiError
 
 if TYPE_CHECKING:
@@ -140,7 +140,11 @@ class SyncJobs:
                 log.info("the same sync run is already queued or running", job=active.id)
                 return document, False
             job = self._runner.submit(
-                SYNC_KIND, params.as_dict(), self._work_for(params), idempotency_key=key
+                SYNC_KIND,
+                params.as_dict(),
+                self._work_for(params),
+                lane=SYNC_LANE,
+                idempotency_key=key,
             )
             self._remember(key, params, job)
             return self._runner.document(job), True
