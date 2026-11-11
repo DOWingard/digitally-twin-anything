@@ -123,6 +123,24 @@ def clock_source(view: ManifestView) -> Iterator[Issue]:
         )
 
 
+@check("ref.incremental")
+def incremental(view: ManifestView) -> Iterator[Issue]:
+    """A dataset read on by its time column has to be a dataset, and has to have the column."""
+    for sid, source in sorted(view.sources.items()):
+        for name, column in sorted(source.incremental.items()):
+            path = f"sources.{sid}.incremental.{name}"
+            if name in (source.views or {}):
+                yield Issue(path, f"'{name}' is a view; name the dataset it reads instead")
+                continue
+            if source.profile is None:
+                continue
+            dataset = source.profile.datasets.get(name)
+            if dataset is None:
+                yield Issue(path, f"dataset '{name}' is not in the profile of source '{sid}'")
+            elif column not in dataset.columns:
+                yield Issue(path, f"column '{column}' is not in dataset '{name}'")
+
+
 def _property_refs(view: ManifestView) -> Iterator[tuple[str, str]]:
     for qid, question in sorted(view.questions.items()):
         for ref in question.targets or []:

@@ -291,6 +291,13 @@ class Source(Base):
     views: dict[str, str] = opt(
         Owner.agent, "Named SELECT statements over the datasets read in one run", dict
     )
+    incremental: dict[str, str] = opt(
+        Owner.agent,
+        "Datasets read on from where the last run stopped, each with the column holding the "
+        "time of its rows. A view over one sees only the new rows, so each of its rows must "
+        "depend only on rows of the dataset with the same time",
+        dict,
+    )
     profile: SourceProfile | None = req(Owner.agent, "Result of read-only profiling")
     mappings: dict[str, Mapping] | None = req(Owner.agent, "How rows become ontology objects")
 

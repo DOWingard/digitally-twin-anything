@@ -18,6 +18,7 @@ EXPECTED_CODES = {
     "ref.property_format",
     "ref.mapping_columns",
     "ref.clock_source",
+    "ref.incremental",
     "control.bounds",
     "control.binding",
     "action.executor_addon",
