@@ -1,0 +1,170 @@
+"""The twin's HTTP API: the one way the browser interface, agents and pipelines read a twin."""
+
+from __future__ import annotations
+
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
+
+import anyio.to_thread
+from dta_core.errors import ConfigError, DtaError
+from dta_core.log import Log
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import JSONResponse, Response
+
+from ..graph import GraphCache
+from ..settings import ENV_API_TOKEN, MIN_TOKEN_LENGTH, RuntimeSettings
+from ..twin import Twin, open_twin
+from .docs import API_PREFIX, OPEN_PATHS, build_openapi
+from .middleware import ApiMiddleware
+from .models import Health
+from .problems import error_response, problem
+from .routes import block, graph, history, lifecycle, meta, objects
+from .services import Services
+
+log = Log("api")
+
+__all__ = ["API_PREFIX", "GRAPH_CACHE_VERSIONS", "create_app"]
+
+GRAPH_CACHE_VERSIONS = 4
+_HTTP_CODES = {404: "api.not_found", 405: "api.method_not_allowed"}
+
+
+def _version() -> str:
+    try:
+        return package_version("dta-runtime")
+    except PackageNotFoundError:
+        return "0"
+
+
+async def _on_dta_error(request: Request, exc: Exception) -> Response:
+    assert isinstance(exc, DtaError)
+    return error_response(exc)
+
+
+async def _on_invalid_request(request: Request, exc: Exception) -> Response:
+    assert isinstance(exc, RequestValidationError)
+    problems = [
+        {"loc": [str(part) for part in error.get("loc", ())], "msg": error.get("msg", "")}
+        for error in exc.errors()
+    ]
+    log.info("request refused: invalid parameters", count=len(problems))
+    first = problems[0] if problems else {"loc": [], "msg": "invalid request"}
+    detail = f"{'.'.join(first['loc'])}: {first['msg']}" if first["loc"] else first["msg"]
+    return problem(400, "api.bad_request", f"invalid request: {detail}", errors=problems)
+
+
+async def _on_http_error(request: Request, exc: Exception) -> Response:
+    assert isinstance(exc, StarletteHTTPException)
+    code = _HTTP_CODES.get(exc.status_code, "api.bad_request")
+    status = exc.status_code if exc.status_code in _HTTP_CODES else 400
+    return problem(status, code, str(exc.detail), headers=getattr(exc, "headers", None))
+
+
+def create_app(
+    settings: RuntimeSettings,
+    twin: Twin | None = None,
+    *,
+    graph_cache_versions: int = GRAPH_CACHE_VERSIONS,
+) -> FastAPI:
+    """The API of the twin whose store `settings` names.
+
+    The twin is opened when the application starts and closed when it stops.
+    A twin passed in is used as it is and left open.
+    """
+    if not settings.api_token or len(settings.api_token) < MIN_TOKEN_LENGTH:
+        log.error("the API token is missing or too short", name=ENV_API_TOKEN)
+        raise ConfigError(
+            f"{ENV_API_TOKEN} must hold at least {MIN_TOKEN_LENGTH} characters",
+            code="config.bad_value",
+            detail={"name": ENV_API_TOKEN},
+        )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        started = time.perf_counter()
+        try:
+            opened = (
+                twin
+                if twin is not None
+                else await anyio.to_thread.run_sync(open_twin, settings.store)
+            )
+        except DtaError as exc:
+            log.error(
+                "the API cannot start: the twin cannot be opened",
+                exc=exc,
+                code=exc.code,
+                database=settings.store.database,
+            )
+            raise
+        # Handlers talking to the store run in worker threads. With no more
+        # workers than pooled connections, a burst of requests waits for a
+        # worker instead of failing for want of a connection.
+        workers = settings.store.pool_size + settings.store.pool_overflow
+        anyio.to_thread.current_default_thread_limiter().total_tokens = workers
+        app.state.services = Services(
+            twin=opened,
+            settings=settings,
+            graphs=GraphCache(opened.store, capacity=graph_cache_versions),
+        )
+        log.info(
+            "API started",
+            database=settings.store.database,
+            workers=workers,
+            graph_cache_versions=graph_cache_versions,
+            logs_dir=str(settings.logs_dir),
+            elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
+        )
+        try:
+            yield
+        finally:
+            graphs = app.state.services.graphs
+            if twin is None:
+                opened.close()
+            log.info(
+                "API stopped",
+                database=settings.store.database,
+                graph_builds=graphs.builds,
+                graph_hits=graphs.hits,
+            )
+
+    app = FastAPI(
+        title="Digital twin API",
+        version=_version(),
+        description="Read access to a digital twin: a versioned, typed graph of a real system. "
+        "Every route but /healthz needs `Authorization: Bearer <token>`. Data is read at a "
+        "version chosen with `at` and `branch`; each response says which version it describes. "
+        "Errors are RFC 9457 problem documents with a stable `code`.",
+        lifespan=lifespan,
+        openapi_url=None,
+        docs_url=None,
+        redoc_url=None,
+    )
+    app.add_exception_handler(DtaError, _on_dta_error)
+    app.add_exception_handler(RequestValidationError, _on_invalid_request)
+    app.add_exception_handler(StarletteHTTPException, _on_http_error)
+
+    for module in (meta, history, objects, graph, block, lifecycle):
+        app.include_router(module.router)
+
+    @app.get(f"{API_PREFIX}/openapi.json", include_in_schema=False)
+    async def openapi_document() -> Response:
+        return JSONResponse(build_openapi(app))
+
+    @app.get(
+        "/healthz",
+        summary="Liveness of the API process",
+        description='Needs no token and reads nothing; answers `{"status": "ok"}`.',
+        response_model=Health,
+        tags=["health"],
+    )
+    async def healthz() -> Response:
+        return JSONResponse({"status": "ok"})
+
+    app.openapi = lambda: build_openapi(app)  # type: ignore[method-assign]
+    app.add_middleware(ApiMiddleware, token=settings.api_token, open_paths=OPEN_PATHS)
+    return app
