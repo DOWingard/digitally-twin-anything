@@ -3,11 +3,12 @@ the incidents and suspect signals they raise, and the steps an operator takes.""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
 import pyarrow as pa
 from dta_core.log import Log
+from dta_core.manifest import Manifest
 from dta_core.store import LIVE_BRANCH, VersionRef
 from fastapi import APIRouter, Body, Path, Query, Request
 from starlette.responses import Response
@@ -378,12 +379,16 @@ def question_errors(
     lower, upper = _time(since, "from"), _time(until, "to")
     query = fingerprint("fidelity-errors", id, since, until)
     version, position = start(services, cursor, "fidelity-errors", query, at, LIVE_BRANCH)
+    manifest = services.twin.manifest(at=version)
+    declared = dict((manifest.contract.questions if manifest.contract else None) or {})
+    if id not in declared:
+        raise ApiError(f"the contract has no question {id!r}", code="fidelity.not_found")
     rows = [
         row
         for row in fidelity.errors(services.twin, id, at=version, since=lower, until=upper)
         if row["scored"]
     ]
-    counted = _window_rule(services, version, id)
+    counted = _window_rule(services, version, manifest, declared[id].horizon, id)
     table = pa.Table.from_pylist(
         [
             {
@@ -402,12 +407,15 @@ def question_errors(
     return paged_response(table, chosen, version, per_page, position, "fidelity-errors", query)
 
 
-def _window_rule(services: Services, version: VersionRef, question: str) -> Any:
+def _window_rule(
+    services: Services,
+    version: VersionRef,
+    manifest: Manifest,
+    horizon: timedelta | None,
+    question: str,
+) -> Any:
     """Whether a scored origin counts in the window of the latest check."""
     latest = fidelity.checks(services.twin, at=version, limit=1)
-    manifest = services.twin.manifest(at=version)
-    declared = dict((manifest.contract.questions if manifest.contract else None) or {})
-    horizon = declared[question].horizon if question in declared else None
     window = manifest.fidelity.window if manifest.fidelity is not None else None
     entry = ((latest[0]["questions"] or {}).get(question) if latest else None) or {}
     if not latest or horizon is None or window is None or not entry.get("model"):
