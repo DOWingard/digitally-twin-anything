@@ -383,17 +383,23 @@ def click_run(driver: WebDriver, uid: str) -> None:
 
 
 def run_now(driver: WebDriver) -> float:
-    """Click "Run now"; how long until the button is disabled and says a run is in progress."""
+    """Click "Run now"; how long until the button is disabled and says a run is in progress.
+
+    A run that ends at once (every source refuses) may be over before the page was
+    looked at: its outcome in place of the one shown before counts as well."""
     button = driver.find_element(By.ID, ids.RUN_NOW)
     wait_for(driver, lambda: button.is_enabled(), "the button to be enabled")
+    shown = text_of(driver, ids.RUN_STATUS)
     started = time.monotonic()
     button.click()
-    wait_for(
-        driver,
-        lambda: not button.is_enabled() and text_of(driver, ids.RUN_STATUS) == "run in progress",
-        "the run in progress",
-        timeout=10.0,
-    )
+
+    def begun() -> bool:
+        status = text_of(driver, ids.RUN_STATUS)
+        if status == "run in progress":
+            return not button.is_enabled()
+        return bool(status) and status != shown
+
+    wait_for(driver, begun, "the run in progress", timeout=10.0)
     elapsed = time.monotonic() - started
     RUN_NOW_S.append(elapsed)
     return elapsed
