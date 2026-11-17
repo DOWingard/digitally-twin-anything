@@ -49,11 +49,13 @@ _AGGREGATES = ("mean", "sum", "min", "max", "count")
 _NARROW = "narrow it with uids, a later start, a longer step or fewer features"
 
 # The neighbours of an object at a grid time and their values then, as one row per object
-# and time. A neighbour joined by several links, or from both ends, counts once.
+# and time. A neighbour joined by several links, or from both ends, counts once. Sums are
+# taken in the order of the neighbours' uids: the order a hash join yields them in changes
+# from run to run, and with it the last bits of a sum of floats.
 _NEIGHBOURS = """
 SELECT p.o AS uid, p.i AS i,
-       avg(v.v) AS "mean", sum(v.v) AS "sum", min(v.v) AS "min", max(v.v) AS "max",
-       count(v.v) AS "count"
+       avg(v.v ORDER BY p.n) AS "mean", sum(v.v ORDER BY p.n) AS "sum",
+       min(v.v) AS "min", max(v.v) AS "max", count(v.v) AS "count"
 FROM (SELECT DISTINCT o, n, i FROM pairs WHERE o IN (SELECT uid FROM series)) AS p
 JOIN vals AS v ON v.uid = p.n AND v.i = p.i
 GROUP BY p.o, p.i
