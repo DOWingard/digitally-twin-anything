@@ -93,7 +93,8 @@ def register(ctx: typer.Context) -> None:
             packed = computeops.pack_code(workspace, manifest)
             uploaded = computeops.upload_code(api, packed)
         registered = computeops.register(api, uploaded["sha256"] if uploaded else None)
-    result = scrub_values({"code": uploaded, **registered}, secrets)
+    # The upload, which names the hash registration used, in place of the bare hash.
+    result = scrub_values({**registered, "code": uploaded}, secrets)
     lines = []
     if uploaded:
         lines.append(
