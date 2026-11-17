@@ -362,7 +362,9 @@ class ModelSpec(Base):
     question: str | None = req(Owner.agent, "Question the model serves")
     target: str | None = req(Owner.agent, "Ontology property predicted, as Type.property")
     candidates: dict[str, Candidate] | None = req(Owner.agent, "Families the twin may select among")
-    features: list[str] | None = req(Owner.agent, "Ontology properties used as inputs")
+    # None are needed by a family that predicts a target from its own history, or by one
+    # that reads what it needs from the twin itself.
+    features: list[str] = opt(Owner.agent, "Ontology properties used as inputs", list)
     backtest: Backtest | None = req(Owner.agent, "How candidates are evaluated")
     acceptance: Acceptance | None = req(Owner.agent, "When a candidate is good enough")
     interventional: bool = opt(Owner.agent, "Valid for what-if changes to controls", False)
