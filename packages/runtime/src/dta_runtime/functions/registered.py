@@ -137,11 +137,14 @@ def _derived(request: FunctionRequest, found: Derived, artifacts: Artifacts) -> 
     try:
         kind = FactKind(found.kind)
     except ValueError as exc:
-        raise _bad_result(request, f"{found.kind!r} is not a kind of fact", where="kind") from exc
+        raise _bad_result(
+            request, f"the kind of a Derived is a kind of fact, not {found.kind!r}", where="kind"
+        ) from exc
     if kind == FactKind.observed:
         raise _bad_result(
             request,
-            "a function works its rows out; it cannot write them as observed",
+            "the kind of a Derived says how its rows were worked out; a function cannot "
+            "write them as observed",
             where="kind",
         )
     confidence = found.confidence
