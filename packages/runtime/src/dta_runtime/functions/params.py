@@ -92,15 +92,15 @@ def selector_of(function_id: str, name: str, value: Any) -> Selector:
             # A `+` left unencoded in a query string arrives as a space.
             selector = Selector.parse(repair_plus(value) if isinstance(value, str) else value)
         except InvalidInput as exc:
-            raise refused(
-                BAD_PARAM, f"{name}: {exc.message}", function=function_id, parameter=name
+            raise _refuse(
+                BAD_PARAM, f"{function_id}: {name}: {exc.message}", function_id, name
             ) from exc
     if selector.is_range:
-        raise refused(
+        raise _refuse(
             BAD_PARAM,
-            f"{name} names one version, not a range: {selector}",
-            function=function_id,
-            parameter=name,
+            f"{function_id}: {name} names one version, not a range: {selector}",
+            function_id,
+            name,
         )
     return selector
 
