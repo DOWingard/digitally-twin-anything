@@ -23,6 +23,7 @@ from ..params import At, Branch
 from ..services import Services
 from ..syncing import SYNC_KIND
 from ..tables import version_headers, version_json
+from .fidelity import check_ref
 
 router = APIRouter(prefix=f"{API_PREFIX}/meta", tags=["meta"])
 
@@ -128,7 +129,10 @@ def _compute(services: Services, version: VersionRef) -> dict[str, Any]:
     "/health",
     summary="Identity of the twin and the state of a branch",
     description="Twin id and name, contract tier, head version, number of versions, fidelity "
-    "state, manifest revision and hash, and the ontology in force at the head. `clock` is "
+    "state (`unknown` before a check has completed, `healthy`, `correcting` or `failed`) "
+    "with `fidelity_detail` (since when, the last check, the incidents open and failed, the "
+    "suspect signals), manifest revision and hash, and the ontology in force at the head. "
+    "`clock` is "
     "what the twin's clock tells now (`available` false when it cannot be read; the answer "
     "is still 200). For a live twin, `sync` says how far the twin is behind its sources: "
     "the freshness of each source on that clock, each question that states a staleness "
@@ -147,6 +151,7 @@ def twin_health(services: ServicesDep, branch: Branch = LIVE_BRANCH) -> Response
     record = state.record
     reading = services.clocks.read(state.manifest, state.manifest_hash)
     active = services.jobs.active(SYNC_KIND) if state.live else None
+    found = services.fidelity_at(version)
     return json_response(
         {
             "twin_id": record.get("twin_id"),
@@ -154,7 +159,13 @@ def twin_health(services: ServicesDep, branch: Branch = LIVE_BRANCH) -> Response
             "tier": record.get("tier"),
             "head": version_json(version),
             "versions": version.seq + 1,
-            "fidelity": FIDELITY_UNKNOWN,
+            "fidelity": found["state"] or FIDELITY_UNKNOWN,
+            "fidelity_detail": {
+                "since": found["since"],
+                "check": check_ref(found["check"]),
+                "incidents": found["incidents"],
+                "suspect_signals": found["suspect_signals"],
+            },
             "manifest": {
                 "revision": record.get("revision"),
                 "hash": record.get("manifest_hash"),
