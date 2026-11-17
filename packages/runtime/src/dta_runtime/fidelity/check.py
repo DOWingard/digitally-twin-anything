@@ -1217,6 +1217,9 @@ def _check(
         for qid, question in setup.questions.items()
     }
     stuck = _lookbacks(twin, setup, now)
+    unknown = sorted(set(freshness) - set(setup.questions))
+    if unknown:
+        log.warn("freshness given for questions the contract does not ask; ignored", ids=unknown)
     measurement = _Measurement(
         setup=setup,
         now=now,
@@ -1224,7 +1227,7 @@ def _check(
         questions=questions,
         earlier=earlier,
         stuck=stuck,
-        freshness=dict(freshness),
+        freshness={qid: found for qid, found in freshness.items() if qid in setup.questions},
         sources={
             source: {
                 name: iso(value) if isinstance(value, datetime) else value
