@@ -92,7 +92,30 @@ As JSON these are paged like every other table; as Arrow or Parquet they come wh
 | `GET /lifecycle/jobs?kind=&state=&lane=` | work the API does in the background, newest first: `id`, `kind`, `lane` (`sync` for sync runs, `compute` for other long work; the jobs of a lane run one at a time, in order), `state` (`queued`, `running`, `succeeded`, `failed`), `result`, `error`, `trace_id`, `duration_ms` |
 | `GET /lifecycle/jobs/{id}` | one job, as `{"data": {...}}` |
 | `GET /lifecycle/logs?level=&since=&context=&trace_id=&service=&limit=` | the twin's own structured log lines, newest first |
+| `GET /lifecycle/schedule` | what the twin's scheduler asks for and when: `now` on the twin's clock and `entries`, each `{id, kind, interval, method, path, key, body}`; empty for a static twin |
+| `GET /lifecycle/notifications` | the last 200 notifications the twin sent since it started, newest first, each with its `status` (`queued`, `delivered`, `failed`, `dropped`, `logged`, `unsent`), `tries` and `http_status`; the address they go to is never shown |
 | `POST /lifecycle/register` body `{"code": <sha256>\|null}` | brings the twin's functions, models and questions in line with its manifest in one version, and none when nothing differs: `functions`, `models` and `questions`, each with what was `created`, `changed` and left `unchanged`, and the `version`. `code` is the hash `POST /artifacts` gave for the twin's packed code |
+
+{% if live %}
+## Fidelity
+
+Whether the twin still keeps what it promised, measured on its own clock at every fidelity interval. States: `unknown` (no check yet), `healthy`, `correcting` (something is being put right), `failed` (the twin could not put itself right).
+
+| Endpoint | Returns |
+|---|---|
+| `GET /fidelity` | `state`, `since`, the last `check`, per question the origin scored, its error, the error over the window against the tolerance and whether it is in breach, the incidents not resolved, the suspect signals |
+| `POST /fidelity/checks`, optional header `Idempotency-Key` | a check of the newest boundary of the fidelity interval, as a job of the compute lane; a boundary already checked answers from its record |
+| `GET /fidelity/checks?from=&to=&limit=&cursor=` | the checks, newest first |
+| `GET /fidelity/checks/{uid}` | one check: what was measured per question, the freshness, the signals tested |
+| `GET /fidelity/questions/{id}/errors?from=&to=&format=` | the error of a question per scored origin: `origin`, `scored_at`, `error`, `n`, `model`, `in_window`, `check` |
+| `GET /fidelity/incidents?status=&kind=&subject=` | incidents, newest first (`kind`: `breach`, `stale`, `signal`, `reconcile`; `status`: `open`, `remodel_requested`, `failed`, `resolved`) |
+| `GET /fidelity/incidents/{id}` | one incident with every step taken |
+| `POST /fidelity/incidents/{id}/retry` body `{"by", "note"}` | starts a failed incident's corrections again from the first rung |
+| `POST /fidelity/incidents/{id}/resolve` body `{"by", "note"}` | resolves an incident of kind `signal` or `reconcile` by hand |
+| `POST /fidelity/corrections` body `{"question", "rung"}` (`recalibrate` or `reselect`) | one correction by hand, as a job: the question's models are evaluated again on recent data |
+| `GET /fidelity/signals?status=` | the observed signals found suspect (`stuck` or `biased`), each with the raw `reading` that is kept and not written to the object |
+| `POST /fidelity/signals/{uid}/clear` body `{"by", "note"}` | takes a signal off the suspect list; its readings are written again |
+{% endif %}
 
 ## Functions
 
