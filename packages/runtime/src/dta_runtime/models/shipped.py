@@ -163,6 +163,10 @@ class _Stats(Shipped):
     def model(self, settings: Mapping[str, Any]) -> Any:
         raise NotImplementedError
 
+    def again(self, settings: Mapping[str, Any], fitted: Any) -> Any:
+        """The model to fit on a history its fitted one cannot be applied to."""
+        return self.model(settings)
+
     def settings(self, params: Mapping[str, Any]) -> dict[str, Any]:
         settings = self.checked(params)
         if "season_length" in self.takes:
@@ -224,7 +228,7 @@ class _Stats(Shipped):
                 # the model's own state would be put at the wrong row. Fitted again, on
                 # the history given, for this series only.
                 refitted += 1
-                again = self.model(state["settings"]).fit(values)
+                again = self.again(state["settings"], models[uid]).fit(values)
                 found = again.predict(h=horizon, level=wanted or None)
             else:
                 # The fitted model applied to the series as it is now; nothing is fitted.
@@ -302,6 +306,18 @@ class Ets(_Stats):
     def model(self, settings: Mapping[str, Any]) -> Any:
         return AutoETS(
             season_length=settings["season_length"], model=settings.get("model", "ZZZ"), alias=MEAN
+        )
+
+    def again(self, settings: Mapping[str, Any], fitted: Any) -> Any:
+        # The form the fit chose for the series is kept (error, trend, season, damping);
+        # only its parameters and first state are estimated on the history. About a
+        # tenth of the search over forms.
+        error, trend, season, damped = fitted.model_["components"][:4]
+        return AutoETS(
+            season_length=settings["season_length"],
+            model=error + trend + season,
+            damped=damped != "N",
+            alias=MEAN,
         )
 
 
