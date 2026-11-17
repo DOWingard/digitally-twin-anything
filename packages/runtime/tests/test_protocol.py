@@ -26,7 +26,7 @@ from dta_runtime.protocol import (
     answer_document,
     prediction_columns,
 )
-from dta_runtime.protocol.worker import ENTRY
+from dta_runtime.protocol.worker import ENTRY, LIVE_BRANCH
 from pydantic import TypeAdapter, ValidationError
 
 REQUEST = TypeAdapter(WorkerRequest)
@@ -64,7 +64,7 @@ def test_a_request_is_told_apart_by_its_op():
         # What is sent is what is read back.
         assert REQUEST.validate_json(REQUEST.dump_json(request)) == request
     fit = REQUEST.validate_python({"op": "fit", **RUN, **cases["fit"][0]})
-    assert fit.frame.step == timedelta(minutes=15) and fit.frame.branch == "main"
+    assert fit.frame.step == timedelta(minutes=15) and fit.frame.branch == LIVE_BRANCH
     # Without a refit the worker chooses one that fits the budget.
     chosen = {**cases["backtest"][0]}
     del chosen["refit"]
@@ -193,6 +193,12 @@ def test_the_columns_of_a_prediction_and_the_document_of_an_answer():
             model=None,
             provisional=False,
         )
+
+
+def test_the_default_branch_is_the_stores_live_branch():
+    from dta_core.store import LIVE_BRANCH as STORE_LIVE_BRANCH
+
+    assert LIVE_BRANCH == STORE_LIVE_BRANCH
 
 
 def test_every_op_has_a_handler_and_a_pool():

@@ -13,7 +13,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol
 
-from dta_core.store.model import LIVE_BRANCH
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:
@@ -29,6 +28,11 @@ ENTRY = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9
 Sha = Annotated[str, Field(pattern=SHA256)]
 Entry = Annotated[str, Field(pattern=ENTRY)]
 Levels = Annotated[list[float], Field(default_factory=list)]
+
+
+# The store's live branch, by name. Not imported from the store: a run of a twin's own
+# code loads this module in a process that should not pay for the store's libraries.
+LIVE_BRANCH = "main"
 
 
 class _Model(BaseModel):
