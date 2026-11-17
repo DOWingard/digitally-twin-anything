@@ -56,6 +56,11 @@ def _error(exc: DtaError) -> dict[str, str]:
     return {"code": exc.code, "message": exc.message}
 
 
+def _is_the_workers(exc: Exception) -> bool:
+    """Whether a failure says something of the worker and nothing of what it was asked."""
+    return isinstance(exc, DtaError) and exc.code.startswith("worker.")
+
+
 def _simplicity(model: Mapping[str, Any]) -> tuple[int, str]:
     """Simplest shipped family first, code of the twin's own last."""
     family = model["family"]
@@ -294,6 +299,10 @@ def _evaluate_spec(
             result, _ = services.compute.run(request, wait_until=deadline)
             verdict = judge(result["scores"], result.get("baseline_scores"), acceptance)
         except (DtaError, ValueError) as exc:
+            if _is_the_workers(exc):
+                # Not the candidate's failure: with no worker to ask, nothing is known.
+                log.error("evaluation stopped: the worker cannot be asked", exc=exc, spec=spec_id)
+                raise
             # One candidate that cannot be evaluated does not stop the others.
             failure = (
                 _error(exc)
@@ -384,6 +393,8 @@ def _evaluate_spec(
             )
         except DtaError as exc:
             log.error("the selected candidate could not be fitted", exc=exc, model=selected)
+            if _is_the_workers(exc):
+                raise
             summary["fit_error"] = _error(exc)
             fitted = None
 

@@ -94,10 +94,19 @@ def versioned(
     return {200: {"headers": dict(VERSION_HEADERS)}, **errors(*statuses, notes=notes)}
 
 
+def _is_validation_error(response: dict[str, Any] | None) -> bool:
+    """Whether a 422 response is the one FastAPI adds by itself, not one a route states."""
+    if response is None:
+        return False
+    schema = response.get("content", {}).get("application/json", {}).get("schema", {})
+    return str(schema.get("$ref", "")).endswith("/HTTPValidationError")
+
+
 def build_openapi(app: FastAPI) -> dict[str, Any]:
     """The generated document with the bearer scheme on every operation, errors as
     problem documents, and no trace of FastAPI's own 422 validation response:
-    invalid parameters are answered with 400."""
+    invalid parameters are answered with 400. A 422 a route states itself (what was
+    sent is well formed and cannot be used) stays."""
     if app.openapi_schema:
         return app.openapi_schema
     document = get_openapi(
@@ -122,7 +131,8 @@ def build_openapi(app: FastAPI) -> dict[str, Any]:
     for path, operations in document.get("paths", {}).items():
         for operation in operations.values():
             responses = operation.get("responses", {})
-            responses.pop("422", None)
+            if _is_validation_error(responses.get("422")):
+                responses.pop("422")
             for status, response in responses.items():
                 if status.startswith(("4", "5")):
                     response["content"] = {PROBLEM_MEDIA: {"schema": problem_ref}}
