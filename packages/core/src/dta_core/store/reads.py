@@ -761,20 +761,29 @@ class Reads:
             if len(logged) <= _NAMED_COMMITS:
                 clauses.append(f"`to_commit` IN ({', '.join(['%s'] * len(logged))})")
                 params.extend(logged)
+            statement = f"SELECT {', '.join(select)} FROM {source}"
             # Past this many names the statement costs more than the rows it spares;
             # the rows are then narrowed after they are read.
             if only is not None and len(only) <= _NAMED_UIDS:
+                # One statement per side of the change: the store finds the rows by
+                # their key then, where it reads every change of the range for an OR
+                # over both sides. A row with no `to` side is a removal.
                 marks = ", ".join(["%s"] * len(only))
-                clauses.append(
-                    f"(`to_{UID_FIELD}` IN ({marks}) OR `from_{UID_FIELD}` IN ({marks}))"
-                )
-                params.extend([*sorted(only), *sorted(only)])
-            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-            rows = (
-                conn.query(f"SELECT {', '.join(select)} FROM {source}{where}", params or None)
-                if logged
-                else ()
-            )
+                named = sorted(only)
+                sides = [
+                    ([*clauses, f"`to_{UID_FIELD}` IN ({marks})"], [*params, *named]),
+                    (
+                        [*clauses, f"`from_{UID_FIELD}` IN ({marks})", "`diff_type` = %s"],
+                        [*params, *named, REMOVED],
+                    ),
+                ]
+            else:
+                sides = [(clauses, params)]
+            rows: list[Any] = []
+            if logged:
+                for conditions, values in sides:
+                    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+                    rows.extend(conn.query(statement + where, values or None))
             wanted = {version.seq for version in versions} - forked
             kept = []
             merged: set[str] = set()

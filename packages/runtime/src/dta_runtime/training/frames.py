@@ -14,8 +14,10 @@ position of a time in the grid.
 
 from __future__ import annotations
 
+import contextvars
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -48,6 +50,8 @@ _KEYS = [inforce.UID, inforce.SEQ, inforce.T, inforce.REMOVED]
 _NARROW = "narrow it with uids, a later start, a longer step or fewer features"
 # Up to this many objects are asked of the store by name; beyond it the type is read whole.
 _ASKED_BY_NAME = 1_000
+# Reads of the store a frame makes at once: each holds a connection of the store's pool.
+_READS_AT_ONCE = 4
 
 # The neighbours of an object at a grid time and their values then, as one row per object
 # and time. A neighbour joined by several links, or from both ends, counts once. Sums are
@@ -137,17 +141,36 @@ class _Reads:
         objects in `only` when the type has not been read yet. A caller that wants no
         others narrows what it gets."""
         if type_name not in self._found:
-            few = only is not None and len(only) <= _ASKED_BY_NAME
-            self._found[type_name] = inforce.events(
-                self._store,
-                self._ontology,
-                type_name,
-                self._first,
-                self._last,
-                properties=self._needs[type_name],
-                uids=only.to_pylist() if few else None,
-            )
+            self._found[type_name] = self._read(type_name, only)
         return self._found[type_name]
+
+    def gather(self, wanted: Mapping[str, pa.Array | None]) -> None:
+        """Read the types of `wanted` that are not read yet, at the same time. What a
+        read costs is the store walking the versions of the range, whatever it is asked
+        for; the store answers each read on a connection of its own."""
+        pending = {name: only for name, only in wanted.items() if name not in self._found}
+        if len(pending) < 2:
+            return
+        with ThreadPoolExecutor(max_workers=min(len(pending), _READS_AT_ONCE)) as pool:
+            # A context each: the trace of the request is carried into the read's log.
+            reading = {
+                name: pool.submit(contextvars.copy_context().run, self._read, name, only)
+                for name, only in pending.items()
+            }
+            for name, read in reading.items():
+                self._found[name] = read.result()
+
+    def _read(self, type_name: str, only: pa.Array | None) -> pa.Table:
+        few = only is not None and len(only) <= _ASKED_BY_NAME
+        return inforce.events(
+            self._store,
+            self._ontology,
+            type_name,
+            self._first,
+            self._last,
+            properties=self._needs[type_name],
+            uids=only.to_pylist() if few else None,
+        )
 
     @property
     def count(self) -> int:
@@ -353,6 +376,14 @@ def _build(
     target_type = spec.type.name
     groups = list(dict.fromkeys(column.neighbours for column in spec.features if column.neighbours))
     asked = pa.array(sorted(set(ref.uids)), pa.string()) if ref.uids else None
+    link_types = {hop.link_type for neighbours in groups for hop in neighbours.hops}
+    beside = {name for neighbours in groups for name in neighbours.types} | link_types
+    # The links are read whole. The series can be read beside them, unless their type is
+    # also read for the neighbours, whose objects are not known yet.
+    ahead: dict[str, pa.Array | None] = dict.fromkeys(link_types)
+    if asked is None or target_type not in beside:
+        ahead[target_type] = asked
+    reads.gather(ahead)
     # Which objects the series are is known from the request, or from reading them all.
     events = reads.of(target_type) if asked is None else None
     anchors = asked if events is None else inforce.objects(events)
@@ -364,6 +395,7 @@ def _build(
         for type_name in neighbours.types:
             needed.setdefault(type_name, []).append(reached)
     only = {name: pc.unique(pa.concat_arrays(parts)) for name, parts in needed.items()}
+    reads.gather(only)
     if events is None:
         events = _of_objects(reads.of(target_type, only[target_type]), asked)
     series = inforce.objects(events)
