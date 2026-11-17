@@ -4,13 +4,33 @@ and when it is refused."""
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
 import pytest
-from fidelity_api_testkit import BUILT, CHECK_PATH, HOLD, QUESTION, Checked, at, check_key, iso
-from live_api_testkit import HEADERS
+from compute_testkit import runtime_settings
+from dta_core.errors import ConfigError
+from dta_runtime.api import create_app
+from dta_runtime.twin import Bundle
+from fidelity_api_testkit import (
+    BUILT,
+    CHECK_PATH,
+    HOLD,
+    QUESTION,
+    T0,
+    WEBHOOK_ENV,
+    Checked,
+    Clock,
+    at,
+    check_key,
+    iso,
+    manifest,
+)
+from live_api_testkit import HEADERS, records
+from starlette.testclient import TestClient
 
 ARROW = "application/vnd.apache.arrow.stream"
 
@@ -115,3 +135,27 @@ def test_a_check_is_refused_without_a_clock_and_on_a_static_twin(
     static = api.post(f"/api/v1{CHECK_PATH}", headers={"Idempotency-Key": "k"})
     assert static.status_code == 409 and static.json()["code"] == "fidelity.not_live"
     assert api.ok("/api/v1/fidelity")["state"] == "unknown"
+
+
+def test_the_api_does_not_start_without_the_variable_naming_its_webhook(
+    make_twin: Callable[..., Any],
+    water_text: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    log_lines: Path,
+) -> None:
+    monkeypatch.delenv(WEBHOOK_ENV, raising=False)
+    notification = {"kind": "webhook", "webhook_env": WEBHOOK_ENV}
+    bundle = Bundle(
+        manifest=manifest(water_text, notification=notification), ontology_text=water_text
+    )
+    twin = make_twin(bundle, t=T0)
+    app = create_app(
+        runtime_settings(twin.store.settings, tmp_path, None), twin, clock=Clock(at(1))
+    )
+    with pytest.raises(ConfigError) as caught, TestClient(app):
+        pass
+    assert caught.value.code == "config.missing_env"
+    assert WEBHOOK_ENV in str(caught.value)
+    logged = [line for line in records(log_lines) if line["level"] == "error"]
+    assert any(WEBHOOK_ENV in json.dumps(line) for line in logged)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -123,7 +124,7 @@ def test_a_change_the_active_family_cannot_learn_is_corrected_by_another_candida
 
 
 def test_a_change_no_candidate_can_learn_asks_for_a_remodel_then_fails(
-    checked: Callable[..., Checked], monkeypatch: pytest.MonkeyPatch
+    checked: Callable[..., Checked], monkeypatch: pytest.MonkeyPatch, log_lines: Path
 ) -> None:
     with webhook() as receiver:
         monkeypatch.setenv(WEBHOOK_ENV, receiver.url)
@@ -172,3 +173,7 @@ def test_a_change_no_candidate_can_learn_asks_for_a_remodel_then_fails(
     # Every event's time is the data time it happened at, in order.
     times = [event["time"] for event in received]
     assert times == sorted(times)
+    # The webhook's address is a secret: no log line holds it.
+    logged = log_lines.read_text(encoding="utf-8")
+    assert "notification delivered" in logged
+    assert receiver.url not in logged and f"127.0.0.1:{receiver.port}" not in logged
