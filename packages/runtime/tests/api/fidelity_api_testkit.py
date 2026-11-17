@@ -45,6 +45,7 @@ from dta_runtime.clock import ClockUnavailable, FixedClock
 from dta_runtime.settings import RuntimeSettings, WorkerSettings
 from dta_runtime.twin import Bundle, Twin, install_twin
 from dta_runtime.worker import create_app as create_worker
+from live_testkit import Folder, levels_source, registry_source
 from webhook_testkit import own_port
 
 T0 = datetime(2026, 1, 5, tzinfo=UTC)
@@ -60,6 +61,7 @@ WEBHOOK_ENV = "DTA_TEST_FIDELITY_WEBHOOK"
 CHECK_PATH = "/fidelity/checks"
 
 Drift = Callable[[int], float]
+Levels = Callable[[str, int], float]
 
 CODE_MODULE = "drift_plant"
 CODE = '''
@@ -141,6 +143,7 @@ def manifest(
     notification: Mapping[str, Any] | None = None,
     correction: Mapping[str, Any] | None = None,
     window_steps: int = 6,
+    sources: Mapping[str, Any] | None = None,
 ) -> Any:
     question = {
         "text": "How full will each tank be in half an hour?",
@@ -169,6 +172,7 @@ def manifest(
             }
         },
         "sync": {"interval": "PT15M"},
+        **({"sources": dict(sources)} if sources else {}),
         "fidelity": {
             "interval": "PT15M",
             "window": int((window_steps * STEP).total_seconds()),
@@ -243,6 +247,10 @@ class Checked(Calls):
     api_port: int = 0
     worker_url: str = ""
     correction_budget_s: float = 900.0
+    # What the source reads of a tank at a step, instead of BASE and the drift.
+    levels: Levels | None = None
+    # The folder of the source the levels are synced from; None: written as a sync would.
+    scada: Folder | None = None
     written: dict[int, VersionRef] = field(default_factory=dict)
     stacks: dict[str, contextlib.ExitStack] = field(default_factory=dict)
 
@@ -255,13 +263,31 @@ class Checked(Calls):
         return self.twin.store.head()
 
     def level(self, key: str, step: int) -> float:
+        if self.levels is not None:
+            return self.levels(key, step)
         return BASE[key] + (self.drift(step) if step > BUILT else 0.0)
 
     def write(self, step: int) -> VersionRef:
-        """The step's observations, as a sync writes them."""
-        rows = [tank(key, self.level(key, step)) for key in sorted(BASE)]
-        self.written[step] = observe(self.twin, at(step), {"Tank": rows})
+        """The step's observations: synced from the source when there is one, otherwise
+        written as a sync writes them."""
+        if self.scada is not None:
+            self.scada.append(
+                "levels", [(key, at(step), self.level(key, step)) for key in sorted(BASE)]
+            )
+            self.sync(step)
+        else:
+            rows = [tank(key, self.level(key, step)) for key in sorted(BASE)]
+            observe(self.twin, at(step), {"Tank": rows})
+        self.written[step] = self.head
         return self.written[step]
+
+    def sync(self, step: int) -> dict[str, Any]:
+        """A sync run of the step's boundary, through the API, as the scheduler asks."""
+        self.clock.set(at(step))
+        response = self.post("/sync/runs", headers={"Idempotency-Key": f"sync:{iso(at(step))}"})
+        job = self.wait(response, JOB_S)
+        assert job["state"] == "succeeded", job
+        return job
 
     def ask(self, step: int, key: str | None = None) -> Any:
         """Ask for the check of a step's boundary, with the clock at it."""
@@ -350,31 +376,52 @@ def serve_checked(
     correction: Mapping[str, Any] | None = None,
     correction_budget_s: float = 900.0,
     evaluate: bool = True,
+    levels: Levels | None = None,
+    synced: bool = False,
+    window_steps: int = 6,
 ) -> Iterator[Checked]:
     """Install the twin, write its data up to BUILT, serve its API and a worker, keep its
-    code and evaluate its models at BUILT."""
+    code and evaluate its models at BUILT. `synced`: the levels come from a folder of CSV
+    files through real sync runs."""
     text = ontology_text
+    scada: Folder | None = None
+    sources = None
+    if synced:
+        scada = Folder(root / "scada")
+        sources = {
+            "registry": registry_source(Folder(root / "registry")),
+            "scada": levels_source(scada),
+        }
     bundle = Bundle(
-        manifest=manifest(text, notification=notification, correction=correction),
+        manifest=manifest(
+            text,
+            notification=notification,
+            correction=correction,
+            window_steps=window_steps,
+            sources=sources,
+        ),
         ontology_text=text,
     )
     twin = install_twin(store, bundle, t=T0).twin
-    api_port, worker_port = own_port(), 0
+    api_port = own_port()
     worker_port = own_port({api_port})
     world = Checked(
         client=None,
         twin=twin,
-        clock=Clock(at(BUILT)),
+        clock=Clock(at(1)),
         settings=runtime_settings(store, root, f"http://127.0.0.1:{worker_port}"),
         drift=drift,
         api_port=api_port,
         worker_url=f"http://127.0.0.1:{worker_port}",
         correction_budget_s=correction_budget_s,
+        levels=levels,
+        scada=scada,
     )
     try:
+        world.start_api()
         for step in range(1, BUILT + 1):
             world.write(step)
-        world.start_api()
+        world.clock.set(at(BUILT))
         worker_stack = contextlib.ExitStack()
         world.stacks["worker"] = worker_stack
         worker = create_worker(
