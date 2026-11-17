@@ -20,12 +20,16 @@ OPEN_PATHS = frozenset({"/healthz"})
 _DESCRIPTIONS = {
     400: "The request is malformed: a parameter, selector, filter, cursor or limit",
     401: "No valid bearer token was given",
+    403: "The request asks for something this API never does",
     404: "The version, branch, type, property or object does not exist",
     409: "The request conflicts with the state of the twin or of its jobs",
+    410: "What was asked for was deleted",
     413: "The body is larger than allowed",
     422: "The change breaks a constraint of the ontology",
     500: "The request failed on the server",
+    502: "The worker cannot be reached, or answered something that cannot be used",
     503: "The store cannot be reached",
+    504: "The work did not end within the time it was given",
 }
 
 VERSION_HEADERS = {

@@ -15,6 +15,7 @@ from decimal import Decimal
 from typing import Any, Literal
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from dta_core.store import VersionRef
 from starlette.responses import Response, StreamingResponse
@@ -81,6 +82,18 @@ def dumps(document: Any) -> bytes:
     return json.dumps(
         document, default=_default, allow_nan=False, ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
+
+
+def without_nan(table: pa.Table) -> pa.Table:
+    """The table with every number that is not a number as missing: JSON has no NaN, and
+    what a computation could not give is not known."""
+    for index, field in enumerate(table.schema):
+        if pa.types.is_floating(field.type):
+            column = table.column(index)
+            table = table.set_column(
+                index, field, pc.if_else(pc.is_nan(column), pa.scalar(None, field.type), column)
+            )
+    return table
 
 
 def rows(table: pa.Table) -> list[dict[str, Any]]:

@@ -27,7 +27,10 @@ INTERNAL = "api.internal"
 class ApiError(DtaError):
     """A request the API refuses for a reason of its own.
 
-    `extra` holds members added to the problem document beside the standard ones.
+    `extra` holds members added to the problem document beside the standard ones,
+    `headers` what the response carries beside it (a `Retry-After`). `status` is given
+    only where the code alone does not decide it: a problem of the worker is passed on
+    with the status the worker gave it.
     """
 
     code = "api.error"
@@ -39,9 +42,13 @@ class ApiError(DtaError):
         code: str | None = None,
         detail: dict[str, Any] | None = None,
         extra: dict[str, Any] | None = None,
+        status: int | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message, code=code, detail=detail)
         self.extra = extra or {}
+        self.status = status
+        self.headers = headers or {}
 
 
 STATUS_BY_CODE: dict[str, int] = {
@@ -83,7 +90,82 @@ STATUS_BY_CODE: dict[str, int] = {
     "artifact.not_found": 404,
     "artifact.empty": 400,
     "artifact.too_large": 413,
+    "twin.no_interval": 409,
+    "job.key_reused": 409,
+    "worker.unavailable": 503,
+    "worker.unreachable": 502,
+    "worker.busy": 503,
+    "register.code_missing": 409,
+    # What the manifest's checks call a function, a family or a property that cannot be.
+    "ref.function_entry": 400,
+    "ref.model_family": 400,
+    "ontology.unknown_type": 400,
+    "ontology.unknown_property": 400,
+    "ontology.function_param": 400,
+    "function.not_found": 404,
+    "function.exists": 409,
+    "function.from_manifest": 409,
+    "function.disabled": 409,
+    "function.param_unknown": 400,
+    "function.param_fixed": 400,
+    "function.param_missing": 400,
+    "function.bad_param": 400,
+    "function.bad_unit": 400,
+    "function.timeout": 504,
+    "function.unavailable": 503,
+    "function.unknown_entry": 500,
+    "function.bad_entry": 422,
+    "function.bad_result": 422,
+    "function.failed": 500,
+    "function.memory": 500,
+    "model.not_found": 404,
+    "model.unknown_spec": 404,
+    "model.exists": 409,
+    "model.from_manifest": 409,
+    "model.none_active": 409,
+    "model.not_fitted": 409,
+    "model.not_interventional": 409,
+    "model.unknown_family": 400,
+    "model.bad_family": 400,
+    "model.bad_params": 400,
+    "model.bad_frame": 400,
+    "model.bad_state": 409,
+    "model.failed": 500,
+    "question.not_found": 404,
+    "scenario.bad_request": 400,
+    "scenario.not_interventional": 409,
+    "scenario.not_found": 404,
+    "scenario.running": 409,
+    "scenario.already_run": 409,
+    "scenario.deleted": 410,
+    "scenario.timeout": 504,
+    "scenario.bad_prediction": 502,
+    "derived.observed_refused": 403,
+    "derived.live_refused": 409,
+    "derived.unknown_source": 404,
+    "derived.bad_inputs_version": 400,
+    "derived.mapped_property": 409,
+    "derived.too_large": 413,
+    "training.bad_spec": 400,
+    "training.too_large": 413,
 }
+
+# Server errors whose message is the caller's to read: it says what to do (wait, give the
+# function more time, start the worker), and holds nothing of the server's inside.
+PUBLIC_SERVER_CODES = frozenset(
+    {
+        "worker.unavailable",
+        "worker.unreachable",
+        "worker.busy",
+        "function.timeout",
+        "function.unavailable",
+        "function.failed",
+        "function.memory",
+        "model.failed",
+        "scenario.timeout",
+        "scenario.bad_prediction",
+    }
+)
 
 # What a server error tells the client; the cause stays in the logs.
 _SERVER_DETAIL = {
@@ -93,6 +175,8 @@ _SERVER_DETAIL = {
 
 
 def status_of(error: DtaError) -> int:
+    if isinstance(error, ApiError) and error.status is not None:
+        return error.status
     found = STATUS_BY_CODE.get(error.code)
     if found is not None:
         return found
@@ -140,6 +224,11 @@ def problem(
 def error_response(error: DtaError) -> Response:
     """The problem document for an error raised while serving a request."""
     status = status_of(error)
+    extra = error.extra if isinstance(error, ApiError) else None
+    headers = (error.headers or None) if isinstance(error, ApiError) else None
+    if status >= 500 and error.code in PUBLIC_SERVER_CODES:
+        log.warn("request failed", code=error.code, status=status, reason=error.message)
+        return problem(status, error.code, error.message, headers=headers, extra=extra)
     if status >= 500:
         log.error(
             "request failed",
@@ -153,8 +242,10 @@ def error_response(error: DtaError) -> Response:
     errors = None
     if isinstance(error, ViolationError):
         errors = [asdict(violation) for violation in error.violations]
-    extra = error.extra if isinstance(error, ApiError) else None
-    return problem(status, error.code, error.message, errors=errors, extra=extra)
+    elif isinstance(error.detail.get("problems"), list):
+        # Every problem of a request that was refused whole, each naming its member.
+        errors = [dict(found) for found in error.detail["problems"] if isinstance(found, dict)]
+    return problem(status, error.code, error.message, errors=errors, headers=headers, extra=extra)
 
 
 def internal_error_response() -> Response:
