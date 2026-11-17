@@ -27,6 +27,7 @@ from . import (
     history,
     ids,
     questions,
+    scenarios,
     sheet,
     sync,
 )
@@ -51,6 +52,9 @@ def layout() -> html.Div:
                     dcc.Tab(label="History", value="history", children=history.layout()),
                     dcc.Tab(
                         label=T.QUESTIONS_TAB, value=questions.TAB, children=questions.layout()
+                    ),
+                    dcc.Tab(
+                        label=T.SCENARIOS_TAB, value=scenarios.TAB, children=scenarios.layout()
                     ),
                 ],
                 className="tabs",
@@ -86,6 +90,7 @@ def create_app(settings: UiSettings) -> Dash:
     sync.register(app, backend)
     questions.register(app, backend)
     answers.register(app, backend)
+    scenarios.register(app, backend)
 
     @app.server.route("/healthz")
     def healthz():  # type: ignore[no-untyped-def]
