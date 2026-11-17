@@ -11,11 +11,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 from dta_core.log import Log
 from dta_core.schema import Ontology
-from dta_core.store import LIVE_BRANCH, StoreError, VersionRef
+from dta_core.store import LIVE_BRANCH, InvalidInput, UnknownVersion, VersionRef
 from dta_core.store.model import iso_utc
 
 from ..protocol.worker import InterventionRef
@@ -55,7 +55,9 @@ def _logged(problems: Sequence[dict[str, str]]) -> list[dict[str, str]]:
     ]
 
 
-def _refuse(problems: Sequence[dict[str, str]], request: ScenarioRequest, at: VersionRef) -> None:
+def _refuse(
+    problems: Sequence[dict[str, str]], request: ScenarioRequest, at: VersionRef
+) -> NoReturn:
     log.warn(
         "scenario refused: the request cannot be met",
         name=request.name,
@@ -163,7 +165,9 @@ def check(twin: Twin, request: ScenarioRequest, at: VersionRef, step: timedelta)
     else:
         try:
             ontology = store.ontology_at(at)
-        except StoreError as exc:
+        except (UnknownVersion, InvalidInput) as exc:
+            # Not a version of the live line; a store that cannot be read is not the
+            # request's fault and passes through.
             problems.append(problem("at", exc.message))
         else:
             if ontology.hash != store.ontology.hash:
