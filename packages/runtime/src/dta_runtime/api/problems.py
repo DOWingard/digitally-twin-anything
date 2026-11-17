@@ -148,6 +148,14 @@ STATUS_BY_CODE: dict[str, int] = {
     "derived.too_large": 413,
     "training.bad_spec": 400,
     "training.too_large": 413,
+    "clock.unavailable": 503,
+    "fidelity.not_live": 409,
+    "fidelity.unsupported": 409,
+    "fidelity.out_of_order": 409,
+    "fidelity.not_found": 404,
+    "fidelity.bad_request": 400,
+    "fidelity.conflict": 409,
+    "fidelity.no_check": 404,
 }
 
 # Server errors whose message is the caller's to read: it says what to do (wait, give the
@@ -164,6 +172,7 @@ PUBLIC_SERVER_CODES = frozenset(
         "model.failed",
         "scenario.timeout",
         "scenario.bad_prediction",
+        "clock.unavailable",
     }
 )
 
