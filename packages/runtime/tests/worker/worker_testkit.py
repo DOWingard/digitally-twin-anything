@@ -31,7 +31,7 @@ HANDLERS = {
     "backtest": "worker_absent_module:backtest",
     "predict": "worker_handlers:predict",
 }
-FRAME = {"target": "Tank.level", "start": "#4", "end": "#9", "step": "PT1H"}
+FRAME = {"target": "Tank.level", "start": "#4", "end": "head", "step": "PT1H"}
 STATE = "0" * 64
 
 # Code a twin brings: one module, one function per thing the tests make it do.

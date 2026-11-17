@@ -13,13 +13,14 @@ import re
 import secrets
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import pyarrow as pa
 from dta_core.errors import DtaError
 from dta_core.log import Log
 
-from ..protocol import FrameRef, FunctionRequest
+from ..protocol import FrameRef, FunctionRequest, PredictRequest
 from .errors import API_UNREACHABLE, ARROW_MEDIA, BAD_STATE, TIMEOUT
 
 log = Log("worker.client")
@@ -27,7 +28,7 @@ log = Log("worker.client")
 API_PREFIX = "/api/v1"
 NEXT_CURSOR_HEADER = "x-dta-next-cursor"
 TRACEPARENT = "traceparent"
-HEAD = f"{API_PREFIX}/history/versions/head"
+VERSIONS = f"{API_PREFIX}/history/versions"
 TRAINING_SET = f"{API_PREFIX}/block/training-set"
 ARTIFACTS = f"{API_PREFIX}/artifacts"
 _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -159,10 +160,18 @@ class ApiTwin:
         if isinstance(request, FunctionRequest):
             self.at, self.branch = request.at, request.branch
         else:
-            # Read once, so every read of the run is made at the same version. Without a
-            # branch the API reads its live branch, and says which branch that is.
-            head = calls.request("GET", HEAD).json()["data"]
-            self.at, self.branch = str(head["id"]), str(head["branch"])
+            # A model reads the twin where its frame ends: the last version it may know
+            # of, on the branch it is asked about. A family that builds itself from the
+            # graph (a physical model) then sees a scenario's assumed changes, and
+            # nothing later than what it predicts from.
+            frame = request.history if isinstance(request, PredictRequest) else request.frame
+            # Resolved once, so that every read of the run names the same version by id.
+            found = calls.request(
+                "GET",
+                f"{VERSIONS}/{quote(frame.end, safe='')}",
+                params={"branch": frame.branch},
+            ).json()["data"]
+            self.at, self.branch = str(found["id"]), str(found["branch"])
         log.debug("reader of the twin", at=self.at, branch=self.branch)
 
     def _params(self, params: dict[str, Any]) -> dict[str, Any]:

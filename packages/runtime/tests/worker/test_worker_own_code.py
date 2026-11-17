@@ -112,7 +112,7 @@ def test_a_family_given_as_code_runs_in_a_fresh_process_of_the_batch_pool(
         "trace_id": trace_id(),
         "family": {"artifact": code, "entry": "twin_code:family"},
         "params": {"alpha": 0.5},
-        "frame": {"target": "Tank.level", "start": "#4", "end": "#9", "step": "PT1H"},
+        "frame": {"target": "Tank.level", "start": "#4", "end": "head", "step": "PT1H"},
         "horizon": 2,
     }
     result = worker.ok(body)

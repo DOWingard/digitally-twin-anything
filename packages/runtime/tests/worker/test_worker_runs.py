@@ -60,7 +60,9 @@ def test_log_lines_past_two_hundred_are_dropped_and_counted(worker: Worker):
     assert logs[-1]["data"] == {"dropped": 250 - len(fitting), "kept": 199}
 
 
-def test_a_shipped_run_reads_the_twin_at_its_head_and_keeps_an_artifact(worker: Worker, twin_api):
+def test_a_shipped_run_reads_the_twin_where_its_frame_ends_and_keeps_an_artifact(
+    worker: Worker, twin_api
+):
     head = twin_api.water.head
     table, result = table_of(worker.run(predict_body("read", limit=2)))
     # Six junctions at the head, read two to a page.
@@ -71,6 +73,21 @@ def test_a_shipped_run_reads_the_twin_at_its_head_and_keeps_an_artifact(worker: 
     assert json.loads(health)["head"]["id"] == head.id
     assert json.loads(back) == {"at": head.id, "rows": 6}
     assert twin_api.blob(stored).read_bytes().decode() == back
+
+
+def test_a_model_run_reads_the_twin_at_the_version_its_frame_ends_at(worker: Worker, twin_api):
+    """Not at the head: a model asked about an earlier version, or a scenario's branch,
+    must see the twin as it was there."""
+    store = twin_api.water.twin.store
+    earlier = store.resolve("#5")[0]
+    assert earlier.id != twin_api.water.head.id
+    body = predict_body("read", limit=10)
+    body["history"] = {**body["history"], "end": "#5"}
+    table, result = table_of(worker.run(body))
+    at, branch, *_rest = result["notes"]
+    assert (at, branch) == (earlier.id, earlier.branch)
+    expected = store.table("Junction", columns=[], at=earlier).column("uid").to_pylist()
+    assert sorted(table.column("uid").to_pylist()) == sorted(expected)
 
 
 def test_a_frame_is_read_from_the_api_with_the_runs_token_and_trace(worker: Worker, twin_api):
