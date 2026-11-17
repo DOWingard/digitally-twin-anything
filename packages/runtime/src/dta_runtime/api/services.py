@@ -10,8 +10,9 @@ from __future__ import annotations
 import os
 import threading
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 from dta_core.schema import Ontology
@@ -23,8 +24,10 @@ from ..graph import GraphCache
 from ..settings import RuntimeSettings
 from ..sync.extract import Connect
 from ..twin import Twin
+from .compute import Compute
 from .context import note_version
 from .jobs import JobRunner
+from .keyed import ComputeJobs
 from .live import Clocks, HeadState, describe_head
 from .problems import ApiError
 from .rejectfile import RejectsReader
@@ -51,18 +54,71 @@ class Services:
     connect: Connect | None = None
     rejects: RejectsReader = field(default_factory=RejectsReader)
     sync_jobs: SyncJobs = field(init=False)
+    compute_jobs: ComputeJobs = field(init=False)
     artifacts: ArtifactStore = field(init=False)
+    # The one client of the worker; it refuses every run when the twin has no worker.
+    compute: Compute = field(init=False)
+    # Scenarios a job of the compute lane is running now.
+    running_scenarios: set[str] = field(default_factory=set)
     _ontologies: OrderedDict[str, Ontology] = field(default_factory=OrderedDict)
     _heads: OrderedDict[str, HeadState] = field(default_factory=OrderedDict)
+    # Version id -> what was counted there: a version never changes.
+    _counts: OrderedDict[str, dict[str, int]] = field(default_factory=OrderedDict)
+    _first_data: VersionRef | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         self.sync_jobs = SyncJobs(self.jobs, lambda params: sync_work(self, params))
+        self.compute_jobs = ComputeJobs(self.jobs)
         self.artifacts = ArtifactStore(self.settings.artifacts_dir)
+        self.compute = Compute(self.settings.worker_url, self.settings.api_token)
 
     @property
     def store(self) -> Store:
         return self.twin.store
+
+    def close(self) -> None:
+        self.compute.close()
+
+    def interval(self, version: VersionRef) -> timedelta:
+        """The step of the twin's grid: the sync interval of the manifest in force at a
+        version. Models and scenarios cannot be placed in time without one."""
+        manifest = self.twin.manifest(at=version, branch=version.branch)
+        found = manifest.sync.interval if manifest.sync else None
+        if found is None:
+            raise ApiError(
+                "the manifest sets no sync interval, so the grid of the twin's models and "
+                "scenarios is not known",
+                code="twin.no_interval",
+            )
+        return found
+
+    def first_data(self) -> VersionRef:
+        """Where the history of the twin's data begins: the first version a sync wrote, or
+        the installation when none has. It lies on every branch, which all start later."""
+        with self._lock:
+            if self._first_data is not None:
+                return self._first_data
+        found = self.store.versions(cause="sync", limit=1)
+        if not found:
+            return self.store.resolve("#0")[0]
+        with self._lock:
+            self._first_data = found[0].ref
+        return found[0].ref
+
+    def counted(self, version: VersionRef, count: Callable[[], dict[str, int]]) -> dict[str, int]:
+        """What `count` gives at a version, counted once per version."""
+        with self._lock:
+            found = self._counts.get(version.id)
+            if found is not None:
+                self._counts.move_to_end(version.id)
+                return found
+        found = count()
+        with self._lock:
+            self._counts[version.id] = found
+            while len(self._counts) > HEADS_KEPT:
+                self._counts.popitem(last=False)
+        return found
 
     def head_state(self, version: VersionRef) -> HeadState:
         """What is known at a version, read once: a version never changes."""
