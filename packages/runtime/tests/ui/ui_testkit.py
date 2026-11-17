@@ -8,6 +8,7 @@ The observers wrap the real applications; nothing is replaced.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import time
@@ -24,7 +25,11 @@ from dta_core.store import ChangeSet, CommitMeta, Provenance
 from dta_runtime.ui.header import POLL_MS
 from waitress.server import create_server
 
-PORTS = range(18720, 18740)
+# Loopback ports the interface under test is served on. Two checkouts running the
+# suite at once would take them from each other: `DTA_TEST_UI_PORTS=<first>-<last>`
+# gives a run a range of its own.
+_FIRST, _, _LAST = os.environ.get("DTA_TEST_UI_PORTS", "18720-18739").partition("-")
+PORTS = range(int(_FIRST), int(_LAST) + 1)
 # Fixed before measuring; the measured times are recorded by the tests and printed at the end.
 FIRST_RENDER_LIMIT_S = 5.0
 FIRST_RENDER_S: dict[str, float] = {}

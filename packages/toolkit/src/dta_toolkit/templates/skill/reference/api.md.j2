@@ -165,12 +165,12 @@ Each of these writes a new version on `main`, or on a scenario's branch:
 - evaluations and measurements: `POST /models/evaluate` records the backtests, the active model and its question's status; `POST /questions/measure` records what each question may claim;
 - scenarios: `POST /scenarios` and `DELETE /scenarios/{id}` record the scenario on `main`; `POST /scenarios/{id}/run` writes the predictions on the scenario's branch and the run's status on `main`;
 - derived data: `POST /derived`;
-- running a function that gives rows to write, through `POST /functions/{id}/run` or by answering a question it answers: the answer names the version written in `wrote`;
+- running a function that gives rows to write, through `POST /functions/{id}/run`: the answer names the version written in `wrote`;
 {% if live %}
 - sync runs: `POST /sync/runs` makes the twin read its sources, which is the only way new observed data arrives.
 {% endif %}
 
-These never change it: every `GET`; answering a question and running a function, when the function gives no rows to write; predicting (`POST /models/{uid}/predict`); `POST /graph/subgraph`; `POST /block/training-set`. `POST /artifacts` keeps a file and writes nothing to the graph.
+These never change it: every `GET`; answering a question (`POST /questions/{id}/answer`: rows its function would write are not written); running a function that gives no rows to write; predicting (`POST /models/{uid}/predict`); `POST /graph/subgraph`; `POST /block/training-set`. `POST /artifacts` keeps a file and writes nothing to the graph.
 
 There is no endpoint that edits observed data: {% if live %}it changes only when the sources do and a sync run reads them{% else %}a static twin's data was loaded once and does not change{% endif %}.
 
