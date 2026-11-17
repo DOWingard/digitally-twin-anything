@@ -378,6 +378,9 @@ class FunctionSpec(Base):
         Owner.agent, "When it runs", "on_request"
     )
     interval: timedelta | None = opt(Owner.agent, "Period when the trigger is interval")
+    env: list[str] = opt(
+        Owner.agent, "Names of the variables the function's code may read; it sees no other", list
+    )
 
 
 # -- actions and control ------------------------------------------------------
@@ -487,6 +490,15 @@ class Runtime(Base):
         timedelta(seconds=1),
         gt=timedelta(milliseconds=50),
         le=timedelta(hours=1),
+    )
+    code: str | None = opt(
+        Owner.agent,
+        "Directory in the workspace holding the twin's own code: registered functions and "
+        "model families, named as module:name",
+    )
+    worker_requirements: str | None = opt(
+        Owner.agent,
+        "Requirements file in the workspace, installed into the image registered code runs in",
     )
     worker_cpus: float = opt(Owner.agent, "CPU limit of the worker for registered code", 1.0, gt=0)
     worker_memory_mb: int = opt(Owner.agent, "Memory limit of the worker", 1024, ge=128)

@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ...functions import BUILTINS, Builtin, ParamKind, shape_problem
 from ...log import Log
-from ...schema import Ontology, Role
+from ...schema import Kind, Ontology, Role
 from ..models import Manifest
 from .findings import Finding, Severity
 from .view import ManifestView, is_property_ref, split_ref
@@ -26,6 +27,7 @@ REQUIRED_UNMAPPED = "ontology.required_unmapped"
 UNMAPPED_OBSERVATION = "ontology.unmapped_observation"
 ROLE = "ontology.role"
 UNIT = "ontology.unit"
+FUNCTION_PARAM = "ontology.function_param"
 
 CODES = (
     SIGNATURE,
@@ -36,7 +38,9 @@ CODES = (
     UNMAPPED_OBSERVATION,
     ROLE,
     UNIT,
+    FUNCTION_PARAM,
 )
+_NUMERIC = (Kind.integer, Kind.float)
 
 
 def _concrete(ontology: Ontology, type_name: str) -> tuple[str, ...] | None:
@@ -68,6 +72,115 @@ def _references(view: ManifestView) -> Iterator[tuple[str, str]]:
             yield f"models.{mid}.features", ref
 
 
+def _link_types(ontology: Ontology, type_name: str) -> tuple[str, ...] | None:
+    """Link types a name stands for; None when the ontology has no such class."""
+    concrete = _concrete(ontology, type_name)
+    if concrete is None:
+        return None
+    return tuple(name for name in concrete if ontology.type(name).link is not None)
+
+
+def _function_findings(
+    base: str, builtin: Builtin, params: dict[str, object], ontology: Ontology
+) -> Iterator[tuple[str, str, str]]:
+    """(code, path, message) for each fixed parameter of a built-in that names something the
+    ontology does not have, or has in another form than the function needs."""
+    given = {
+        name: value
+        for name, value in params.items()
+        if (parameter := builtin.parameter(name)) is not None
+        and shape_problem(parameter, value) is None  # a wrong shape is reported elsewhere
+    }
+    # The types the property parameter stands for, once it is known to exist.
+    holders: tuple[str, ...] = ()
+    for name, value in sorted(given.items()):
+        parameter = builtin.parameter(name)
+        if parameter is None or parameter.kind != ParamKind.property:
+            continue
+        path = f"{base}.params.{name}"
+        type_name, prop = split_ref(str(value))
+        concrete = _concrete(ontology, type_name)
+        if concrete is None:
+            yield UNKNOWN_TYPE, path, f"{value}: the ontology has no type {type_name}"
+            continue
+        if not all(ontology.type(member).has_field(prop) for member in concrete):
+            yield UNKNOWN_PROPERTY, path, f"{value}: {type_name} has no property {prop}"
+            continue
+        holders = concrete
+        if parameter.numeric and any(
+            ontology.type(member).field(prop).kind not in _NUMERIC for member in concrete
+        ):
+            yield (
+                FUNCTION_PARAM,
+                path,
+                f"{value} does not hold numbers; {builtin.entry} needs a numeric property",
+            )
+
+    followed: list[str] | None = None
+    edge_types = given.get("edge_types")
+    if builtin.parameter("edge_types") is not None and edge_types is not None:
+        followed = []
+        for type_name in edge_types:  # type: ignore[union-attr]
+            links = _link_types(ontology, type_name)
+            path = f"{base}.params.edge_types"
+            if links is None:
+                yield UNKNOWN_TYPE, path, f"the ontology has no type {type_name}"
+            elif not links:
+                yield FUNCTION_PARAM, path, f"{type_name} is not a link type"
+            else:
+                followed.extend(links)
+
+    for clause in given.get("edge_where") or ():  # type: ignore[union-attr]
+        path = f"{base}.params.edge_where"
+        head = str(clause).split(":", 1)[0]
+        type_name, _, prop = head.partition(".")
+        if not type_name or not prop:
+            yield (
+                FUNCTION_PARAM,
+                path,
+                f"'{clause}' is not written <LinkType>.<property>:<op>:<value>",
+            )
+            continue
+        links = _link_types(ontology, type_name)
+        if links is None:
+            yield UNKNOWN_TYPE, path, f"'{clause}': the ontology has no type {type_name}"
+        elif not links:
+            yield FUNCTION_PARAM, path, f"'{clause}': {type_name} is not a link type"
+        elif not all(ontology.type(member).has_field(prop) for member in links):
+            yield UNKNOWN_PROPERTY, path, f"'{clause}': {type_name} has no property {prop}"
+
+    weight = given.get("weight")
+    if weight is not None and followed:
+        for member in followed:
+            link = ontology.type(member)
+            path = f"{base}.params.weight"
+            if not link.has_field(str(weight)):
+                yield UNKNOWN_PROPERTY, path, f"{member} has no property {weight}"
+            elif link.field(str(weight)).kind not in _NUMERIC:
+                yield FUNCTION_PARAM, path, f"{member}.{weight} does not hold numbers"
+
+    if holders:
+        group_by = given.get("group_by")
+        if group_by is not None and not all(
+            ontology.type(member).has_field(str(group_by)) for member in holders
+        ):
+            yield (
+                UNKNOWN_PROPERTY,
+                f"{base}.params.group_by",
+                f"{', '.join(holders)} has no property {group_by}",
+            )
+        for clause in given.get("where") or ():  # type: ignore[union-attr]
+            prop = str(clause).split(":", 1)[0].strip()
+            if prop != "uid" and not all(
+                ontology.type(member).has_field(prop) for member in holders
+            ):
+                yield (
+                    UNKNOWN_PROPERTY,
+                    f"{base}.params.where",
+                    f"'{clause}': {', '.join(holders)} has no property {prop}",
+                )
+
+
 def ontology_findings(manifest: Manifest, ontology: Ontology, signature: str) -> list[Finding]:
     """What in the manifest does not fit the ontology.
 
@@ -96,6 +209,15 @@ def ontology_findings(manifest: Manifest, ontology: Ontology, signature: str) ->
             report(UNKNOWN_TYPE, path, f"{ref}: the ontology has no type {type_name}")
         elif not all(ontology.type(name).has_field(prop) for name in concrete):
             report(UNKNOWN_PROPERTY, path, f"{ref}: {type_name} has no property {prop}")
+
+    for fid, function in sorted(view.functions.items()):
+        builtin = BUILTINS.get(function.entry or "") if function.kind == "builtin" else None
+        if builtin is None:
+            continue  # an entry that is no built-in is reported by the manifest's own checks
+        for code, path, message in _function_findings(
+            f"functions.{fid}", builtin, function.params, ontology
+        ):
+            report(code, path, message)
 
     for aid, action in sorted(view.actions.items()):
         if action.object_type and _concrete(ontology, action.object_type) is None:

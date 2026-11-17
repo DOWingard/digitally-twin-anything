@@ -195,6 +195,105 @@ CASES = [
 ]
 
 
+def function(entry: str, **params: Any):
+    return put("functions", {"f": {"kind": "builtin", "entry": entry, "params": params}})
+
+
+CASES += [
+    (
+        "function over a property of an unknown type",
+        function("latest", property="Basin.level"),
+        ("ontology.unknown_type", "error", "functions.f.params.property"),
+    ),
+    (
+        "function over an unknown property",
+        function("latest", property="Tank.depth"),
+        ("ontology.unknown_property", "error", "functions.f.params.property"),
+    ),
+    (
+        "threshold on a property that holds no numbers",
+        function("below", property="Pipe.status", threshold=1),
+        ("ontology.function_param", "error", "functions.f.params.property"),
+    ),
+    (
+        "paths over a type that is not a link type",
+        function("paths", edge_types=["Pipe", "Tank"]),
+        ("ontology.function_param", "error", "functions.f.params.edge_types"),
+    ),
+    (
+        "paths over an unknown type",
+        function("paths", edge_types=["Duct"]),
+        ("ontology.unknown_type", "error", "functions.f.params.edge_types"),
+    ),
+    (
+        "link filter on a property the link type does not have",
+        function("paths", edge_where=["Pump.length:gt:1"]),
+        ("ontology.unknown_property", "error", "functions.f.params.edge_where"),
+    ),
+    (
+        "link filter on a type that is not a link type",
+        function("paths", edge_where=["Tank.level:gt:1"]),
+        ("ontology.function_param", "error", "functions.f.params.edge_where"),
+    ),
+    (
+        "weight that one of the link types followed does not have",
+        function("paths", edge_types=["Pipe", "Pump"], weight="length"),
+        ("ontology.unknown_property", "error", "functions.f.params.weight"),
+    ),
+    (
+        "weight that holds no numbers",
+        function("paths", edge_types=["Pipe"], weight="status"),
+        ("ontology.function_param", "error", "functions.f.params.weight"),
+    ),
+    (
+        "grouping by a property the type does not have",
+        function("aggregate", property="Tank.level", op="mean", group_by="zone"),
+        ("ontology.unknown_property", "error", "functions.f.params.group_by"),
+    ),
+    (
+        "object filter on a property the type does not have",
+        function("latest", property="Tank.level", where=["depth:gt:1"]),
+        ("ontology.unknown_property", "error", "functions.f.params.where"),
+    ),
+]
+
+
+def test_functions_that_fit_the_ontology_have_no_findings():
+    fitting = {
+        "f_latest": {"kind": "builtin", "entry": "latest"},
+        "f_low": {
+            "kind": "builtin",
+            "entry": "below",
+            "params": {"property": "Junction.pressure", "threshold": 20, "unit": "m"},
+        },
+        "f_paths": {
+            "kind": "builtin",
+            "entry": "paths",
+            "params": {
+                "edge_types": ["Link"],
+                "edge_where": ["Link.status:eq:open", "Pipe.length:lt:500"],
+                "weight": "status",
+            },
+        },
+        "f_height": {
+            "kind": "builtin",
+            "entry": "aggregate",
+            "params": {
+                "property": "Node.elevation",
+                "op": "max",
+                "group_by": "name",
+                "where": ["uid:like:asset%", "elevation:gt:0"],
+            },
+        },
+        # Judged by the manifest's own checks, not here.
+        "f_unknown": {"kind": "builtin", "entry": "newest", "params": {"property": "X.y"}},
+        "f_code": {"kind": "registered", "entry": "plant:simulate", "params": {"property": "X.y"}},
+    }
+    found = findings(put("functions", fitting))
+    # `status` is on every link type but holds no numbers: the one finding.
+    assert found == [("ontology.function_param", "error", "functions.f_paths.params.weight")] * 3
+
+
 @pytest.mark.parametrize(
     ("change", "expected"), [case[1:] for case in CASES], ids=[c[0] for c in CASES]
 )

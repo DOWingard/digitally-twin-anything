@@ -28,6 +28,8 @@ log = Log("runtime.cli")
 
 API_PORT = 8000
 UI_PORT = 8050
+WORKER_PORT = 8100
+PORTS = {"api": API_PORT, "ui": UI_PORT, "worker": WORKER_PORT}
 
 
 def _print(document: dict[str, Any]) -> None:
@@ -384,8 +386,26 @@ def scheduler() -> None:
 
 
 @app.command()
+def worker(
+    host: Annotated[str, typer.Option(help="Address to listen on")] = "0.0.0.0",
+    port: Annotated[int, typer.Option(help="Port to listen on")] = WORKER_PORT,
+) -> None:
+    """Run the twin's models and the code registered with it, as the API asks."""
+
+    def work() -> None:
+        from .settings import WorkerSettings
+        from .worker import serve
+
+        settings = WorkerSettings.from_env()
+        log.info("worker starting", host=host, port=port)
+        serve(settings, host=host, port=port)
+
+    _run("worker", work)
+
+
+@app.command()
 def health(
-    service: Annotated[str, typer.Argument(help="api or ui")],
+    service: Annotated[str, typer.Argument(help="api, ui or worker")],
     port: Annotated[int | None, typer.Option(help="Port the service listens on")] = None,
 ) -> None:
     """Exit 0 when the named service of this container answers; used as its health check."""
@@ -395,9 +415,9 @@ def health(
 
         from .twin import TwinError
 
-        if service not in ("api", "ui"):
+        if service not in PORTS:
             raise TwinError(f"unknown service {service!r}", code="runtime.unknown_service")
-        target = port or (API_PORT if service == "api" else UI_PORT)
+        target = port or PORTS[service]
         path = "/healthz"
         try:
             response = httpx.get(f"http://127.0.0.1:{target}{path}", timeout=5.0)

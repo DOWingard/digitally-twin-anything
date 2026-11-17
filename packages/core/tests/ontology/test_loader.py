@@ -5,7 +5,19 @@ from dta_core.ontology import OntologyError, load_ontology, parse_ontology
 from dta_core.schema import Field, Kind, Ontology, Role
 
 FIXTURES = Path(__file__).parent / "fixtures"
-META_TYPES = ["TwinArtifact", "TwinDataset", "TwinManifest", "TwinSource", "TwinSyncRun"]
+META_TYPES = [
+    "TwinArtifact",
+    "TwinBacktest",
+    "TwinDataset",
+    "TwinFunction",
+    "TwinFunctionRun",
+    "TwinManifest",
+    "TwinModel",
+    "TwinQuestion",
+    "TwinScenario",
+    "TwinSource",
+    "TwinSyncRun",
+]
 
 
 def test_load_and_failure_are_logged(log_lines, water_path, tmp_path):

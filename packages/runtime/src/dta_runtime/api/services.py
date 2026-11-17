@@ -8,7 +8,6 @@ new versions arrive.
 from __future__ import annotations
 
 import os
-import re
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -18,6 +17,8 @@ from typing import Any
 from dta_core.schema import Ontology
 from dta_core.store import InvalidInput, Selector, Store, VersionRef
 
+from ..artifacts import ArtifactStore
+from ..filters import repair_plus
 from ..graph import GraphCache
 from ..settings import RuntimeSettings
 from ..sync.extract import Connect
@@ -29,19 +30,10 @@ from .problems import ApiError
 from .rejectfile import RejectsReader
 from .syncing import SyncJobs, sync_work
 
-# A `+` left unencoded in a query string arrives as a space; in a time offset
-# it can only have been a plus.
-_OFFSET_AFTER_SPACE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[0-9:.]+) (\d{2}(:?\d{2})?)$")
-
 ONTOLOGIES_KEPT = 256
 # Head versions described for health and the sync routes: a few branches, and the
 # head a poller saw just before the latest one.
 HEADS_KEPT = 8
-
-
-def repair_plus(text: str) -> str:
-    """`2026-01-05T00:00:00 01:00` -> `2026-01-05T00:00:00+01:00`."""
-    return _OFFSET_AFTER_SPACE.sub(r"\1+\2", text.strip())
 
 
 def _repair_selector(text: str) -> str:
@@ -59,12 +51,14 @@ class Services:
     connect: Connect | None = None
     rejects: RejectsReader = field(default_factory=RejectsReader)
     sync_jobs: SyncJobs = field(init=False)
+    artifacts: ArtifactStore = field(init=False)
     _ontologies: OrderedDict[str, Ontology] = field(default_factory=OrderedDict)
     _heads: OrderedDict[str, HeadState] = field(default_factory=OrderedDict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         self.sync_jobs = SyncJobs(self.jobs, lambda params: sync_work(self, params))
+        self.artifacts = ArtifactStore(self.settings.artifacts_dir)
 
     @property
     def store(self) -> Store:

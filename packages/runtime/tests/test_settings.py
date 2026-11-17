@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from dta_core.errors import ConfigError
-from dta_runtime.settings import RuntimeSettings, UiSettings, log_file
+from dta_runtime.settings import RuntimeSettings, UiSettings, WorkerSettings, log_file
 
 STORE = {
     "DTA_STORE_HOST": "store",
@@ -56,3 +56,44 @@ def test_ui_settings_need_an_http_address():
     with pytest.raises(ConfigError) as caught:
         UiSettings.from_env({**UI, "DTA_API_URL": "api:8000"})
     assert caught.value.code == "config.bad_value"
+
+
+def test_the_api_knows_its_worker_only_when_the_stack_names_one():
+    assert RuntimeSettings.from_env(RUNTIME).worker_url is None
+    with_worker = RuntimeSettings.from_env({**RUNTIME, "DTA_WORKER_URL": "http://worker:8100/"})
+    assert with_worker.worker_url == "http://worker:8100"
+    for bad in ("worker:8100", ""):
+        with pytest.raises(ConfigError) as caught:
+            RuntimeSettings.from_env({**RUNTIME, "DTA_WORKER_URL": bad})
+        assert caught.value.code == "config.bad_value"
+        assert caught.value.detail == {"name": "DTA_WORKER_URL"}
+
+
+WORKER = {
+    "DTA_API_URL": "http://api:8000",
+    "DTA_API_TOKEN": TOKEN,
+    "DTA_WORKER_CPUS": "1.5",
+    "DTA_WORKER_MEMORY_MB": "2048",
+}
+
+
+def test_worker_settings_hold_the_api_and_its_limits_and_nothing_else():
+    settings = WorkerSettings.from_env(WORKER)
+    assert (settings.api_url, settings.cpus, settings.memory_mb) == ("http://api:8000", 1.5, 2048)
+    assert TOKEN not in repr(settings)
+    assert not hasattr(settings, "store") and not hasattr(settings, "logs_dir")
+    for missing in WORKER:
+        with pytest.raises(ConfigError) as caught:
+            WorkerSettings.from_env({k: v for k, v in WORKER.items() if k != missing})
+        assert caught.value.detail["missing"] == [missing]
+    for change in (
+        {"DTA_WORKER_CPUS": "0"},
+        {"DTA_WORKER_CPUS": "many"},
+        {"DTA_WORKER_MEMORY_MB": "64"},
+        {"DTA_WORKER_MEMORY_MB": "1.5"},
+        {"DTA_API_URL": "api:8000"},
+        {"DTA_API_TOKEN": "short"},
+    ):
+        with pytest.raises(ConfigError) as caught:
+            WorkerSettings.from_env({**WORKER, **change})
+        assert caught.value.code == "config.bad_value", change

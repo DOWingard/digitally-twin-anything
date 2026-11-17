@@ -187,7 +187,389 @@ classes:
         description: Path inside the twin's artifact volume.
       description: {}
 
+  TwinFunction:
+    description: >-
+      Something the twin computes on request or on a schedule: shipped with the
+      runtime, or registered as code that runs apart from the API.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      kind:
+        range: TwinFunctionKind
+        required: true
+      entry:
+        required: true
+        description: Name of a built-in, or module:function inside the code artifact.
+      artifact:
+        range: TwinArtifact
+        description: The code of a registered function.
+      description:
+        annotations:
+          dta_long: true
+      params:
+        description: Fixed arguments, as JSON.
+        annotations:
+          dta_long: true
+      arguments:
+        description: What a caller may pass, as a JSON Schema.
+        annotations:
+          dta_long: true
+      complexity:
+        description: Cost in objects, links and versions, such as O(|E|).
+      latency_budget_ms:
+        range: integer
+        minimum_value: 1
+        description: Longest acceptable run time; a run that exceeds it is stopped.
+      trigger:
+        range: TwinFunctionTrigger
+        required: true
+      interval:
+        description: Period when the trigger is interval, ISO 8601.
+      env:
+        multivalued: true
+        description: Names of the environment variables registered code may read.
+      origin:
+        range: TwinOrigin
+        required: true
+      status:
+        range: TwinFunctionStatus
+        required: true
+        annotations:
+          dta_role: state
+
+  TwinFunctionRun:
+    description: >-
+      One run of a function that was scheduled or that wrote to the twin. A run
+      on request that only answers leaves no record.
+    annotations:
+      dta_event: true
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      function:
+        range: TwinFunction
+        required: true
+      trigger:
+        range: TwinFunctionTrigger
+        required: true
+      status:
+        range: TwinWorkStatus
+        required: true
+      started_at:
+        range: datetime
+        required: true
+        description: Data time of the version the run read.
+      at_version:
+        required: true
+        description: Commit the run read.
+      params:
+        description: Arguments of the run, as JSON.
+        annotations:
+          dta_long: true
+      rows_written:
+        range: integer
+        minimum_value: 0
+      duration_ms:
+        range: integer
+        minimum_value: 0
+      error:
+        annotations:
+          dta_long: true
+      trace_id: {}
+
+  TwinModel:
+    description: >-
+      One candidate of a model specification: a family with its settings, and,
+      once fitted, the fitted state it predicts from.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      spec:
+        required: true
+        description: Id of the model specification the candidate belongs to.
+      candidate:
+        required: true
+      family:
+        required: true
+        description: Name of a shipped family, or module:name inside the code artifact.
+      code:
+        range: TwinArtifact
+        description: The code of a registered family.
+      params:
+        description: Settings of the family, as JSON.
+        annotations:
+          dta_long: true
+      question:
+        description: Id of the question the model answers.
+      target:
+        required: true
+        description: What is predicted, as Type.property.
+      features:
+        multivalued: true
+      interventional:
+        range: boolean
+        required: true
+        description: Whether its predictions hold when a control is changed.
+      origin:
+        range: TwinOrigin
+        required: true
+      status:
+        range: TwinModelStatus
+        required: true
+        annotations:
+          dta_role: state
+      fitted:
+        range: TwinArtifact
+        description: The fitted state.
+        annotations:
+          dta_role: state
+      fitted_from:
+        range: datetime
+        description: Data time the training data begins.
+        annotations:
+          dta_role: state
+      fitted_to:
+        range: datetime
+        description: Data time the training data ends.
+        annotations:
+          dta_role: state
+      fitted_at_version:
+        description: Commit the training data was read at.
+        annotations:
+          dta_role: state
+      validity:
+        description: Range of every input seen in training, as JSON.
+        annotations:
+          dta_role: state
+          dta_long: true
+
+  TwinBacktest:
+    description: One walk-forward evaluation of a model against what was observed later.
+    annotations:
+      dta_event: true
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      model:
+        range: TwinModel
+        required: true
+      started_at:
+        range: datetime
+        required: true
+        description: Data time of the version the evaluation read.
+      at_version:
+        required: true
+        description: Commit the evaluation read.
+      range_from:
+        range: datetime
+        required: true
+      range_to:
+        range: datetime
+        required: true
+      origins:
+        range: integer
+        required: true
+        minimum_value: 0
+        description: Number of forecast origins evaluated.
+      horizon_steps:
+        range: integer
+        required: true
+        minimum_value: 1
+      step:
+        required: true
+        description: Time between two predicted values, ISO 8601.
+      refit_every:
+        range: integer
+        minimum_value: 0
+        description: Origins between two fits; 0 when the model was fitted once.
+      metric:
+        required: true
+      error:
+        range: float
+        description: The metric over all origins.
+      baseline:
+        description: The naive forecast the model is compared with.
+      baseline_error:
+        range: float
+      threshold:
+        range: float
+        description: Largest error accepted.
+      accepted:
+        range: boolean
+        required: true
+      scores:
+        description: Every metric computed, per model and baseline, as JSON.
+        annotations:
+          dta_long: true
+      residuals:
+        range: TwinArtifact
+        description: Quantiles of the errors per step ahead, used for intervals.
+      duration_ms:
+        range: integer
+        minimum_value: 0
+      trace_id: {}
+
+  TwinQuestion:
+    description: >-
+      A question of the contract as the twin answers it now: how, and with what
+      measured error against the agreed tolerance.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      question:
+        required: true
+        description: Id of the question in the contract.
+      status:
+        range: TwinQuestionStatus
+        required: true
+        annotations:
+          dta_role: state
+      reason:
+        description: Why the question is provisional or failing.
+        annotations:
+          dta_role: state
+          dta_long: true
+      metric:
+        annotations:
+          dta_role: state
+      measured_error:
+        range: float
+        annotations:
+          dta_role: state
+      tolerance:
+        range: float
+        annotations:
+          dta_role: state
+      unit:
+        annotations:
+          dta_role: state
+      basis:
+        range: TwinQuestionBasis
+        description: What the measured error rests on.
+        annotations:
+          dta_role: state
+      backtest:
+        range: TwinBacktest
+        annotations:
+          dta_role: state
+      function:
+        range: TwinFunction
+        annotations:
+          dta_role: state
+      model:
+        range: TwinModel
+        annotations:
+          dta_role: state
+      measured_at:
+        range: datetime
+        description: Data time of the version the error was measured at.
+        annotations:
+          dta_role: state
+
+  TwinScenario:
+    description: >-
+      A what-if: a branch that starts at a version of the live line, holds
+      assumed changes, and is filled with what a model predicts follows.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      name:
+        required: true
+      description:
+        annotations:
+          dta_long: true
+      branch:
+        required: true
+      base_version:
+        required: true
+        description: Commit of the live line the scenario starts from.
+      base_t:
+        range: datetime
+        required: true
+        description: Data time of that version.
+      interventions:
+        required: true
+        description: The assumed changes, as JSON.
+        annotations:
+          dta_long: true
+      horizon:
+        description: How far the scenario runs beyond its base, ISO 8601.
+      model:
+        range: TwinModel
+      status:
+        range: TwinScenarioStatus
+        required: true
+        annotations:
+          dta_role: state
+      error:
+        annotations:
+          dta_role: state
+          dta_long: true
+
 enums:
+  TwinFunctionKind:
+    permissible_values:
+      builtin: {}
+      registered: {}
+  TwinFunctionTrigger:
+    permissible_values:
+      on_request: {}
+      on_commit: {}
+      interval: {}
+  TwinFunctionStatus:
+    permissible_values:
+      active: {}
+      disabled: {}
+  TwinOrigin:
+    permissible_values:
+      manifest:
+        description: Declared in the manifest and registered when the twin was built.
+      runtime:
+        description: Registered through the API while the twin ran.
+  TwinWorkStatus:
+    permissible_values:
+      succeeded: {}
+      failed: {}
+  TwinModelStatus:
+    permissible_values:
+      candidate:
+        description: Registered; not evaluated yet, or evaluated and not chosen.
+      active:
+        description: The model its question is answered with.
+      rejected:
+        description: Evaluated and outside what was agreed.
+      retired: {}
+  TwinQuestionStatus:
+    permissible_values:
+      validated:
+        description: Measured error within the agreed tolerance.
+      provisional:
+        description: Answered, but not yet measured well enough to say.
+      failing:
+        description: Measured error outside the agreed tolerance.
+  TwinQuestionBasis:
+    permissible_values:
+      backtest:
+        description: Walk-forward evaluation of the question's model.
+      noise_floor:
+        description: Noise of the source columns the answer is read from.
+      check:
+        description: The function's own check of its answer.
+      latency:
+        description: Only that the function answers within its budget.
+  TwinScenarioStatus:
+    permissible_values:
+      created: {}
+      running: {}
+      done: {}
+      failed: {}
+      deleted: {}
   TwinSourceStatus:
     permissible_values:
       ok: {}

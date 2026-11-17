@@ -8,11 +8,15 @@ take none, `like` takes an SQL pattern.
 `edge_where=<LinkType>.<property>:<op>:<value>` filters the links a traversal
 follows: the name before the first `.` is a link type, or a class standing for
 every link type under it, and the rest is a `where` clause over its properties.
+
+The API's routes and the twin's built-in functions read their filters here, so
+a clause means the same wherever it is written.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import Any
@@ -20,8 +24,7 @@ from typing import Any
 from dta_core.schema import UID_FIELD, Field, Kind, Ontology
 from dta_core.store import InvalidInput, UnknownProperty, UnknownType
 
-from ..graph import BadEdgeFilter, EdgeFilter
-from .services import repair_plus
+from .graph import BadEdgeFilter, EdgeFilter
 
 OPERATORS = {
     "eq": "=",
@@ -40,6 +43,15 @@ _TRUE = ("true", "1")
 _FALSE = ("false", "0")
 
 Triple = tuple[str, str, Any]
+
+# A `+` left unencoded in a query string arrives as a space; in a time offset
+# it can only have been a plus.
+_OFFSET_AFTER_SPACE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[0-9:.]+) (\d{2}(:?\d{2})?)$")
+
+
+def repair_plus(text: str) -> str:
+    """`2026-01-05T00:00:00 01:00` -> `2026-01-05T00:00:00+01:00`."""
+    return _OFFSET_AFTER_SPACE.sub(r"\1+\2", text.strip())
 
 
 def _bad(message: str) -> InvalidInput:

@@ -90,6 +90,14 @@ def test_the_document_describes_every_route(app_client: TestClient, auth: dict[s
         "/api/v1/sync/runs/{uid}",
         "/api/v1/sync/runs/{uid}/rejects",
         "/api/v1/sync/sources",
+        "/api/v1/artifacts",
+        "/api/v1/artifacts/{sha256}",
+    }
+    kept = document["paths"]["/api/v1/artifacts"]["post"]
+    assert {"200", "201", "400", "413"} <= set(kept["responses"])
+    assert kept["requestBody"]["content"]["application/octet-stream"]["schema"] == {
+        "type": "string",
+        "format": "binary",
     }
     assert set(document["paths"]["/api/v1/sync/runs"]) == {"get", "post"}
     started = document["paths"]["/api/v1/sync/runs"]["post"]

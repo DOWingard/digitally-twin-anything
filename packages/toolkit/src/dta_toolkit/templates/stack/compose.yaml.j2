@@ -50,6 +50,9 @@ services:
       DTA_API_TOKEN: ${{ '{' }}{{ token_env }}:?{{ token_env }} is required}
       DTA_ARTIFACTS_DIR: /var/lib/dta/artifacts
       DTA_LOGS_DIR: /var/log/dta
+{%- if worker %}
+      DTA_WORKER_URL: http://worker:8100
+{%- endif %}
 {%- for name in source_env %}
       {{ name }}: ${{ '{' }}{{ name }}:?{{ name }} is required}
 {%- endfor %}
@@ -60,10 +63,14 @@ services:
       # A source that is a folder on this machine, readable and nothing more.
       - {{ mount.host }}:{{ mount.container }}:ro
 {%- endfor %}
-{%- if networks %}
-    # Only this service reads sources, so only it joins the networks they live on.
+{%- if networks or worker %}
+    # Only this service reads sources, so only it joins the networks they live on;
+    # only it talks to the worker, on a network of their own.
     networks:
       - default
+{%- if worker %}
+      - compute
+{%- endif %}
 {%- for network in networks %}
       - {{ network }}
 {%- endfor %}
@@ -117,15 +124,60 @@ services:
     volumes:
       - logs:/var/log/dta
 {%- endif %}
+{%- if worker %}
+
+  # Runs the twin's models and the code registered with it. It reaches the API
+  # and nothing else: its network has no way out, it shares no volume, and it
+  # holds no store password and no source credential. What a run logs comes
+  # back with its result.
+  worker:
+    image: {{ worker_image }}
+    restart: unless-stopped
+    logging: *logging
+    command: ["dta-runtime", "worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DTA_API_URL: http://api:8000
+      DTA_API_TOKEN: ${{ '{' }}{{ token_env }}:?{{ token_env }} is required}
+      DTA_WORKER_CPUS: "{{ worker_cpus }}"
+      DTA_WORKER_MEMORY_MB: "{{ worker_memory_mb }}"
+{%- for name in worker_env %}
+      {{ name }}: ${{ '{' }}{{ name }}:?{{ name }} is required}
+{%- endfor %}
+    networks:
+      - compute
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    cpus: {{ worker_cpus }}
+    mem_limit: {{ worker_memory_mb }}m
+    healthcheck:
+      test: ["CMD", "dta-runtime", "health", "worker"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+{%- endif %}
 
 volumes:
   store-data: {}
   artifacts: {}
   logs: {}
-{%- if networks %}
+{%- if networks or worker %}
 
 networks:
   default: {}
+{%- if worker %}
+  compute:
+    internal: true
+{%- endif %}
 {%- for network in networks %}
   {{ network }}:
     external: true

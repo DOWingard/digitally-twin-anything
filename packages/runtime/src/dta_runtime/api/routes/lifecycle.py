@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Path, Query
 from starlette.responses import Response
 
+from ...filters import repair_plus
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, errors
 from ..formats import json_response
@@ -16,7 +17,6 @@ from ..logfiles import LogQuery, read_logs
 from ..models import JobList, JobOne, JobState, LogsOut
 from ..params import split_list
 from ..problems import ApiError
-from ..services import repair_plus
 
 router = APIRouter(prefix=f"{API_PREFIX}/lifecycle", tags=["lifecycle"])
 
@@ -40,12 +40,17 @@ async def jobs(
         str | None, Query(description="Only jobs of this kind", examples=["sync"], max_length=100)
     ] = None,
     state: Annotated[JobState | None, Query(description="Only jobs in this state")] = None,
+    lane: Annotated[
+        Literal["sync", "compute"] | None, Query(description="Only jobs of this lane")
+    ] = None,
     limit: Annotated[
         int, Query(ge=1, le=KEEP, description="Most jobs returned")
     ] = JOBS_LIMIT_DEFAULT,
 ) -> Response:
     # A coroutine: it reads memory only, and needs no worker thread.
-    return json_response({"data": services.jobs.list(kind=kind, state=state, limit=limit)})
+    return json_response(
+        {"data": services.jobs.list(kind=kind, state=state, lane=lane, limit=limit)}
+    )
 
 
 @router.get(

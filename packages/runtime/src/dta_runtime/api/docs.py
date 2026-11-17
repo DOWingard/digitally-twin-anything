@@ -22,6 +22,7 @@ _DESCRIPTIONS = {
     401: "No valid bearer token was given",
     404: "The version, branch, type, property or object does not exist",
     409: "The request conflicts with the state of the twin or of its jobs",
+    413: "The body is larger than allowed",
     422: "The change breaks a constraint of the ontology",
     500: "The request failed on the server",
     503: "The store cannot be reached",
