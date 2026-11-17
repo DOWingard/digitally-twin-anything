@@ -44,12 +44,14 @@ def frame_of(
     step: timedelta | None = None,
     ahead: int = 0,
     uids: Sequence[str] | None = None,
+    start: VersionRef | None = None,
 ) -> FrameRef:
-    """The frame of a model up to a version of a branch, `ahead` steps beyond it."""
+    """The frame of a model up to a version of a branch, `ahead` steps beyond it; from
+    `start`, or from where the twin's data begins."""
     return FrameRef(
         target=model["target"],
         uids=list(uids) if uids else None,
-        start=services.first_data().id,
+        start=(start or services.first_data()).id,
         end=version.id,
         branch=version.branch,
         step=step if step is not None else services.interval(version),
