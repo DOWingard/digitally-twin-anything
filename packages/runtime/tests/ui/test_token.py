@@ -9,7 +9,7 @@ from dta_runtime.ui import ids
 from live_testkit import at
 from selenium.webdriver.common.keys import Keys
 from ui_page import (
-    choose_dropdown,
+    choose_object,
     click_graph_element,
     click_run,
     click_tab,
@@ -53,7 +53,7 @@ def test_the_token_never_reaches_the_browser(stack, browser):
     head = max(stack.history.versions)
     # Every kind of call the page makes: header, graph, details, search, sheet, history, logs.
     wait_graph_at(browser, head)
-    choose_dropdown(browser, ids.GRAPH_OBJECT, node("J2"), typed="J2")
+    choose_object(browser, node("J2"), typed="J2")
     wait_for(browser, lambda: "around node:J2" in text_of(browser, ids.GRAPH_STATUS), "J2")
     click_graph_element(browser, node("J2"))
     wait_for(browser, lambda: "elevation" in text_of(browser, ids.GRAPH_DETAILS), "details")

@@ -86,3 +86,14 @@ def cell(value: Any) -> Any:
 
 def plural(count: int, word: str) -> str:
     return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def search_label(uid: str, type_name: str | None, name: str | None) -> str:
+    """`node:J2 · Junction · Junction J2`: what a search found, by uid, type and name."""
+    return " · ".join(part for part in (uid, type_name, name) if part)
+
+
+def more_found_text(more: int, typed: str) -> str:
+    """Said below the objects a search offers when more match. It holds what was typed, so
+    that the dropdown, which filters its options by the text typed, keeps it."""
+    return f"… {plural(more, 'more object')} match {typed}: type more of the uid or name"

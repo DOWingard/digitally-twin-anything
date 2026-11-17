@@ -163,10 +163,25 @@ def click_graph_element(driver: WebDriver, element_id: str) -> None:
     ).click().perform()
 
 
+def option_uid(text: str) -> str:
+    """The uid an object search option is shown with first: `node:J2 · Junction · J2`."""
+    return text.split(" · ", 1)[0]
+
+
+def choose_object(driver: WebDriver, uid: str, typed: str) -> None:
+    """Search the graph's object field for `typed` and choose the object `uid`."""
+    choose_dropdown(driver, ids.GRAPH_OBJECT, uid, typed=typed, shown=option_uid)
+
+
 def choose_dropdown(
-    driver: WebDriver, element_id: str, text: str, typed: str | None = None
+    driver: WebDriver,
+    element_id: str,
+    text: str,
+    typed: str | None = None,
+    shown: Callable[[str], str] = str.strip,
 ) -> None:
-    """Open a Dash dropdown, type into its search field and click the option shown as `text`."""
+    """Open a Dash dropdown, type into its search field and click the option shown as `text`
+    (`shown` reads what an option shows from its text)."""
     box = driver.find_element(By.ID, element_id)
     box.click()
     popup_id = wait_for(driver, lambda: box.get_attribute("aria-controls"), f"{element_id} to open")
@@ -187,7 +202,7 @@ def choose_dropdown(
             for item in driver.find_element(By.ID, popup_id).find_elements(
                 By.CSS_SELECTOR, "[role=option]"
             )
-            if item.is_displayed() and item.text.strip() == text
+            if item.is_displayed() and shown(item.text.strip()) == text
         ],
         f"option {text!r} of {element_id}",
     )[0]
