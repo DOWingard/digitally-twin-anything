@@ -154,6 +154,11 @@ class _Stats(Shipped):
 
     # Fewest rows of a series, before any season is counted.
     floor: ClassVar[int] = 1
+    # Whether a fitted model holds the state its series had at its first row (a level, a
+    # trend, where in the season it was). The library applies such a model to a history
+    # as if the history began at that row: right for the same series grown longer, wrong
+    # (far off, with a season) for a window that begins elsewhere.
+    anchored: ClassVar[bool] = False
 
     def model(self, settings: Mapping[str, Any]) -> Any:
         raise NotImplementedError
@@ -187,7 +192,8 @@ class _Stats(Shipped):
         engine = self.engine(settings)
         engine.fit(frame[[UNIQUE_ID, DS, Y]])
         fitted = {str(uid): row[0] for uid, row in zip(engine.uids, engine.fitted_, strict=True)}
-        return {"settings": settings, "models": fitted}
+        starts = frame.groupby(UNIQUE_ID, sort=False)[DS].min()
+        return {"settings": settings, "models": fitted, "starts": starts.to_dict()}
 
     def predict(
         self,
@@ -210,11 +216,19 @@ class _Stats(Shipped):
         require_rows(known, *self.need(state["settings"]))
         wanted = level_values(levels)
         parts = []
+        refitted = 0
         for uid, rows in known.groupby(UNIQUE_ID, sort=True):
-            # The fitted model applied to the series as it is now; nothing is fitted again.
-            found = models[uid].forward(
-                y=rows[Y].to_numpy(dtype=float), h=horizon, level=wanted or None
-            )
+            values = rows[Y].to_numpy(dtype=float)
+            if self.anchored and rows[DS].iloc[0] != state["starts"][uid]:
+                # The history begins elsewhere than the series the model was fitted on:
+                # the model's own state would be put at the wrong row. Fitted again, on
+                # the history given, for this series only.
+                refitted += 1
+                again = self.model(state["settings"]).fit(values)
+                found = again.predict(h=horizon, level=wanted or None)
+            else:
+                # The fitted model applied to the series as it is now; nothing is fitted.
+                found = models[uid].forward(y=values, h=horizon, level=wanted or None)
             part = {
                 UNIQUE_ID: uid,
                 DS: pd.date_range(rows[DS].iloc[-1] + self.freq, periods=horizon, freq=self.freq),
@@ -224,6 +238,8 @@ class _Stats(Shipped):
                 part[low(level)] = found[f"lo-{level}"]
                 part[high(level)] = found[f"hi-{level}"]
             parts.append(pd.DataFrame(part))
+        if refitted:
+            self.note(f"refitted:{refitted}")
         return pd.concat(parts, ignore_index=True)
 
     def cross_validate(
@@ -281,6 +297,7 @@ class Ets(_Stats):
     name = "ets"
     takes = {"season_length": _whole(1), "model": _ets_form}
     floor = _AUTO_FLOOR
+    anchored = True
 
     def model(self, settings: Mapping[str, Any]) -> Any:
         return AutoETS(
@@ -313,6 +330,8 @@ class Mstl(_Stats):
     name = "mstl"
     takes = {"season_length": _list_of(_whole(2))}
     floor = _AUTO_FLOOR
+    # Its trend is forecast by exponential smoothing, which is.
+    anchored = True
 
     def settings(self, params: Mapping[str, Any]) -> dict[str, Any]:
         settings = self.checked(params)
