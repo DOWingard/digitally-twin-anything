@@ -77,7 +77,9 @@ def history(twin: Twin) -> list[VersionRef]:
 
 def _levels(twin: Twin, version: VersionRef, uids: list[str] | None = None) -> dict[str, Any]:
     table = twin.store.table("Tank", columns=["level"], at=version, ontology=twin.ontology)
-    found = dict(zip(table.column("uid").to_pylist(), table.column("level").to_pylist()))
+    found = dict(
+        zip(table.column("uid").to_pylist(), table.column("level").to_pylist(), strict=True)
+    )
     return found if uids is None else {uid: found[uid] for uid in uids if uid in found}
 
 
@@ -92,7 +94,7 @@ def test_the_events_are_the_state_at_the_first_version_and_the_changes_after_it(
     assert inforce.properties(events) == ["level"]
     at_first = events.filter(pa.compute.equal(events.column("_seq"), first.seq))
     assert dict(
-        zip(at_first.column("uid").to_pylist(), at_first.column("level").to_pylist())
+        zip(at_first.column("uid").to_pylist(), at_first.column("level").to_pylist(), strict=True)
     ) == _levels(twin, first)
     assert set(at_first.column("_t").to_pylist()) == {first.t}
     seqs = events.column("_seq").to_pylist()
