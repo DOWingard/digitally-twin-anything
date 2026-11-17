@@ -108,6 +108,29 @@ ANSWER_GRID = "answer-grid"
 ANSWER_CHART = "answer-chart"
 ANSWER_FEEDBACK = "answer-feedback"
 
+# Scenarios tab
+SCENARIO_LIST = "scenario-list"
+SCENARIO_LIST_STATUS = "scenario-list-status"
+SCENARIO_LIST_FEEDBACK = "scenario-list-feedback"
+# The head of the live twin the list was last read at.
+SCENARIO_LIST_SHOWN = "scenario-list-shown"
+# The scenario chosen in the list, as the list described it.
+SCENARIO_PICKED = "scenario-picked"
+SCENARIO_TITLE = "scenario-title"
+COMPARE_TARGETS = "compare-targets"
+COMPARE_AGAINST = "compare-against"
+COMPARE = "compare"
+COMPARE_FEEDBACK = "compare-feedback"
+COMPARISON = "comparison"
+# Roles of the pattern-matching ids made per comparison: a chart and its choice of
+# objects per target, and the grid of every row.
+COMPARE_CHART = "compare-chart"
+COMPARE_PICK = "compare-pick"
+COMPARE_NOTE = "compare-note"
+COMPARE_GRID = "compare-grid"
+COMPARE_GRID_FEEDBACK = "compare-grid-feedback"
+COMPARE_PRELOAD = "compare-preload"
+
 # The sync section of the history tab: the twin at its head, whatever version is selected.
 SYNC_SECTION = "sync-section"
 SYNC_STATIC = "sync-static"

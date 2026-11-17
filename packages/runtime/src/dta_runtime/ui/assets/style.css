@@ -69,6 +69,53 @@ body {
   flex: 1 1 320px;
 }
 
+/* The branch selector, and the header while a scenario is shown: told in words and set
+   apart by a band, so that a scenario is never taken for the live twin. */
+
+.branch-select {
+  flex: 0 1 320px;
+  min-width: 220px;
+  font-weight: 400;
+}
+
+.header.scenario-shown {
+  border-left: 6px solid #7a3fb0;
+  padding-left: 10px;
+  background: #f6f0fb;
+}
+
+.scenario-notice:empty {
+  display: none;
+}
+
+.scenario-notice {
+  margin: 4px 0;
+  padding: 6px 10px;
+  border: 2px dashed #7a3fb0;
+  border-radius: 4px;
+  color: #4b2370;
+  background: #fff;
+}
+
+.scenario-badge {
+  letter-spacing: 0.08em;
+  background: #7a3fb0;
+  color: #fff;
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+
+.fact-mark {
+  font-size: 11px;
+  font-weight: 600;
+  color: #4b2370;
+}
+
+.fact-assumed td,
+.fact-simulated td {
+  background: #f6f0fb;
+}
+
 .version-id {
   margin-left: 8px;
   font-size: 11px;
@@ -447,4 +494,60 @@ body {
 .answer-list {
   margin: 4px 0;
   padding-left: 20px;
+}
+
+/* Scenarios tab. A status is told by a word and a sign; a failed or deleted scenario is
+   also coloured. */
+
+.scenario-list .scenario-failed {
+  color: var(--error-ink);
+  background: var(--error-bg);
+  font-weight: 600;
+}
+
+.scenario-list .scenario-deleted {
+  color: var(--muted);
+  background: var(--panel);
+  text-decoration: line-through;
+}
+
+.scenario-list .scenario-done {
+  color: #1b6e2d;
+  font-weight: 600;
+}
+
+.compare-box {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 12px;
+}
+
+.compare-box h4 {
+  margin: 0 0 8px;
+}
+
+.compare-controls {
+  display: grid;
+  grid-template-columns: minmax(260px, 2fr) minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.compare-controls .field,
+.compare-pick {
+  display: flex;
+  flex-direction: column;
+}
+
+.compare-controls label,
+.compare-pick label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.compare-target {
+  margin: 12px 0;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
 }

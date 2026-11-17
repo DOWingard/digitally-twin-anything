@@ -23,7 +23,7 @@ from dta_core.log import Log
 from ..settings import UiSettings
 from .client import ApiClient, ApiProblem
 from .paging import PagedReader
-from .parts import LIVE_BRANCH
+from .parts import LIVE_BRANCH, branch_of
 from .schema import Schema
 
 log = Log("ui.backend")
@@ -90,6 +90,10 @@ class Backend:
             elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
         )
         return schema
+
+    def schema_at(self, version: dict[str, Any]) -> Schema:
+        """The ontology in force at a selected version, on its branch."""
+        return self.schema(str(version["id"]), branch_of(version))
 
     def enum(self, route: str, parameter: str) -> list[str]:
         """Allowed values of a query parameter of a GET route, from the API's OpenAPI document.

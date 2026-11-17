@@ -18,14 +18,17 @@ the operator stops at.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from dash import ALL, ClientsideFunction, Dash, Input, Output, State, ctx, dcc, html, no_update
 from dta_core.log import Log
 
 from . import ids
+from . import text as T
 from .backend import Backend
 from .feedback import guarded
+from .parts import LIVE_BRANCH, branch_of
 from .text import duration_text, minute_text, plural, seconds_text, time_text
 
 log = Log("ui.header")
@@ -47,6 +50,9 @@ def layout() -> html.Header:
             dcc.Store(id=ids.VERSION),
             dcc.Store(id=ids.SETTLED),
             dcc.Store(id=ids.GRIDS_REFRESHED),
+            dcc.Store(id=ids.BRANCHES),
+            dcc.Store(id=ids.BRANCH),
+            dcc.Store(id=ids.LIVE_KEPT),
             dcc.Interval(id=ids.POLL, interval=POLL_MS),
             html.Div(
                 [
@@ -56,9 +62,21 @@ def layout() -> html.Header:
                 ],
                 className="header-row",
             ),
+            html.Div(id=ids.SCENARIO_NOTICE, className="scenario-notice", role="status"),
             html.Div(id=ids.LIVE_LINE, className="header-row live-line"),
             html.Div(
                 [
+                    html.Label(
+                        T.BRANCH_SELECT_LABEL, htmlFor=ids.BRANCH_SELECT, className="slider-label"
+                    ),
+                    dcc.Dropdown(
+                        id=ids.BRANCH_SELECT,
+                        options=[{"label": T.LIVE_OPTION, "value": LIVE_BRANCH}],
+                        value=LIVE_BRANCH,
+                        clearable=False,
+                        searchable=False,
+                        className="branch-select",
+                    ),
                     html.Label("Version", htmlFor=ids.SLIDER, className="slider-label"),
                     html.Div(
                         dcc.Slider(
@@ -81,7 +99,7 @@ def layout() -> html.Header:
                     html.Button("Jump to head", id=ids.JUMP, n_clicks=0, className="button"),
                     dcc.Checklist(
                         id=ids.FOLLOW,
-                        options=[{"label": " Follow head", "value": FOLLOW_ON}],
+                        options=follow_options(following_allowed=True),
                         value=[FOLLOW_ON],
                         inline=True,
                         className="follow",
@@ -92,9 +110,38 @@ def layout() -> html.Header:
             ),
             html.Div(id=ids.HEALTH_FEEDBACK),
             html.Div(id=ids.VERSION_FEEDBACK),
+            html.Div(id=ids.BRANCH_FEEDBACK),
         ],
+        id=ids.HEADER,
         className="header",
     )
+
+
+def follow_options(*, following_allowed: bool) -> list[dict[str, Any]]:
+    """A scenario's head does not move while it is shown: following is off and cannot be
+    turned on."""
+    return [{"label": T.FOLLOW_LABEL, "value": FOLLOW_ON, "disabled": not following_allowed}]
+
+
+@dataclass(frozen=True)
+class Span:
+    """The versions the slider runs over: from 0 to the live twin's head, or from a
+    scenario's base to its head."""
+
+    branch: str
+    low: int
+    head: int
+
+
+def span_of(health: dict[str, Any] | None, branch: dict[str, Any] | None) -> Span | None:
+    name = (branch or {}).get("branch") or LIVE_BRANCH
+    if name == LIVE_BRANCH:
+        head = _head_seq(health)
+        return None if head is None else Span(LIVE_BRANCH, 0, head)
+    low, head = (branch or {}).get("base_seq"), (branch or {}).get("head_seq")
+    if low is None or head is None:
+        return None
+    return Span(name, int(low), int(head))
 
 
 def _head_seq(health: dict[str, Any] | None) -> int | None:
@@ -162,17 +209,22 @@ def register(app: Dash, backend: Backend) -> None:
         return name, tier, f"head #{head['seq']} · {time_text(head['t'])}{counted}"
 
     @app.callback(
+        Output(ids.SLIDER, "min"),
         Output(ids.SLIDER, "max"),
         Output(ids.SLIDER, "marks"),
         Output(ids.SLIDER, "value"),
         Output(ids.FOLLOW, "value"),
+        Output(ids.FOLLOW, "options"),
         Output(ids.SETTLED, "data"),
+        Output(ids.LIVE_KEPT, "data"),
         Input(ids.HEALTH, "data"),
         Input(ids.JUMP, "n_clicks"),
         Input(ids.FOLLOW, "value"),
         Input(ids.SLIDER, "value"),
         Input({"role": ids.COMMIT_LOG, "query": ALL}, "cellClicked"),
+        Input(ids.BRANCH, "data"),
         State(ids.SETTLED, "data"),
+        State(ids.LIVE_KEPT, "data"),
     )
     def steer(
         health: dict[str, Any] | None,
@@ -180,44 +232,79 @@ def register(app: Dash, backend: Backend) -> None:
         follow: list[str] | None,
         value: int | None,
         _clicks: list[Any],
-        settled: int | None,
+        branch: dict[str, Any] | None,
+        settled: dict[str, Any] | None,
+        kept: dict[str, Any] | None,
     ) -> Any:
         """Where the slider goes. A move the page makes (following, a jump, a click in the
-        commit log) is settled at once; a move the operator makes with the slider itself
-        is settled in the browser once the slider stays still."""
-        head = _head_seq(health)
-        if head is None:
-            return no_update, no_update, no_update, no_update, no_update
+        commit log, a change of branch) is settled at once; a move the operator makes with
+        the slider itself is settled in the browser once the slider stays still.
+
+        Leaving the live twin for a scenario keeps the version and the following the
+        session had, and goes to the scenario's head; coming back restores them."""
+        span = span_of(health, branch)
+        if span is None:
+            return (no_update,) * 8
         following = FOLLOW_ON in (follow or [])
         trigger = ctx.triggered_id
-        marks = {0: "#0", head: f"#{head}"}
+        on_scenario = span.branch != LIVE_BRANCH
+        was = (settled or {}).get("branch") or LIVE_BRANCH
+        switching = trigger == ids.BRANCH and settled is not None and was != span.branch
         target: int | None = None
         follow_out: Any = no_update
-        if isinstance(trigger, dict) and trigger.get("role") == ids.COMMIT_LOG:
+        kept_out: Any = no_update
+        if switching and on_scenario:
+            if was == LIVE_BRANCH:
+                kept_out = {"seq": settled["seq"], "follow": following}  # type: ignore[index]
+            target = span.head
+            follow_out = [] if following else no_update
+        elif switching:
+            restored = kept or {}
+            seq = restored.get("seq")
+            if restored.get("follow") or not isinstance(seq, int) or not 0 <= seq <= span.head:
+                target = span.head
+            else:
+                target = seq
+            if restored.get("follow") and not following:
+                follow_out = [FOLLOW_ON]
+        elif isinstance(trigger, dict) and trigger.get("role") == ids.COMMIT_LOG:
             clicked = ctx.triggered[0]["value"] if ctx.triggered else None
             seq = _clicked_seq(clicked)
-            if seq is not None and 0 <= seq <= head:
+            if seq is not None and span.low <= seq <= span.head:
                 target = seq
-        elif trigger == ids.JUMP or (trigger == ids.FOLLOW and following) or value is None:
-            target = head
-        elif trigger == ids.HEALTH and following:
-            target = head
-        if target is not None and target != head and following:
+        elif trigger == ids.JUMP or value is None:
+            target = span.head
+        elif trigger in (ids.FOLLOW, ids.HEALTH) and following and not on_scenario:
+            target = span.head
+        if not switching and following and target is not None and target != span.head:
             follow_out = []
-        elif trigger == ids.SLIDER and value is not None and value != head and following:
+        elif trigger == ids.SLIDER and value is not None and value != span.head and following:
             follow_out = []
         value_out = target if target is not None and target != value else no_update
-        settled_out = target if target is not None and target != settled else no_update
+        settle = {"seq": target, "branch": span.branch} if target is not None else None
+        settled_out = settle if settle is not None and settle != settled else no_update
         log.debug(
             "version steered",
             trigger=str(trigger),
             clicked=str(ctx.triggered[0]["value"])[:200] if ctx.triggered else None,
-            head=head,
+            branch=span.branch,
+            low=span.low,
+            head=span.head,
             value=value,
             target=target,
             following=following,
+            switching=switching,
         )
-        return head, marks, value_out, follow_out, settled_out
+        return (
+            span.low,
+            span.head,
+            {span.low: f"#{span.low}", span.head: f"#{span.head}"},
+            value_out,
+            follow_out,
+            follow_options(following_allowed=not on_scenario),
+            settled_out,
+            kept_out,
+        )
 
     # The slider's own moves are handed on once it has stayed still for SETTLE_MS.
     app.clientside_callback(
@@ -225,6 +312,7 @@ def register(app: Dash, backend: Backend) -> None:
         Output(ids.SETTLED, "data", allow_duplicate=True),
         Input(ids.SLIDER, "value"),
         State(ids.SETTLED, "data"),
+        State(ids.BRANCH, "data"),
         prevent_initial_call=True,
     )
 
@@ -234,12 +322,23 @@ def register(app: Dash, backend: Backend) -> None:
         Output(ids.VERSION_FEEDBACK, "children"),
         Input(ids.SETTLED, "data"),
         State(ids.VERSION, "data"),
+        State(ids.BRANCH, "data"),
     )
     @guarded(2)
-    def select_version(seq: int | None, known: dict[str, Any] | None) -> Any:
-        if seq is None:
+    def select_version(
+        settled: dict[str, Any] | None,
+        known: dict[str, Any] | None,
+        branch: dict[str, Any] | None,
+    ) -> Any:
+        """The version every tab reads, on the branch it was settled on."""
+        if not settled or settled.get("seq") is None:
             return no_update, no_update
-        document = backend.client.get("/history/versions/{selector}", path={"selector": f"#{seq}"})
+        name = str(settled.get("branch") or LIVE_BRANCH)
+        document = backend.client.get(
+            "/history/versions/{selector}",
+            path={"selector": f"#{settled['seq']}"},
+            params={"branch": name},
+        )
         found = document["data"]
         version = {
             "id": found["id"],
@@ -250,9 +349,12 @@ def register(app: Dash, backend: Backend) -> None:
             "note": found.get("note"),
             "run": found.get("run"),
             "parents": found.get("parents") or [],
+            "branch": name,
         }
+        if name != LIVE_BRANCH and (branch or {}).get("branch") == name:
+            version["scenario"] = branch.get("scenario")  # type: ignore[union-attr]
         detail = _describe(version)
-        if known and known.get("id") == version["id"]:
+        if known and known.get("id") == version["id"] and branch_of(known) == name:
             return no_update, detail
         return version, detail
 
@@ -260,12 +362,18 @@ def register(app: Dash, backend: Backend) -> None:
         Output(ids.NEWER, "children"),
         Input(ids.HEALTH, "data"),
         Input(ids.VERSION, "data"),
+        Input(ids.BRANCH, "data"),
     )
-    def count_newer(health: dict[str, Any] | None, version: dict[str, Any] | None) -> Any:
-        head = _head_seq(health)
-        if head is None or not version:
+    def count_newer(
+        health: dict[str, Any] | None,
+        version: dict[str, Any] | None,
+        branch: dict[str, Any] | None,
+    ) -> Any:
+        """Versions after the selected one on its branch: the live twin's, or the scenario's."""
+        span = span_of(health, branch)
+        if span is None or not version or branch_of(version) != span.branch:
             return ""
-        newer = head - int(version["seq"])
+        newer = span.head - int(version["seq"])
         if newer <= 0:
             return "at head"
         return f"{plural(newer, 'newer version')}"

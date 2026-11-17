@@ -280,7 +280,7 @@ def forecast_chart(rows: list[dict[str, Any]], unit: str | None) -> list[Any]:
                     legendgroup=uid,
                     showlegend=False,
                     hoverinfo="skip",
-                    name=f"{uid} {T.BAND_NAME} {level} %",
+                    name=T.band_name(uid, level),
                 )
             )
             figure.add_trace(
@@ -293,7 +293,7 @@ def forecast_chart(rows: list[dict[str, Any]], unit: str | None) -> list[Any]:
                     fillcolor=_tint(colour, 0.12 + 0.1 * depth),
                     legendgroup=uid,
                     showlegend=False,
-                    name=f"{uid} {T.BAND_NAME} {level} %",
+                    name=T.band_name(uid, level),
                 )
             )
         figure.add_trace(
@@ -303,7 +303,7 @@ def forecast_chart(rows: list[dict[str, Any]], unit: str | None) -> list[Any]:
                 mode="lines+markers",
                 line={"color": colour, "width": 2},
                 legendgroup=uid,
-                name=f"{uid} {T.MEAN_NAME}",
+                name=T.mean_name(uid),
             )
         )
     figure.update_layout(

@@ -9,12 +9,12 @@
   var timers = {};
 
   // Hands `value` on to the `prop` of `target` once it has stayed the same for SETTLE_MS.
-  // `current` is what `target` holds now: a value that is already there is not sent again.
-  function settle(key, target, prop, value, current) {
+  // `held` says whether `target` holds it already: a value that is there is not sent again.
+  function settle(key, target, prop, value, held) {
     var dc = window.dash_clientside;
     clearTimeout(timers[key]);
     delete timers[key];
-    if (value === undefined || value === null || value === "" || value === current) {
+    if (value === undefined || value === null || value === "" || held) {
       return dc.no_update;
     }
     timers[key] = setTimeout(function () {
@@ -94,11 +94,15 @@
   // Added to the namespace object Dash's renderer also writes into, never replacing it.
   window.dash_clientside = window.dash_clientside || {};
   window.dash_clientside.dta = {
-    settleVersion: function (value, settled) {
-      return settle("version", "settled-version", "data", value, settled);
+    // A version is settled with the branch it is on: the live twin's, or a scenario's.
+    settleVersion: function (value, settled, chosen) {
+      var branch = (chosen && chosen.branch) || "main";
+      var held = !!settled && settled.seq === value && settled.branch === branch;
+      var wanted = value === undefined || value === null ? value : { seq: value, branch: branch };
+      return settle("version", "settled-version", "data", wanted, held);
     },
     settleSearch: function (text, settled) {
-      return settle("search", "graph-search-text", "data", text, settled);
+      return settle("search", "graph-search-text", "data", text, text === settled);
     },
     refreshGrids: refresh,
     markVersionRow: markVersionRow,

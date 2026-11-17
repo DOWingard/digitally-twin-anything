@@ -18,7 +18,18 @@ from dta_core.log import Log
 from flask import jsonify
 
 from ..settings import UiSettings
-from . import answers, graph, guard, header, history, ids, questions, sheet, sync
+from . import (
+    answers,
+    branches,
+    graph,
+    guard,
+    header,
+    history,
+    ids,
+    questions,
+    sheet,
+    sync,
+)
 from . import text as T
 from .backend import Backend
 
@@ -68,6 +79,7 @@ def create_app(settings: UiSettings) -> Dash:
     guard.install(app.server)
     app.layout = layout()
     header.register(app, backend)
+    branches.register(app, backend)
     graph.register(app, backend)
     sheet.register(app, backend)
     history.register(app, backend)

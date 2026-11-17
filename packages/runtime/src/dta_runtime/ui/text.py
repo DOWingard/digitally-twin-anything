@@ -205,6 +205,120 @@ def scenario_gone(name: str) -> str:
     return f"The scenario {name} no longer has a branch: the live twin is shown again."
 
 
+# -- the scenarios tab -----------------------------------------------------------------------
+
+SCENARIOS_TAB = "Scenarios"
+SCENARIOS_HEADING = "Scenarios and how they compare"
+SCENARIO_COLUMNS = {
+    "name": "name",
+    "base_t": "base time",
+    "horizon": "horizon",
+    "status": "status",
+    "interventions": "interventions",
+    "models": "models",
+}
+# Told by a word and a sign; a deleted or failed scenario is also coloured.
+SCENARIO_SIGNS = {"done": "✓", "running": "…", "created": "○", "failed": "✗", "deleted": "⌫"}
+CHOOSE_SCENARIO = "Choose a scenario in the table to compare it."
+TARGETS_LABEL = "targets: what to compare (Type.property)"
+AGAINST_LABEL = "against"
+COMPARE = "Compare"
+NO_INTERVENTION = "none: the twin as it is"
+PREDICTED_MARK = "predicted by its models"
+COMPARE_COLUMNS = {
+    "target": "target",
+    "uid": "object",
+    "t": "time",
+    "scenario": "scenario",
+    "against": "against",
+    "difference": "difference",
+}
+COMPARED_GONE = "This comparison is no longer held by the interface; compare again."
+NO_ROWS = "The comparison holds no rows for these targets."
+NO_TARGETS = "Choose at least one target to compare."
+
+
+def scenarios_status(count: int, head_seq: int) -> str:
+    return f"{plural(count, 'scenario')} as of the live twin's #{head_seq}, deleted ones too"
+
+
+def scenario_status_text(status: str | None) -> str:
+    if not status:
+        return ""
+    sign = SCENARIO_SIGNS.get(status)
+    return f"{sign} {status}" if sign else status
+
+
+def intervention_text(intervention: dict[str, Any]) -> str:
+    """`Valve.status of link:V1 set to closed from 2026-01-05 12:15 UTC`, with its end."""
+    text = (
+        f"{intervention.get('target')} of {intervention.get('uid')} set to "
+        f"{value_text(intervention.get('value'))} from {minute_text(intervention.get('start'))}"
+    )
+    if intervention.get("end"):
+        text += f" to {minute_text(intervention['end'])}"
+    return text
+
+
+def interventions_text(interventions: list[dict[str, Any]] | None) -> str:
+    if not interventions:
+        return NO_INTERVENTION
+    return "; ".join(intervention_text(found) for found in interventions)
+
+
+def scenario_heading(scenario: dict[str, Any]) -> str:
+    return (
+        f"{scenario.get('name')}: from {minute_text(scenario.get('base_t'))} for "
+        f"{duration_text(scenario.get('horizon'))}, {scenario_status_text(scenario.get('status'))}"
+    )
+
+
+def target_option(target: str, predicted: bool) -> str:
+    return f"{target} · {PREDICTED_MARK}" if predicted else target
+
+
+def against_option(scenario: dict[str, Any]) -> str:
+    return f"the scenario {scenario.get('name')} ({scenario_status_text(scenario.get('status'))})"
+
+
+def not_comparable_text(scenario: dict[str, Any]) -> str:
+    """Said in place of a chart when a scenario has nothing to compare."""
+    name, status = scenario.get("name"), scenario.get("status")
+    if status == "created":
+        return f"{name} has not been run yet: it has nothing to compare."
+    if status == "running":
+        return f"{name} is running: compare it once it is done."
+    if status == "failed":
+        return f"{name} failed and has nothing to compare: {scenario.get('error') or 'no reason'}."
+    if status == "deleted":
+        return f"{name} was deleted: its branch is gone, and it has nothing to compare."
+    return f"{name} is {status}: it has nothing to compare."
+
+
+def compared_text(name: str, against: str, rows: int, targets: int) -> str:
+    return (
+        f"{name} against {against}: {plural(rows, 'row')} for {plural(targets, 'target')}. "
+        "A line stops where a side has no value."
+    )
+
+
+def trace_name(uid: str, side: str) -> str:
+    """`node:T1 · valves closed`: an object on one side of a comparison."""
+    return f"{uid} · {side}"
+
+
+def pick_label(target: str, most: int) -> str:
+    return f"{target}: objects drawn, at most {most}, the largest differences first"
+
+
+def picked_cap_text(most: int) -> str:
+    return f"At most {most} objects are drawn at once: the {most} chosen last are."
+
+
+def compare_cut_text(rows: int) -> str:
+    return f"Only the first {rows} rows are compared: choose fewer targets."
+
+
 def status_text(status: str | None) -> str:
     """`✓ validated`."""
     if not status:
@@ -325,6 +439,15 @@ def column_header(name: str, unit: str | None) -> str:
     """A column of an answer: its name, with the answer's unit for its values."""
     in_unit = name in UNIT_COLUMNS or name.startswith(BOUND_PREFIXES)
     return f"{name} [{unit}]" if unit and in_unit else name
+
+
+def band_name(uid: str, level: str) -> str:
+    """`node:T1 interval 80 %`: a forecast's band."""
+    return f"{uid} {BAND_NAME} {level} %"
+
+
+def mean_name(uid: str) -> str:
+    return f"{uid} {MEAN_NAME}"
 
 
 def series_cap_text(drawn: int, total: int) -> str:
