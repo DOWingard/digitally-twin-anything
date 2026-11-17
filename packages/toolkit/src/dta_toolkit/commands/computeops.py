@@ -10,6 +10,7 @@ as sync jobs are. A refusal is raised with the API's own code and detail.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -208,6 +209,13 @@ def touched_models(registered: Mapping[str, Any] | None) -> set[str]:
     return set(changes.get("created") or []) | set(changes.get("changed") or [])
 
 
+def touched_questions(registered: Mapping[str, Any] | None) -> set[str]:
+    """ids of the questions a registration created or changed."""
+    changes = ((registered or {}).get("changes") or {}).get("questions") or {}
+    uids = list(changes.get("created") or []) + list(changes.get("changed") or [])
+    return {uid.split(":", 1)[-1] for uid in uids}
+
+
 # -- which specifications need evaluating ----------------------------------------------
 
 
@@ -226,18 +234,38 @@ class SpecState:
         return next((uid for uid, status in self.candidates.items() if status == "active"), None)
 
 
-def needs_evaluating(state: SpecState, touched: Iterable[str], every: bool) -> str | None:
+def spec_basis(manifest: Manifest, spec: str) -> str:
+    """A hash of what an evaluation of a specification rests on in the manifest: its own
+    definition and the horizon of each question it answers, which the backtest takes."""
+    definition = manifest.models[spec].model_dump(mode="json")
+    contract = manifest.contract
+    horizons = sorted(
+        str(question.horizon)
+        for question in ((contract.questions or {}) if contract else {}).values()
+        if question.model == spec
+    )
+    text = json.dumps({"spec": definition, "horizons": horizons}, sort_keys=True, default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def needs_evaluating(
+    state: SpecState, touched: Iterable[str], every: bool, *, rebased: bool = False
+) -> str | None:
     """Why a specification is evaluated in this build, or None when it is not.
 
     It is when the build was asked to evaluate every specification, when this
-    build's registration created or changed one of its candidates, or when it has
-    no active model and a candidate of it was never backtested.
+    build's registration created or changed one of its candidates, when what its
+    last evaluation rested on has changed since (`rebased`: its definition, or the
+    horizon of its question), or when it has no active model and a candidate of it
+    was never backtested.
     """
     if every:
         return "asked to evaluate every specification"
     changed = sorted(set(touched) & set(state.candidates))
     if changed:
         return f"registered anew or changed: {', '.join(changed)}"
+    if rebased:
+        return "its definition or its question's horizon changed since it was last evaluated"
     if state.active is None:
         never = sorted(set(state.candidates) - set(state.backtested))
         if never:

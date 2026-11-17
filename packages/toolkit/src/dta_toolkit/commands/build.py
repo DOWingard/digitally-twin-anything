@@ -6,9 +6,10 @@ so it runs on every build: a record cannot say whether a container still runs
 or a store still holds the twin. `load` is the exception, because reading the
 sources again is the expensive part: it is not repeated when it is recorded as
 done for the same manifest and ontology file and `install`, which has just
-run, finds the twin at the version that load left it at. A store that was
-emptied or replaced is therefore loaded again without being asked. A failing
-step stops the build; nothing already done is undone.
+run, finds the twin at the version that load, or the last whole build after
+it, left it at (registering and measuring move the version on, not the data).
+A store that was emptied or replaced is therefore loaded again without being
+asked. A failing step stops the build; nothing already done is undone.
 
 A live twin moves on by itself, so its version says nothing about the load:
 its history is loaded only while `install` finds no data written by sync, and
@@ -20,8 +21,11 @@ passes only when that run synced every source.
 What the twin computes comes after its data: `image` builds the worker's
 image when the manifest names requirements, `code` packs and uploads the
 twin's own code, `functions` registers what the manifest declares, `models`
-evaluates the specifications that need it and `questions` measures the
-questions when anything they rest on changed. Each asks the API only for what
+evaluates a specification when a candidate of it was registered anew or
+changed, when its definition or its question's horizon changed since a build
+last evaluated it, or when it has no active model and a candidate never
+backtested (every one with `--force` or from `--from models`), and
+`questions` measures the questions when anything they rest on changed. Each asks the API only for what
 differs, so building a built twin again builds no image, uploads nothing,
 registers nothing, evaluates nothing and measures nothing.
 """
@@ -96,6 +100,8 @@ REUSABLE_STEPS = frozenset({"load"})
 BUILD_STAGE = 6
 LAST_REQUIRED_STAGE = 5
 RECORD_VERSION = 1
+# The record's map of model specification -> what its last evaluation rested on.
+BASES_KEY = "evaluated_bases"
 INSTALL_TIMEOUT_S = 900.0
 # How long a load of a live twin waits for a sync job in progress to end.
 LOAD_WAIT_S = 600.0
@@ -222,15 +228,41 @@ class Build:
             or entry.get("ontology_sha256") != self.ontology_sha
         ):
             return False, "the manifest or the ontology file changed"
-        after = (entry.get("detail") or {}).get("head_after") or {}
         head = self.install_head or {}
-        if (
-            after.get("seq") is None
-            or after.get("seq") != head.get("seq")
-            or (after.get("id") and after.get("id") != head.get("id"))
-        ):
-            return False, "the twin is at another version than the last load left it at"
+
+        def same(after: dict[str, Any]) -> bool:
+            return (
+                after.get("seq") is not None
+                and after.get("seq") == head.get("seq")
+                and (not after.get("id") or after.get("id") == head.get("id"))
+            )
+
+        # The steps after the load register and measure, which moves the head on without
+        # touching the data; where the last whole build left the twin counts as well.
+        after = (entry.get("detail") or {}).get("head_after") or {}
+        settled = self.record.get("head_after_build") or {}
+        if not same(after) and not (settled.get("manifest_hash") == self.digest and same(settled)):
+            return False, "the twin is at another version than the last build left it at"
         return True, "done for this manifest and ontology file, and the twin is where it left it"
+
+    def settle(self) -> None:
+        """Note where the whole build left the twin, for the next build's load to compare."""
+        try:
+            with TwinApi(self.manifest, read_env(self.workspace.env_path)) as client:
+                head = computeops.head_of(client)
+        except DtaError as exc:
+            log.warn("where the build left the twin cannot be read", code=exc.code)
+            return
+        self.record["head_after_build"] = {
+            "seq": head.get("seq"),
+            "id": head.get("id"),
+            "manifest_hash": self.digest,
+        }
+        with self.workspace.exclusive():
+            self.workspace.atomic_write(
+                record_path(self.workspace), json.dumps(self.record, indent=2, default=str) + "\n"
+            )
+        log.info("the build left the twin at its head", seq=head.get("seq"))
 
     def save(self, name: str, status: str, duration_ms: float, detail: dict[str, Any]) -> None:
         self.record["version"] = RECORD_VERSION
@@ -562,13 +594,17 @@ class Build:
             raise Skipped("the manifest declares no model specification")
         every = self._every_spec()
         touched = computeops.touched_models(self.registered)
+        # What each specification's last evaluation by a build rested on, kept across builds.
+        bases = {spec: computeops.spec_basis(self.manifest, spec) for spec in specs}
+        known = dict(self.record.get(BASES_KEY) or {})
         with TwinApi(self.manifest, self.env) as client:
             states = computeops.spec_states(client, specs)
-            reasons = {
-                spec: why
-                for spec in specs
-                if (why := computeops.needs_evaluating(states[spec], touched, every)) is not None
-            }
+            reasons = {}
+            for spec in specs:
+                rebased = spec in known and known[spec] != bases[spec]
+                why = computeops.needs_evaluating(states[spec], touched, every, rebased=rebased)
+                if why is not None:
+                    reasons[spec] = why
             if not reasons:
                 log.info("no model specification needs evaluating", specs=specs)
                 return {"evaluated": [], "unaccepted": [], "specs": specs}
@@ -581,6 +617,8 @@ class Build:
                 client, list(reasons), keys=keys, limit_s=self.models_timeout
             )
         self.evaluated = [summary["spec"] for summary in results]
+        known.update({spec: bases[spec] for spec in self.evaluated if spec in bases})
+        self.record[BASES_KEY] = known
         refused = computeops.unaccepted(results)
         for entry in refused:
             log.warn("a model specification has no accepted candidate", **entry)
@@ -598,11 +636,7 @@ class Build:
             before = computeops.questions(client)
             never = sorted(q["id"] for q in before if q.get("measured_at") is None)
             # A question registered anew or changed (its tolerance, say) is measured again.
-            changes = ((self.registered or {}).get("changes") or {}).get("questions") or {}
-            changed = sorted(
-                uid.split(":", 1)[-1]
-                for uid in (changes.get("created") or []) + (changes.get("changed") or [])
-            )
+            changed = sorted(computeops.touched_questions(self.registered))
             if not never and not self.evaluated and not changed:
                 log.info("every question was measured and nothing they rest on changed")
                 return {"measured": [], "questions": before}
@@ -823,6 +857,8 @@ def build(
                 }
                 text = _text(outcomes) + f"\n{name:<9} FAILED   {exc.message}"
                 fail_check(ctx, "build.failed", f"step {name} failed: {exc.message}", result, text)
+        if not run.live:
+            run.settle()
         workspace.record_gate(
             BUILD_STAGE,
             passed=True,

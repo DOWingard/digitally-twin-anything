@@ -13,7 +13,7 @@ from dta_core.errors import CheckFailed
 from dta_core.manifest import Manifest
 from dta_runtime.worker import code as worker_code
 from dta_toolkit import codepack, workerimage
-from dta_toolkit.commands.computeops import SpecState, job_key, needs_evaluating
+from dta_toolkit.commands.computeops import SpecState, job_key, needs_evaluating, spec_basis
 
 
 def _tree(root: Path) -> Path:
@@ -185,6 +185,30 @@ def test_which_specifications_a_build_evaluates(
     state: SpecState, touched: set[str], every: bool, evaluated: bool
 ) -> None:
     assert (needs_evaluating(state, touched, every) is not None) is evaluated
+
+
+def test_a_specification_whose_basis_changed_is_evaluated_again() -> None:
+    assert needs_evaluating(_TRIED, set(), False, rebased=False) is None
+    why = needs_evaluating(_TRIED, set(), False, rebased=True)
+    assert why is not None and "horizon" in why
+    assert needs_evaluating(_ACTIVE, set(), False, rebased=True) is not None
+
+
+def test_a_specifications_basis_is_its_definition_and_its_questions_horizon() -> None:
+    data = {
+        "twin": {"id": "m5tk-a"},
+        "contract": {
+            "questions": {"q": {"text": "how high next?", "model": "level", "horizon": "PT2H"}}
+        },
+        "models": {"level": {"target": "Sensor.level", "candidates": {}}},
+    }
+    first = spec_basis(Manifest.model_validate(data), "level")
+    assert first == spec_basis(Manifest.model_validate(data), "level")
+    data["contract"]["questions"]["q"]["horizon"] = "PT16H"
+    assert spec_basis(Manifest.model_validate(data), "level") != first
+    data["contract"]["questions"]["q"]["horizon"] = "PT2H"
+    data["contract"]["questions"]["q"]["tolerance"] = {"value": 5, "metric": "mae"}
+    assert spec_basis(Manifest.model_validate(data), "level") == first
 
 
 def test_an_evaluation_key_names_the_manifest_the_spec_and_the_data() -> None:
