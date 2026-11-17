@@ -64,7 +64,7 @@ def test_a_request_is_told_apart_by_its_op():
         # What is sent is what is read back.
         assert REQUEST.validate_json(REQUEST.dump_json(request)) == request
     fit = REQUEST.validate_python({"op": "fit", **RUN, **cases["fit"][0]})
-    assert fit.frame.step == timedelta(minutes=15) and fit.frame.branch == "live"
+    assert fit.frame.step == timedelta(minutes=15) and fit.frame.branch == "main"
     # Without a refit the worker chooses one that fits the budget.
     chosen = {**cases["backtest"][0]}
     del chosen["refit"]

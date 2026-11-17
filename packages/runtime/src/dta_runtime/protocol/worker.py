@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol
 
+from dta_core.store.model import LIVE_BRANCH
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:
@@ -81,7 +82,7 @@ class FrameRef(_Model):
     # Version ids, pinned by the API when the job starts.
     start: str
     end: str
-    branch: str = "live"
+    branch: str = LIVE_BRANCH
     # The grid: a row per series every `step` from the first version's time on, up to
     # the last version's time.
     step: timedelta
@@ -135,7 +136,7 @@ class FunctionRequest(_Run):
     args: dict[str, Any] = Field(default_factory=dict)
     # Id of the version the function reads at, and its branch.
     at: str
-    branch: str = "live"
+    branch: str = LIVE_BRANCH
     # Names of the variables the function declared; it sees these and no other.
     env: list[str] = Field(default_factory=list)
 
