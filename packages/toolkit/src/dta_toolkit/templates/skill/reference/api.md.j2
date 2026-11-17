@@ -157,12 +157,21 @@ Files kept outside the graph, named by the SHA-256 of their content: code, fitte
 | `POST /artifacts` | keeps the request body (any bytes, at most 512 MiB) and answers `{"sha256", "size_bytes", "location"}`: 201 when new, 200 when the same content was already kept. Nothing is written to the graph |
 | `GET /artifacts/{sha256}` | the file's bytes; 404 `artifact.not_found` when none is kept under that hash |
 
-## What this API does not do
+## What changes the twin
 
+Each of these writes a new version on `main`, or on a scenario's branch:
+
+- registrations: `POST /lifecycle/register` (no version when nothing differs), `POST /functions`, `DELETE /functions/{id}`, `POST /models`, `DELETE /models/{uid}`;
+- evaluations and measurements: `POST /models/evaluate` records the backtests, the active model and its question's status; `POST /questions/measure` records what each question may claim;
+- scenarios: `POST /scenarios` and `DELETE /scenarios/{id}` record the scenario on `main`; `POST /scenarios/{id}/run` writes the predictions on the scenario's branch and the run's status on `main`;
+- derived data: `POST /derived`;
+- running a function that gives rows to write, through `POST /functions/{id}/run` or by answering a question it answers: the answer names the version written in `wrote`;
 {% if live %}
-It reads, except for `POST /sync/runs`, which makes the twin read its sources. There is no endpoint that edits the twin's data.
-{% else %}
-It reads. There is no endpoint that changes the twin, and a static twin does not change at all.
+- sync runs: `POST /sync/runs` makes the twin read its sources, which is the only way new observed data arrives.
 {% endif %}
 
-Jobs are kept in the API's memory and are forgotten when it restarts. The lasting record of a run is in `/sync/runs`.
+These never change it: every `GET`; answering a question and running a function, when the function gives no rows to write; predicting (`POST /models/{uid}/predict`); `POST /graph/subgraph`; `POST /block/training-set`. `POST /artifacts` keeps a file and writes nothing to the graph.
+
+There is no endpoint that edits observed data: {% if live %}it changes only when the sources do and a sync run reads them{% else %}a static twin's data was loaded once and does not change{% endif %}.
+
+Jobs are kept in the API's memory and are forgotten when it restarts. The lasting record of a sync run is in `/sync/runs`, of an evaluation in `/models/{uid}/backtests` and `/questions`, of a scenario in `/scenarios`.
