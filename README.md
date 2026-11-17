@@ -17,8 +17,10 @@ A twin built by this system is:
 
 Status: under construction. A static twin (loaded once from recorded data) and
 a live twin (kept in step with its sources, one version per sync interval)
-can be built, accepted and handed over today; models, fidelity, control and
-the plugin's entry skill are not built yet.
+can be built, accepted and handed over today, with functions, models selected
+by backtest, questions whose accuracy the twin measures, and what-if
+scenarios. Fidelity monitoring with self-correction, control of the target
+and the plugin's entry skill are not built yet.
 
 ## Layout
 
@@ -26,9 +28,9 @@ the plugin's entry skill are not built yet.
 |---|---|
 | `packages/core` | Shared library: structured logging, environment configuration, the manifest schema and its checks, ontology loading (LinkML), the versioned store, the connector protocol |
 | `packages/toolkit` | The `dta` command line tool: manifest checks, the gate each build stage ends in, delegated tasks, the twin's container stack derived from its manifest, build, acceptance and the operator skill |
-| `packages/runtime` | What runs inside a twin's stack: installing and opening a twin, reading its sources, loading them into the graph and keeping it in step with them, the HTTP API, the scheduler and the browser UI |
+| `packages/runtime` | What runs inside a twin's stack: installing and opening a twin, reading its sources, loading them into the graph and keeping it in step with them, the HTTP API, the scheduler, the worker that runs functions and models, training frames, the shipped model families, scenarios and the browser UI |
 | `docker/runtime.Dockerfile` | Image of the twin's services: one image, one command per service |
-| `testbed` | A simulated water utility used as the standing test target, with the definitions of two reference twins: `testbed/twin` (static) and `testbed/twin-live` (live) |
+| `testbed` | A simulated water utility used as the standing test target, with the definitions of two reference twins: `testbed/twin` (static) and `testbed/twin-live` (live, with forecasts and a hydraulic model of its own in `testbed/twin-live/code`) |
 | `spikes/storage` | Benchmark that selected Dolt as the versioned store |
 
 ## The store
@@ -96,7 +98,8 @@ dta manifest validate
 dta manifest confirm --all-user
 dta manifest validate          # confirming changes the manifest; the design gate is of the result
 dta manifest sign
-dta build                      # store, install, load, API, contract, sync (live), UI, skill
+dta build                      # image, store, install, load, API, contract, sync (live), code,
+                               # functions, models, questions, UI, skill
 dta accept                     # acceptance report, or a deficit report
 dta install-skill              # the skill an agent operates the twin with
 ```
@@ -112,7 +115,9 @@ dta install-skill              # the skill an agent operates the twin with
   against its own OpenAPI document (generated requests, fixed seed), the five
   data-readiness requirements, constraint violations in the load, coverage of
   every property the contract names, the UI, the skill and that the skill
-  lists every endpoint the API serves.
+  lists every endpoint the API serves; that every question is answered, that
+  none is measured outside its tolerance, that every model specification has
+  an accepted model, and that the worker runs.
 - `dta install-skill` refuses a twin that has not been accepted unless
   `--provisional` is given; the handover report then lists what has not passed.
 - `dta up`, `dta down` and `dta logs` manage the stack. `dta down
@@ -156,6 +161,43 @@ dta sync run --source scada    # only these sources
 dta sync run --replay scada.readings   # read one dataset again, whole
 ```
 
+### Functions, models and questions
+
+The manifest declares what the twin computes; `dta build` registers it in the
+twin, where it is versioned like everything else.
+
+- A function answers a question from the graph. Eight are built in
+  (`latest`, `below`, `above`, `integrate`, `paths`, `aggregate`, `series`,
+  and `forecast`, which asks a question's model); others are Python functions
+  of the twin's own, kept in the directory `runtime.code` names. Extra
+  packages they need are listed in `runtime.worker_requirements`; the build
+  makes a worker image with them.
+- A model specification names a question, a target property, candidate
+  families and a backtest. Shipped families: `persistence`, `seasonal_naive`,
+  `theta`, `ets`, `arima`, `mstl`, `ridge_lags`, `gbm_lags`; a twin can bring
+  families of its own (the live reference twin brings a hydraulic simulation).
+  The build backtests every candidate over the twin's history, on a rolling
+  origin, and makes the best one that is within the question's tolerance and
+  better than the baseline the question's active model.
+- A question is `validated` (measured within its tolerance), `provisional`
+  (not measured, or too little history) or `failing`. Every answer says which.
+- Models and code of the twin's own run in the worker, a separate container
+  with limits on memory and time that reads the twin only through the API;
+  code of the twin's own runs there in a process of its own per call.
+- A build evaluates a model again only when its definition, its code or its
+  question changed; `dta models evaluate` does it on request, for instance
+  after new data.
+
+```sh
+dta register                   # functions, models and questions of the manifest
+dta models evaluate [--spec ID]
+dta models list
+dta questions list
+dta questions measure
+dta questions answer ID [--arg name=value] [--at VERSION]
+dta scenarios list
+```
+
 ## What a built twin serves
 
 One HTTP API under `/api/v1`, bound to the loopback address, with one bearer
@@ -169,6 +211,12 @@ token. `GET /api/v1/openapi.json` describes every endpoint.
 | `/history` | versions, the difference between two versions, branches |
 | `/block` | whole node and edge tables, and slices over a range of versions, as Arrow or Parquet |
 | `/sync` | a live twin: its sources and how far each has been read, its runs and the rows they set aside, starting a run |
+| `/questions` | the questions of the contract with what each may claim; answering one; measuring them |
+| `/functions` | the twin's functions with their arguments; running one |
+| `/models` | models with their backtests; predicting; evaluating the specifications again |
+| `/scenarios` | what-ifs: a branch from a version with assumed changes, filled with what the models predict; comparison with the live twin or another scenario |
+| `/derived` | writing values that were worked out, marked as such |
+| `/search` | objects of any type by uid or name |
 | `/lifecycle` | background jobs and the twin's own structured logs |
 
 - Every read takes `at`: `head`, a version id, `#<n>` or a time. A response
@@ -177,10 +225,22 @@ token. `GET /api/v1/openapi.json` describes every endpoint.
 - Errors are RFC 9457 problem documents with a code and a trace id.
 - `GET /api/v1/meta/health` of a live twin tells its clock, the age of its
   data against each question's staleness, its last run and the run in
-  progress.
+  progress; of any twin, whether the worker runs and how many questions are
+  validated, provisional and failing.
+- Reading never changes the twin, nor does answering a question or
+  predicting. Values that were assumed or simulated are marked in their
+  provenance and live on a scenario's branch, never among the observations.
+- `POST /block/training-set` gives a frame for training outside the twin: a
+  target with its own lagged values, other properties and aggregates over
+  neighbours in the graph, on a regular grid, each value the one in force at
+  its time.
 
-The browser UI (graph, spreadsheet and history tabs, a version slider, follow
-head) reads the twin only through this API; the token stays on its server.
+The browser UI (graph, spreadsheet, history, questions and scenarios tabs, a
+version slider, follow head, a branch selector) reads the twin only through
+this API; the token stays on its server. The questions tab shows what each
+question may claim and asks one on a click; the scenarios tab draws a
+scenario against the live twin or another scenario; choosing a scenario in
+the header shows its branch in every tab, marked as not being the live twin.
 While a live twin moves on, a session that is not following stays on the
 version it shows and counts the newer ones; "Jump to head" or following takes
 it there, and the open tab redraws in place. The header shows the twin's
