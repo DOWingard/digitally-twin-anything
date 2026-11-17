@@ -31,6 +31,17 @@ from api_testkit import (  # noqa: E402
     database_name,
     with_database,
 )
+from compute_testkit import T0 as COMPUTE_T0  # noqa: E402
+from compute_testkit import (  # noqa: E402
+    Small,
+    World,
+    plant_code,
+    serve_world,
+    write_history,
+)
+from compute_testkit import at as compute_at  # noqa: E402
+from compute_testkit import manifest_for as compute_manifest  # noqa: E402
+from compute_testkit import runtime_settings as compute_settings  # noqa: E402
 from dta_runtime.api import create_app  # noqa: E402
 from dta_runtime.clock import FixedClock  # noqa: E402
 from dta_runtime.settings import RuntimeSettings  # noqa: E402
@@ -186,3 +197,58 @@ def live_api(
         # A run still held at a gate would hold up the API's stop.
         live.plant.release()
         stack.close()
+
+
+@pytest.fixture(scope="session")
+def world(
+    server_settings: StoreSettings,
+    _databases: list[str],
+    water_text: str,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[World]:
+    """The computed twin with its history, its API served over HTTP and a worker beside
+    it; nothing is registered yet."""
+    name = database_name(server_settings, "compute")
+    _databases.append(name)
+    root = tmp_path_factory.mktemp("compute")
+    with serve_world(with_database(server_settings, name), water_text, root) as found:
+        yield found
+
+
+@pytest.fixture(scope="session")
+def registered(world: World) -> dict[str, Any]:
+    """The world with its code kept and its registries in line with its manifest: what
+    the registration answered."""
+    world.code = world.upload(plant_code())
+    return world.register(world.code)
+
+
+@pytest.fixture(scope="session")
+def evaluated(world: World, registered: dict[str, Any]) -> dict[str, Any]:
+    """The world with every model specification evaluated once: the job's result."""
+    return world.done(
+        world.post("/models/evaluate", json={}, headers={"Idempotency-Key": "evaluate-all"})
+    )
+
+
+@pytest.fixture
+def small(
+    make_twin: Callable[..., Twin], water_text: str, tmp_path: Path
+) -> Iterator[Callable[..., Small]]:
+    """A fresh computed twin behind an API called in process, without a worker unless
+    it is told where one is; with `history`, the first steps of the network's history
+    are written."""
+    stack = contextlib.ExitStack()
+
+    def make(history: int = 0, worker_url: str | None = None, **sections: Any) -> Small:
+        manifest = compute_manifest(water_text, **sections)
+        twin = make_twin(Bundle(manifest=manifest, ontology_text=water_text), t=COMPUTE_T0)
+        if history:
+            write_history(twin, history)
+        settings = compute_settings(twin.store.settings, tmp_path, worker_url)
+        app = create_app(settings, twin, clock=FixedClock(compute_at(history)))
+        client = stack.enter_context(TestClient(app, raise_server_exceptions=False))
+        return Small(client=client, twin=twin, app=app, ontology_text=water_text)
+
+    with stack:
+        yield make
