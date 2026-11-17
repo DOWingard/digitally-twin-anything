@@ -58,7 +58,7 @@ class Capture(logging.Handler):
     def __init__(self, limit: int = MAX_LOG_LINES) -> None:
         super().__init__(level=logging.INFO)
         # The twin's log format; the same lines go to the process's standard error.
-        self.setFormatter(core_log._JsonFormatter())  # noqa: SLF001
+        self.setFormatter(core_log.JsonFormatter())
         self._limit = limit
         self._lines: list[dict[str, Any]] = []
         self._seen = 0

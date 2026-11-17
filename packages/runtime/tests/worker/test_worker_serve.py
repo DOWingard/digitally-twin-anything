@@ -77,18 +77,18 @@ def test_pools_and_limits_are_sized_from_the_containers_cpus_and_memory():
         1, 1, 1, 2, 3, 4, 4,
     ]  # fmt: skip
     # Divided among every process that can run at once (both pools), at least 256 MiB.
-    assert process_memory(3072, 2) == 1024 * MIB
-    assert process_memory(1024, 1) == 512 * MIB
-    assert process_memory(128, 8) == MIN_PROCESS_MEMORY
+    assert process_memory(3072) == 3072 * MIB
+    assert process_memory(1024) == 1024 * MIB
+    assert process_memory(128) == MIN_PROCESS_MEMORY
 
 
 def test_the_stacks_default_limits_run_shipped_code_and_own_code(
     start_worker: object, twin_api: TwinApi
 ):
-    # The manifest's defaults: one CPU and 1024 MB, so 512 MiB for each of two processes.
-    worker = start_worker(cpus=1.0, memory_mb=1024)  # type: ignore[operator]
+    # The manifest's defaults: one CPU and 2048 MB, which each of two processes may map.
+    worker = start_worker(cpus=1.0, memory_mb=2048)  # type: ignore[operator]
     assert (worker.pools.interactive.size, worker.pools.batch.size) == (1, 1)
-    assert worker.pools.memory_bytes == 512 * MIB
+    assert worker.pools.memory_bytes == 2048 * MIB
     table, _result = table_of(worker.run(predict_body("read")))
     assert table.num_rows == 6
     head = twin_api.water.head

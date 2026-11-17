@@ -27,8 +27,9 @@ ENV PYTHONUNBUFFERED=1 \
 # project's own packages and is all that a change to their code rebuilds.
 # Nothing is copied for the build, only mounted; the installer is removed
 # again in the layer that brought it; no download or build cache is kept.
-# Packages are compiled here: a container cannot write bytecode next to
-# them, and compiling at every start costs each process seconds.
+# Packages and the standard library are compiled here: a container cannot
+# write bytecode next to them, and compiling at every start costs each
+# process most of a second (a run of a twin's own code is a new process).
 RUN --mount=type=bind,source=uv.lock,target=/src/uv.lock \
     --mount=type=bind,source=pyproject.toml,target=/src/pyproject.toml \
     --mount=type=bind,source=packages/core/pyproject.toml,target=/src/packages/core/pyproject.toml \
@@ -44,7 +45,8 @@ RUN --mount=type=bind,source=uv.lock,target=/src/uv.lock \
          find /opt/venv/lib/python3.12/site-packages/$package -type d -name tests -prune \
            -exec rm -rf {} + ; \
        done \
-    && python -m compileall -q -j 0 /opt/venv/lib/python3.12/site-packages \
+    && python -m compileall -q -j 0 /usr/local/lib/python3.12 \
+         /opt/venv/lib/python3.12/site-packages \
     && rm -rf /root/.cache /tmp/* \
     && useradd --no-create-home --shell /usr/sbin/nologin --uid 10001 twin \
     && mkdir -p /var/lib/dta/artifacts /var/log/dta \

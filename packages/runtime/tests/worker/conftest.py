@@ -47,7 +47,7 @@ WATER_ONTOLOGY = (
 )
 # Two interactive processes and one batch process, each allowed 1 GiB of address space.
 CPUS = 2.0
-MEMORY_MB = 3 * 1024
+MEMORY_MB = 1024
 
 
 @pytest.fixture(scope="session")

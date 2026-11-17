@@ -501,7 +501,7 @@ class Runtime(Base):
         "Requirements file in the workspace, installed into the image registered code runs in",
     )
     worker_cpus: float = opt(Owner.agent, "CPU limit of the worker for registered code", 1.0, gt=0)
-    worker_memory_mb: int = opt(Owner.agent, "Memory limit of the worker", 1024, ge=128)
+    worker_memory_mb: int = opt(Owner.agent, "Memory limit of the worker", 2048, ge=128)
 
 
 class Twin(Base):

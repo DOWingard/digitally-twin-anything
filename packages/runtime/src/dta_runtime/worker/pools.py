@@ -430,7 +430,7 @@ class Pools:
         self.runs_root = root / "runs"
         for directory in (root, self.code_root, self.runs_root):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.memory_bytes = process_memory(settings.memory_mb, settings.cpus)
+        self.memory_bytes = process_memory(settings.memory_mb)
         self.setup = Setup(
             api_url=settings.api_url,
             api_token=settings.api_token,

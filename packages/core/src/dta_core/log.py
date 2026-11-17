@@ -77,7 +77,7 @@ def redact(value: Any) -> Any:
     return value
 
 
-class _JsonFormatter(logging.Formatter):
+class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         entry: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(
@@ -110,7 +110,7 @@ def configure(log_file: Path | None = None, level: str | None = None) -> None:
         root.removeHandler(handler)
         handler.close()
     root.propagate = False
-    formatter = _JsonFormatter()
+    formatter = JsonFormatter()
 
     stream = logging.StreamHandler(sys.stderr)
     stream.setFormatter(formatter)

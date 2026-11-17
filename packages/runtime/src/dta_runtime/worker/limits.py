@@ -61,10 +61,16 @@ def processes_at_once(cpus: float) -> int:
     return interactive_size(cpus) + BATCH_PROCESSES
 
 
-def process_memory(memory_mb: int, cpus: float) -> int:
-    """Bytes of address space each process may map."""
-    share = memory_mb * MIB // processes_at_once(cpus)
-    return max(MIN_PROCESS_MEMORY, share)
+def process_memory(memory_mb: int) -> int:
+    """Bytes of address space each process may map: the worker's whole memory.
+
+    Not a share of it. What a process maps is well above what it uses (a fit that
+    uses 300 MB maps 600 MB), so a share refuses runs the worker has room for. What
+    the processes use together is bounded by the container's memory limit; this limit
+    is what turns one run asking for more than the worker has into a `MemoryError`
+    in that run, before the kernel has to choose a process to kill.
+    """
+    return max(MIN_PROCESS_MEMORY, memory_mb * MIB)
 
 
 def cpu_seconds(budget_s: float) -> int:
