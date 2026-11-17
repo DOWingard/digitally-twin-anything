@@ -40,6 +40,12 @@ class Api:
         self.runs: list[dict[str, Any]] = []
         self.manifest_reads = 0
         self.unauthorised = 0
+        # The API's schedule; None for an API that has none (it answers 404).
+        self.schedule: list[dict[str, Any]] | None = None
+        self.schedule_reads = 0
+        # Requests of the other entries, and statuses to answer them with, by path.
+        self.asked: list[dict[str, Any]] = []
+        self.answers: dict[str, list[int]] = {}
 
 
 def _handler(api: Api) -> type[BaseHTTPRequestHandler]:
@@ -81,6 +87,9 @@ def _handler(api: Api) -> type[BaseHTTPRequestHandler]:
                 api.manifest_reads += 1
                 sync = {"interval": api.interval} if api.interval else {}
                 self._send(200, {"manifest": {"sync": sync}, "manifest_hash": api.manifest_hash})
+            elif self.path == "/api/v1/lifecycle/schedule" and api.schedule is not None:
+                api.schedule_reads += 1
+                self._send(200, {"now": None, "entries": api.schedule})
             else:
                 self._send(404, {"code": "api.not_found"})
 
@@ -89,6 +98,14 @@ def _handler(api: Api) -> type[BaseHTTPRequestHandler]:
                 return
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
+            if self.path != "/api/v1/sync/runs":
+                key = self.headers.get("Idempotency-Key")
+                statuses = api.answers.get(self.path) or [202]
+                status = statuses.pop(0) if len(statuses) > 1 else statuses[0]
+                api.asked.append({"path": self.path, "key": key, "status": status})
+                job = {"id": f"other-{len(api.asked)}", "idempotency_key": key}
+                self._send(status, {"job": job} if status < 400 else {"code": "refused"})
+                return
             if api.refuse_runs:
                 api.refuse_runs -= 1
                 self._send(503, {"code": "store.unavailable"})
@@ -282,6 +299,135 @@ def test_the_loop_keeps_going_and_the_token_is_never_logged(api, scheduler, tmp_
     assert len(state.runs) >= 3 and not thread.is_alive()
     logged = log_file.read_text(encoding="utf-8")
     assert "sync run started" in logged and TOKEN not in logged
+
+
+def entry(entry_id: str, interval: str, path: str, kind: str | None = None) -> dict[str, Any]:
+    """A schedule entry as the API's schedule lists it."""
+    return {
+        "id": entry_id,
+        "kind": kind or entry_id,
+        "interval": interval,
+        "method": "POST",
+        "path": path,
+        "key": f"{entry_id}:{{boundary}}",
+        "body": {},
+    }
+
+
+SYNC = entry("sync", "PT15M", "/api/v1/sync/runs")
+CHECK = entry("fidelity", "PT30M", "/api/v1/fidelity/checks")
+
+
+def keys(state: Api, path: str | None = None) -> list[str]:
+    if path is None:
+        return [run["key"] for run in state.runs]
+    return [found["key"] for found in state.asked if found["path"] == path]
+
+
+def test_each_entry_is_asked_for_once_per_boundary_and_the_others_after_the_sync(api, scheduler):
+    state, _ = api
+    state.schedule = [SYNC, CHECK]
+    first = scheduler.tick()
+    assert first["started"] == ["sync"]
+    assert first["waiting"] == {"fidelity": "sync.not_ended"}
+    # The run is going: the check waits for it.
+    state.job = {"id": "job-1", "state": "running", "idempotency_key": state.runs[0]["key"]}
+    assert scheduler.tick()["reason"] == "sync.not_ended"
+    state.job = None
+    assert scheduler.tick()["started"] == ["fidelity"]
+    assert scheduler.tick() == {"started": None, "reason": "not_due", "waiting": {}}
+    # A sync boundary that is not a check boundary.
+    state.now = T0 + timedelta(minutes=15)
+    assert scheduler.tick()["started"] == ["sync"]
+    assert scheduler.tick()["reason"] == "not_due"
+    state.now = T0 + timedelta(minutes=31)
+    assert scheduler.tick()["started"] == ["sync"]
+    assert scheduler.tick()["started"] == ["fidelity"]
+    assert scheduler.tick()["reason"] == "not_due"
+    assert keys(state) == [
+        "sync:2026-01-19T00:00:00+00:00",
+        "sync:2026-01-19T00:15:00+00:00",
+        "sync:2026-01-19T00:30:00+00:00",
+    ]
+    assert keys(state, CHECK["path"]) == [
+        "fidelity:2026-01-19T00:00:00+00:00",
+        "fidelity:2026-01-19T00:30:00+00:00",
+    ]
+    assert state.manifest_reads == 0 and state.schedule_reads == 1
+
+
+def test_a_failing_entry_does_not_hold_up_the_others(api, scheduler):
+    state, _ = api
+    a, b = entry("a", "PT15M", "/api/v1/a"), entry("b", "PT15M", "/api/v1/b")
+    # Entries that would send the token elsewhere, or could not be told apart, are left out.
+    elsewhere = {**entry("c", "PT15M", "/api/v1/c"), "path": "http://elsewhere/api/v1/c"}
+    keyless = {**entry("d", "PT15M", "/api/v1/d"), "key": "d"}
+    state.schedule = [SYNC, a, elsewhere, keyless, b]
+    # `a` is refused for good at the first boundary and cannot be taken now at the second.
+    state.answers["/api/v1/a"] = [404, 503, 503, 202]
+    assert scheduler.tick()["started"] == ["sync"]
+    assert scheduler.tick()["started"] == ["b"]
+    assert scheduler.tick()["reason"] == "not_due"  # a refusal for good is not asked again
+    state.now = T0 + timedelta(minutes=15)
+    scheduler.tick()
+    second = scheduler.tick()
+    assert second["started"] == ["b"] and second["waiting"] == {"a": "api.refused"}
+    assert scheduler.tick()["waiting"] == {"a": "api.refused"}
+    assert scheduler.tick()["started"] == ["a"]
+    assert [found["status"] for found in state.asked if found["path"] == "/api/v1/a"] == [
+        404,
+        503,
+        503,
+        202,
+    ]
+    assert keys(state, "/api/v1/b") == [
+        "b:2026-01-19T00:00:00+00:00",
+        "b:2026-01-19T00:15:00+00:00",
+    ]
+    assert {found["path"] for found in state.asked} == {"/api/v1/a", "/api/v1/b"}
+
+
+def test_the_schedule_is_read_again_when_the_manifest_changes_and_now_and_then(api, scheduler):
+    state, _ = api
+    state.schedule = [SYNC]
+    scheduler.tick()
+    scheduler.tick()
+    assert state.schedule_reads == 1
+    state.manifest_hash = "h2"
+    state.schedule = [SYNC, CHECK]
+    assert scheduler.tick()["started"] == ["fidelity"]
+    assert state.schedule_reads == 2
+    for _ in range(60):
+        scheduler.tick()
+    assert state.schedule_reads == 3
+
+
+def test_an_api_without_a_schedule_is_asked_for_the_sync_run_alone_until_it_has_one(api, scheduler):
+    state, _ = api
+    assert scheduler.tick()["started"] == "sync"  # 404: the sync run, at the manifest's interval
+    assert state.manifest_reads == 1
+    state.schedule, state.manifest_hash = [SYNC, CHECK], "h2"
+    state.now = T0 + timedelta(minutes=15)
+    assert scheduler.tick()["started"] == ["sync"]
+    assert scheduler.tick()["started"] == ["fidelity"]
+    assert keys(state) == ["sync:2026-01-19T00:00:00+00:00", "sync:2026-01-19T00:15:00+00:00"]
+
+
+def test_a_restarted_scheduler_asks_again_with_the_same_keys(api, scheduler, tmp_path: Path):
+    state, url = api
+    state.schedule = [SYNC, CHECK]
+    scheduler.tick()
+    scheduler.tick()
+    again = Scheduler(
+        SchedulerSettings(api_url=url, api_token=TOKEN, logs_dir=tmp_path, poll_s=0.05)
+    )
+    try:
+        again.tick()
+        again.tick()
+    finally:
+        again.close()
+    assert keys(state) == ["sync:2026-01-19T00:00:00+00:00"] * 2
+    assert keys(state, CHECK["path"]) == ["fidelity:2026-01-19T00:00:00+00:00"] * 2
 
 
 @pytest.mark.parametrize("poll", ["0", "soon", "99999"])
