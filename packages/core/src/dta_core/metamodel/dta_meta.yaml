@@ -515,6 +515,357 @@ classes:
           dta_role: state
           dta_long: true
 
+  TwinFidelity:
+    description: >-
+      Whether the twin keeps what it promised: one record, changed at every
+      transition.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      state:
+        range: TwinFidelityState
+        required: true
+        annotations:
+          dta_role: state
+      since:
+        range: datetime
+        description: Data time of the check at which the state began.
+        annotations:
+          dta_role: state
+      check:
+        description: Uid of the last check.
+        annotations:
+          dta_role: state
+
+  TwinFidelityCheck:
+    description: >-
+      One fidelity check: what was measured at a time of the twin's clock.
+    annotations:
+      dta_event: true
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      at:
+        range: datetime
+        required: true
+        description: The check time, on the twin's clock.
+      at_version:
+        required: true
+        description: Commit the check read.
+      state:
+        range: TwinFidelityState
+        required: true
+        description: The twin's state after the check.
+      questions:
+        description: >-
+          Per question, as JSON: the origin scored, its error, the window error
+          and its number of origins, the warning sum, per series the mean signed
+          residual and the last predicted value, and why nothing was scored.
+        annotations:
+          dta_long: true
+      freshness:
+        description: Per question and source, as JSON.
+        annotations:
+          dta_long: true
+      signals:
+        description: What the data-quality tests found, as JSON.
+        annotations:
+          dta_long: true
+      coverage:
+        description: Questions validated, provisional and failing; rows set aside; as JSON.
+        annotations:
+          dta_long: true
+      duration_ms:
+        range: integer
+        minimum_value: 0
+      trace_id: {}
+
+  TwinIncident:
+    description: >-
+      Something that keeps the twin from its promises, from when it was found
+      until it was put right or given up on.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      kind:
+        range: TwinIncidentKind
+        required: true
+      subject:
+        required: true
+        description: Id of the question, or uid of the signal or the action record.
+      status:
+        range: TwinIncidentStatus
+        required: true
+        annotations:
+          dta_role: state
+      opened_at:
+        range: datetime
+        required: true
+      opened_version:
+        required: true
+      resolved_at:
+        range: datetime
+        annotations:
+          dta_role: state
+      rung:
+        range: integer
+        minimum_value: 0
+        maximum_value: 4
+        annotations:
+          dta_role: state
+      attempt:
+        range: integer
+        minimum_value: 0
+        annotations:
+          dta_role: state
+      cycle:
+        range: integer
+        minimum_value: 0
+        annotations:
+          dta_role: state
+      awaiting:
+        range: datetime
+        description: >-
+          End of the data a model put in place by a correction was fitted on:
+          the incident waits for origins after it.
+        annotations:
+          dta_role: state
+      requested_at:
+        range: datetime
+        description: When a re-model was asked for.
+        annotations:
+          dta_role: state
+      detail:
+        description: What was measured at the opening and now, as JSON.
+        annotations:
+          dta_role: state
+          dta_long: true
+      steps:
+        description: Every step taken, in order, as JSON.
+        annotations:
+          dta_role: state
+          dta_long: true
+
+  TwinSignal:
+    description: >-
+      One observed property of one object whose readings the twin tests, kept
+      once it was found suspect.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      property:
+        required: true
+        description: Type.property.
+      object:
+        required: true
+        description: Uid of the object.
+      status:
+        range: TwinSignalStatus
+        required: true
+        annotations:
+          dta_role: state
+      reason:
+        range: TwinSignalReason
+        annotations:
+          dta_role: state
+      since:
+        range: datetime
+        annotations:
+          dta_role: state
+      value_at_flag:
+        description: The reading when it was flagged, as JSON.
+        annotations:
+          dta_role: state
+      reading:
+        description: The newest reading of the source, as JSON; not written to the object while suspect.
+        annotations:
+          dta_role: state
+      reading_at:
+        range: datetime
+        annotations:
+          dta_role: state
+      clear_checks:
+        range: integer
+        minimum_value: 0
+        description: Consecutive checks in which the reading looked sound again.
+        annotations:
+          dta_role: state
+      detail:
+        description: The test's numbers, as JSON.
+        annotations:
+          dta_role: state
+          dta_long: true
+
+  TwinAction:
+    description: A type of action on the real system, as the manifest declares it.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      description:
+        annotations:
+          dta_long: true
+      control:
+        description: Id of the delegated control it carries out.
+      target:
+        description: Type.property the control sets.
+      object_type: {}
+      binding:
+        range: TwinActionBinding
+        required: true
+      autonomy:
+        range: TwinAutonomy
+        description: Of its control; advisory when it carries out none.
+      parameters:
+        description: Its arguments, as JSON.
+        annotations:
+          dta_long: true
+      bounds:
+        description: The control's bounds, as JSON.
+        annotations:
+          dta_long: true
+      executor:
+        description: The external call, as JSON; names of variables, never their values.
+        annotations:
+          dta_long: true
+      settle:
+        description: Time after which its effect must be observable, ISO 8601.
+      tolerance:
+        range: float
+      precondition:
+        annotations:
+          dta_long: true
+      expected_effect:
+        annotations:
+          dta_long: true
+      origin:
+        range: TwinOrigin
+      status:
+        range: TwinFunctionStatus
+        required: true
+        annotations:
+          dta_role: state
+
+  TwinActionRecord:
+    description: >-
+      One proposed action and what became of it: refused, approved, blocked,
+      executed, and whether its effect was then observed.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      action:
+        range: TwinAction
+        required: true
+      object:
+        required: true
+        description: Uid of the object acted on.
+      params:
+        required: true
+        description: Its arguments, as JSON.
+        annotations:
+          dta_long: true
+      reason:
+        annotations:
+          dta_long: true
+      source:
+        required: true
+        description: >-
+          Who proposed it: a name, or the uid of a control loop.
+      proposed_at:
+        range: datetime
+        required: true
+      at_version:
+        required: true
+        description: Commit the proposal was judged at.
+      fidelity:
+        range: TwinFidelityState
+        description: The twin's state when it was judged.
+      status:
+        range: TwinActionStatus
+        required: true
+        annotations:
+          dta_role: state
+      reasons:
+        description: Why it was rejected or blocked, as JSON.
+        annotations:
+          dta_role: state
+          dta_long: true
+      approval:
+        description: Who approved or rejected it, when and with what note, as JSON.
+        annotations:
+          dta_role: state
+          dta_long: true
+      execution:
+        description: >-
+          When it was sent and took effect, the answer's status and an excerpt,
+          the duration, as JSON.
+        annotations:
+          dta_role: state
+          dta_long: true
+      effective_at:
+        range: datetime
+        annotations:
+          dta_role: state
+      reconciliation:
+        range: TwinReconciliation
+        annotations:
+          dta_role: state
+      observed:
+        description: What was observed when it was reconciled, as JSON.
+        annotations:
+          dta_role: state
+      reconciled_at:
+        range: datetime
+        annotations:
+          dta_role: state
+
+  TwinControlLoop:
+    description: A loop that asks a policy function what to do, on an interval.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      description:
+        annotations:
+          dta_long: true
+      controls:
+        multivalued: true
+        description: Ids of the delegated controls it drives.
+      policy:
+        range: TwinFunction
+        required: true
+      interval:
+        required: true
+        description: Time between decisions, ISO 8601.
+      origin:
+        range: TwinOrigin
+      status:
+        range: TwinFunctionStatus
+        required: true
+        annotations:
+          dta_role: state
+      enabled:
+        range: boolean
+        required: true
+        annotations:
+          dta_role: state
+      last_run_at:
+        range: datetime
+        annotations:
+          dta_role: state
+      last_run:
+        description: >-
+          What the last run did: proposed, executed, blocked and rejected
+          actions, its notes or its error, as JSON.
+        annotations:
+          dta_role: state
+          dta_long: true
+
 enums:
   TwinFunctionKind:
     permissible_values:
@@ -590,3 +941,59 @@ enums:
       partial:
         description: Some sources failed; the others were synced.
       failed: {}
+  TwinFidelityState:
+    permissible_values:
+      unknown:
+        description: No check has completed.
+      healthy: {}
+      correcting:
+        description: Something is being put right; nothing is given up on.
+      failed:
+        description: The twin could not put itself right; automated action is suspended.
+  TwinIncidentKind:
+    permissible_values:
+      breach:
+        description: A question's error is outside its tolerance.
+      stale:
+        description: A question's data is older than agreed.
+      signal:
+        description: An observed signal is suspect.
+      reconcile:
+        description: An executed action did not have its effect.
+  TwinIncidentStatus:
+    permissible_values:
+      open: {}
+      remodel_requested:
+        description: The managing agent was asked for other models.
+      failed: {}
+      resolved: {}
+  TwinSignalStatus:
+    permissible_values:
+      suspect: {}
+      ok: {}
+  TwinSignalReason:
+    permissible_values:
+      stuck: {}
+      biased: {}
+  TwinActionBinding:
+    permissible_values:
+      advisory: {}
+      executor: {}
+  TwinAutonomy:
+    permissible_values:
+      advisory: {}
+      supervised: {}
+      autonomous: {}
+  TwinActionStatus:
+    permissible_values:
+      proposed: {}
+      rejected: {}
+      approved: {}
+      blocked: {}
+      executed: {}
+      failed: {}
+  TwinReconciliation:
+    permissible_values:
+      pending: {}
+      ok: {}
+      mismatch: {}

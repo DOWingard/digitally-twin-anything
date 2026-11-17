@@ -425,6 +425,13 @@ class ActionType(Base):
     parameters: dict[str, Parameter] = opt(Owner.agent, "Arguments of the action", dict)
     precondition: str | None = opt(Owner.agent, "Condition on the graph that must hold")
     expected_effect: str | None = opt(Owner.agent, "What should be observed afterwards")
+    settle: timedelta | None = opt(
+        Owner.agent,
+        "Time after which the effect must be observable; twice the sync interval if absent",
+    )
+    tolerance: float = opt(
+        Owner.agent, "How far the observed value may be from the one set", 0.0, ge=0
+    )
 
 
 class ControlLoop(Base):
@@ -445,6 +452,11 @@ class Correction(Base):
     agent_remodel: bool = opt(Owner.agent, "May ask the managing agent to re-model", True)
     retry_budget: int = opt(
         Owner.agent, "Correction cycles before the twin is declared failed", 3, ge=1
+    )
+    remodel_timeout: timedelta = opt(
+        Owner.agent,
+        "How long a request to re-model may stay unanswered before the twin is declared failed",
+        timedelta(hours=24),
     )
 
 

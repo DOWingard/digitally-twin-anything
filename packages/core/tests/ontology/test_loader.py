@@ -6,15 +6,22 @@ from dta_core.schema import Field, Kind, Ontology, Role
 
 FIXTURES = Path(__file__).parent / "fixtures"
 META_TYPES = [
+    "TwinAction",
+    "TwinActionRecord",
     "TwinArtifact",
     "TwinBacktest",
+    "TwinControlLoop",
     "TwinDataset",
+    "TwinFidelity",
+    "TwinFidelityCheck",
     "TwinFunction",
     "TwinFunctionRun",
+    "TwinIncident",
     "TwinManifest",
     "TwinModel",
     "TwinQuestion",
     "TwinScenario",
+    "TwinSignal",
     "TwinSource",
     "TwinSyncRun",
 ]
