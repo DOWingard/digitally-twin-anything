@@ -12,6 +12,7 @@ from importlib.metadata import version as package_version
 import anyio.to_thread
 from dta_core.errors import ConfigError, DtaError
 from dta_core.log import Log
+from dta_core.store import StoreUnavailable
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -19,7 +20,7 @@ from starlette.responses import JSONResponse, Response
 
 from ..clock import Clock
 from ..graph import GraphCache
-from ..notify import BACKOFF_S, notifier_for
+from ..notify import BACKOFF_S, LOG, Notifier, notifier_for
 from ..settings import ENV_API_TOKEN, MIN_TOKEN_LENGTH, RuntimeSettings
 from ..sync.extract import Connect
 from ..twin import Twin, open_twin
@@ -142,6 +143,17 @@ def create_app(
                     opened.manifest(at=opened.store.head()), os.environ, backoff_s=notify_backoff_s
                 )
             )
+        except StoreUnavailable as exc:
+            # A twin handed in may have its store down: the API still starts and answers
+            # 503 to what needs the store, as it always did. Its manifest cannot be read,
+            # so notifications are logged only until the API is started again.
+            log.error(
+                "the manifest cannot be read at start: notifications are only logged until "
+                "the API starts again",
+                exc=exc,
+                code=exc.code,
+            )
+            notifier = Notifier(twin_id="twin", kind=LOG)
         except DtaError as exc:
             log.error(
                 "the API cannot start: its notifications cannot be set up",
