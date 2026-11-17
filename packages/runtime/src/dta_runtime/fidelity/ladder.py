@@ -14,7 +14,8 @@ next attempt at rung 1, rung 3 after rung 2. When the ladder runs out (rung 3 pa
 over, or a rung 2 after a re-model came to nothing) the cycle ends: the next one
 starts again at rung 1 on newer data, and a cycle beyond retry_budget fails the
 incident. While a correction is pending, or the model it put in place has fewer
-than three origins, the incident waits.
+than three origins, the incident waits. `attempt` counts the tries at the current
+rung: rung 2 starts at 0, and a re-model brings it back at 1.
 
 Resolution: three or more origins at or after the cut whose mean error is within the
 tolerance. The cut is the end of the data of the model a correction put in place; with
@@ -124,7 +125,7 @@ def _take(position: Position, settings: Correction, now: datetime, logged: list)
         if current.rung == 1:
             if current.attempt < settings.recalibrate_attempts:
                 return Step(current, (1, current.attempt, current.key_cycle), logged)
-            current = replace(current, rung=2)
+            current = replace(current, rung=2, attempt=0)
         if current.rung == 2:
             if settings.reselect:
                 return Step(current, (2, current.attempt, current.key_cycle), logged)
@@ -184,8 +185,8 @@ def next_step(
         assert current.requested_at is not None
         if remodelled:
             logged.append({"action": "remodelled"})
-            # One more attempt: the key of this rung-2 step must differ from the one the
-            # cycle took before the re-model, or the job would not run again.
+            # The second attempt at rung 2: its key must differ from the one the cycle
+            # took before the re-model, or the job would not run again.
             current = replace(
                 current,
                 status=OPEN,
