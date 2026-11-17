@@ -500,6 +500,8 @@ classes:
           dta_long: true
       horizon:
         description: How far the scenario runs beyond its base, ISO 8601.
+      step:
+        description: Step of the scenario's grid, ISO 8601.
       models:
         multivalued: true
         description: Uids of the models that predict what follows, one per predicted property.

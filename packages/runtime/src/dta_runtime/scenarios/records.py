@@ -25,6 +25,7 @@ from dta_core.store import (
 
 from ..twin import Twin
 from .errors import NOT_FOUND, ScenarioError, refused
+from .request import duration_of
 
 log = Log("runtime.scenarios")
 
@@ -129,8 +130,12 @@ def set_status(twin: Twin, uid: str, status: str, error: str | None = None) -> V
     return version
 
 
-def step_of(twin: Twin, uid: str) -> timedelta:
-    """The step of the scenario's grid, as its latest registration recorded it."""
+def step_of(twin: Twin, uid: str, record: dict[str, Any] | None = None) -> timedelta:
+    """The step of the scenario's grid: the record's own, or, for a record written
+    before it had one, what its latest registration noted."""
+    kept = (record if record is not None else require(twin, uid)).get("step")
+    if kept:
+        return duration_of(kept)
     for version in twin.store.versions(
         cause="registration", actor=ACTOR, extra={EXTRA_SCENARIO: uid}, newest_first=True
     ):

@@ -64,6 +64,7 @@ def test_a_scenario_is_a_branch_at_its_base_and_a_record_on_the_live_line(world:
         "base_t": base.t,
         "interventions": "[]",
         "horizon": "PT2H",
+        "step": "PT15M",
         "models": [model("level-naive"), model("demand-last")],
         "status": "created",
         "error": None,

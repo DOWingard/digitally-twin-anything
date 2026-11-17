@@ -203,7 +203,7 @@ def compare(
         raise refused(errors.DELETED, f"{uid} was deleted", scenario=uid)
     other = _other_branch(twin, record, against)
     base_t: datetime = record["base_t"]
-    step = records.step_of(twin, uid)
+    step = records.step_of(twin, uid, record)
     steps = duration_of(record["horizon"]) // step
     times = grid(base_t, step, steps, first=0)
     # Both sides start at the base version, so its ontology shapes what both give.

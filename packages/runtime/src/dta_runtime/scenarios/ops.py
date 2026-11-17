@@ -204,6 +204,7 @@ def create(
         "base_t": at.t,
         "interventions": canonical(intervention_documents(request.interventions)),
         "horizon": duration_text(request.horizon),
+        "step": duration_text(step),
         "models": list(request.models),
         "status": CREATED,
         "error": None,
@@ -402,7 +403,7 @@ def run(twin: Twin, uid: str, *, predict: Predictor, budget_s: float) -> dict[st
 
     branch = record["branch"]
     base = store.resolve(record["base_version"], LIVE_BRANCH)[0]
-    step = records.step_of(twin, uid)
+    step = records.step_of(twin, uid, record)
     steps = duration_of(record["horizon"]) // step
     interventions = interventions_of(record["interventions"])
     ontology = store.ontology_at(base)
