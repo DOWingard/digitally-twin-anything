@@ -18,15 +18,25 @@ from dash.exceptions import PreventUpdate
 from . import ids
 from .backend import Backend
 from .feedback import guarded, note
+from .parts import at_version
 from .schema import Schema
-from .text import plural, time_text, value_text, with_unit
+from .text import (
+    FACT_MARKS,
+    more_found_text,
+    plural,
+    search_label,
+    time_text,
+    value_text,
+    with_unit,
+)
 
 NODE_LIMIT = 300
 NODE_LIMIT_MAX = 5_000
 # The API takes at most this many seeds in one subgraph request.
 SEEDS_MAX = 1_000
 DEPTHS = (1, 2, 3, 4)
-SEARCH_PER_TYPE = 10
+# Most objects one search offers, and most types it names (the graph's node types).
+SEARCH_LIMIT = 50
 SEARCH_TYPES_MAX = 50
 
 
@@ -42,6 +52,8 @@ def layout() -> html.Div:
                         placeholder="search by uid…",
                         searchable=True,
                         clearable=True,
+                        # In uid order, as the API found them, with the count of the rest last.
+                        search_order="original",
                         # No `debounce`: in Dash 4 it holds a single choice back until the
                         # menu closes, and a choice that closes the menu was never sent.
                         # The search text waits for a pause in the browser instead.
@@ -191,6 +203,13 @@ def elements(document: dict[str, Any], seeds: set[str]) -> tuple[list[dict[str, 
     return found, edges
 
 
+def search_option(row: dict[str, Any]) -> dict[str, str]:
+    """A search result as the object dropdown offers it: chosen by uid, shown with its
+    type and name."""
+    uid = str(row["uid"])
+    return {"label": search_label(uid, row.get("type"), row.get("name")), "value": uid}
+
+
 def legend(schema: Schema, present: set[str]) -> list[Any]:
     return [
         html.Span(
@@ -219,16 +238,25 @@ def details(
     rows = []
     for name in names:
         source = provenance.get(name, fallback) or {}
+        kind = str(source.get("kind") or "")
+        # A value no source observed (a scenario's assumption, a model's simulation) is
+        # marked where its provenance is told, and only there.
+        mark = FACT_MARKS.get(kind)
+        kind_cell: list[Any] = [kind]
+        if mark:
+            kind_cell.append(html.Div(mark, className="fact-mark"))
         rows.append(
             html.Tr(
                 [
                     html.Td(name),
                     html.Td(with_unit(value_text(values.get(name)), schema.unit(type_name, name))),
                     html.Td(source.get("source", "")),
-                    html.Td(source.get("kind", "")),
+                    html.Td(kind_cell),
                     html.Td(value_text(source.get("confidence"))),
                     html.Td(time_text(source.get("t_valid"))),
-                ]
+                ],
+                className=f"fact-{kind}" if mark else None,
+                **{"data-property": name},
             )
         )
     return html.Div(
@@ -284,7 +312,7 @@ def register(app: Dash, backend: Backend) -> None:
     ) -> Any:
         if not version:
             raise PreventUpdate
-        schema = backend.schema(version["id"])
+        schema = backend.schema_at(version)
         options = [
             {"label": schema.type_label(name), "value": name} for name in schema.node_types()
         ]
@@ -315,26 +343,34 @@ def register(app: Dash, backend: Backend) -> None:
     )
     @guarded(1)
     def search(text: str | None, chosen: str | None, version: dict[str, Any] | None) -> Any:
-        """Objects whose uid holds the text, a few of each type, at the selected version."""
+        """Objects of the graph's types whose uid or name holds the text, at the selected
+        version: one request, whatever the number of types."""
         if not text or not version:
             raise PreventUpdate
-        schema = backend.schema(version["id"])
-        found: list[str] = []
-        pattern = f"%{text.strip()}%"
-        for name in schema.node_types()[:SEARCH_TYPES_MAX]:
-            document = backend.client.get(
-                "/objects/{type}",
-                path={"type": name},
-                params={
-                    "at": version["id"],
-                    "columns": "uid",
-                    "where": [f"uid:like:{pattern}"],
-                    "limit": SEARCH_PER_TYPE,
-                },
+        schema = backend.schema_at(version)
+        document = backend.client.get(
+            "/search",
+            params={
+                "q": f"%{text.strip()}%",
+                "types": schema.node_types()[:SEARCH_TYPES_MAX],
+                **at_version(version),
+                "limit": SEARCH_LIMIT,
+                "count": "true",
+            },
+        )
+        found = document.get("data", [])
+        options: list[dict[str, Any]] = [search_option(row) for row in found]
+        total = document.get("total")
+        if isinstance(total, int) and total > len(found):
+            # The first matches in uid order are offered; the rest are named by typing more.
+            options.append(
+                {
+                    "label": more_found_text(total - len(found), text.strip()),
+                    "value": "",
+                    "disabled": True,
+                }
             )
-            found += [row["uid"] for row in document.get("data", [])]
-        options = [{"label": uid, "value": uid} for uid in found]
-        if chosen and chosen not in found:
+        if chosen and chosen not in {row.get("uid") for row in found}:
             options.insert(0, {"label": chosen, "value": chosen})
         return options
 
@@ -362,7 +398,7 @@ def register(app: Dash, backend: Backend) -> None:
     ) -> Any:
         if not version or (not uid and not type_name):
             raise PreventUpdate
-        schema = backend.schema(version["id"])
+        schema = backend.schema_at(version)
         bound = max(1, min(int(limit or NODE_LIMIT), NODE_LIMIT_MAX))
         hops = int(depth or 1)
         notes: list[Any] = []
@@ -376,7 +412,7 @@ def register(app: Dash, backend: Backend) -> None:
             listing = backend.client.get(
                 "/objects/{type}",
                 path={"type": type_name},
-                params={"at": version["id"], "columns": "uid", "limit": min(bound, SEEDS_MAX)},
+                params={**at_version(version), "columns": "uid", "limit": min(bound, SEEDS_MAX)},
             )
             seeds = [row["uid"] for row in listing.get("data", [])]
             origin = f"around the {type_name} objects"
@@ -403,7 +439,7 @@ def register(app: Dash, backend: Backend) -> None:
         }
         if node_types:
             body["node_types"] = node_types
-        document = backend.client.post("/graph/subgraph", params={"at": version["id"]}, body=body)
+        document = backend.client.post("/graph/subgraph", params=at_version(version), body=body)
         found, edges = elements(document, set(seeds))
         nodes = len(document.get("nodes", []))
         status: list[Any] = [
@@ -443,8 +479,8 @@ def register(app: Dash, backend: Backend) -> None:
                 "Click a node or an edge to see its values and their provenance.", className="muted"
             )
         kind, data = chosen
-        schema = backend.schema(version["id"])
-        at = {"at": version["id"], "include": "provenance"}
+        schema = backend.schema_at(version)
+        at = {**at_version(version), "include": "provenance"}
         if kind == "node":
             found = backend.client.get("/object/{uid}", path={"uid": data["id"]}, params=at)["data"]
             return details(schema, found, version, heading=[found["type"], " ", data["id"]])

@@ -9,6 +9,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from ui_page import (
     choose_dropdown,
+    choose_object,
     click_graph_element,
     graph_nodes,
     graph_status,
@@ -23,8 +24,8 @@ from ui_testkit import READINGS, READINGS_SENSOR
 SUBGRAPH_PATH = "/api/v1/graph/subgraph"
 
 
-def _around(browser, uid):
-    choose_dropdown(browser, ids.GRAPH_OBJECT, uid, typed=uid.split(":", 1)[1])
+def _around(browser, uid, typed=None):
+    choose_object(browser, uid, typed=typed or uid.split(":", 1)[1])
     wait_for(browser, lambda: f"around {uid}" in graph_status(browser), f"the graph around {uid}")
 
 
@@ -33,8 +34,9 @@ def test_graph_stops_at_its_node_limit_and_says_so(stack, browser):
     head = max(stack.history.versions)
     wait_graph_at(browser, head)
     mark = stack.api_requests.mark()
-    # The sensor's readings alone are more than the default limit.
-    _around(browser, READINGS_SENSOR)
+    # The sensor's readings alone are more than the default limit. Its readings' uids hold
+    # its key too, and come first in uid order: the sensor is searched for by its uid.
+    _around(browser, READINGS_SENSOR, typed=READINGS_SENSOR)
     assert READINGS > NODE_LIMIT
     nodes = wait_for(browser, lambda: len(graph_nodes(browser)) == NODE_LIMIT, "the bounded graph")
     assert nodes

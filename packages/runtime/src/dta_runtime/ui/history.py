@@ -22,7 +22,7 @@ from dta_core.log import Log
 from . import ids, sync
 from .backend import Backend
 from .feedback import block_response, guarded, note
-from .parts import field
+from .parts import LIVE_BRANCH, branch_of, field
 from .schema import Schema
 from .text import plural, time_text, value_text, with_unit
 
@@ -300,6 +300,31 @@ def next_log_head(
     return None
 
 
+def branch_log_head(
+    health: dict[str, Any] | None,
+    branch: dict[str, Any] | None,
+    version: dict[str, Any] | None,
+    known: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The head the commit log ends at, with its branch: the live twin's as `next_log_head`
+    moves it, or the shown scenario's. A change of branch moves it at once."""
+    name = (branch or {}).get("branch") or LIVE_BRANCH
+    if name == LIVE_BRANCH:
+        if not health:
+            return None
+        current: dict[str, Any] | None = health
+    elif (branch or {}).get("head_id") is None:
+        return None
+    else:
+        current = {"head": {"id": branch["head_id"], "seq": branch["head_seq"]}}  # type: ignore[index]
+    if (known or {}).get("branch", LIVE_BRANCH) != name:
+        head = current["head"]
+        return {"id": head["id"], "seq": int(head["seq"]), "branch": name}
+    plain = {"id": known["id"], "seq": known["seq"]} if known else None
+    found = next_log_head(current, version if branch_of(version) == name else None, plain)
+    return {**found, "branch": name} if found else None
+
+
 def register(app: Dash, backend: Backend) -> None:
     @app.callback(Output(ids.FIDELITY, "children"), Input(ids.HEALTH, "data"))
     def fidelity(health: dict[str, Any] | None) -> Any:
@@ -327,17 +352,21 @@ def register(app: Dash, backend: Backend) -> None:
         Output(ids.LOG_HEAD, "data"),
         Input(ids.HEALTH, "data"),
         Input(ids.VERSION, "data"),
+        Input(ids.BRANCH, "data"),
         State(ids.LOG_HEAD, "data"),
     )
     def log_head(
         health: dict[str, Any] | None,
         version: dict[str, Any] | None,
+        branch: dict[str, Any] | None,
         known: dict[str, Any] | None,
     ) -> Any:
-        found = next_log_head(health, version, known)
+        found = branch_log_head(health, branch, version, known)
         if found is None:
             raise PreventUpdate
-        log.debug("the commit log moves to a new head", head_seq=found["seq"])
+        log.debug(
+            "the commit log moves to a new head", head_seq=found["seq"], branch=found["branch"]
+        )
         return found
 
     @app.callback(
@@ -393,6 +422,7 @@ def register(app: Dash, backend: Backend) -> None:
             # Without an end of its own, the log ends at its head, so that the rows of one
             # head are read with cursors issued for that head.
             params["to"] = params.get("to") or head["id"]
+            params["branch"] = head.get("branch") or LIVE_BRANCH
             block = backend.pages.block(
                 "/history/versions", path=None, params=params, start=start, end=end
             )
@@ -427,9 +457,15 @@ def register(app: Dash, backend: Backend) -> None:
         base = parents[0] if parents else f"#{int(version['seq']) - 1}"
         document = backend.client.get(
             "/history/diff",
-            params={"from": base, "to": version["id"], "detail": "rows", "limit": DIFF_ROWS},
+            params={
+                "from": base,
+                "to": version["id"],
+                "detail": "rows",
+                "limit": DIFF_ROWS,
+                "branch": branch_of(version),
+            },
         )
-        schema = backend.schema(version["id"])
+        schema = backend.schema_at(version)
         label = f"#{document.get('from', {}).get('seq', int(version['seq']) - 1)}"
         return diff_view(schema, document, version, label)
 

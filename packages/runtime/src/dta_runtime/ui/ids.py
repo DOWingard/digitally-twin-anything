@@ -26,6 +26,17 @@ VERSION_FEEDBACK = "version-feedback"
 TABS = "tabs"
 # Written by the browser after it asked grids to read their rows again; read by nothing.
 GRIDS_REFRESHED = "grids-refreshed"
+HEADER = "header"
+# The branch selector: the live twin, or a scenario whose branch exists.
+BRANCH_SELECT = "branch-select"
+# The scenarios whose branch exists, by branch name, as last read.
+BRANCHES = "known-branches"
+# The branch every tab reads: its name and, for a scenario, its base and head.
+BRANCH = "selected-branch"
+# The version and following the session had on the live twin, restored on coming back.
+LIVE_KEPT = "live-kept"
+SCENARIO_NOTICE = "scenario-notice"
+BRANCH_FEEDBACK = "branch-feedback"
 
 # Graph tab
 GRAPH_OBJECT = "graph-object"
@@ -72,6 +83,53 @@ LOGS_CONTEXT = "logs-context"
 LOGS_REFRESH = "logs-refresh"
 LOGS_GRID = "logs-grid"
 LOGS_FEEDBACK = "logs-feedback"
+
+# Questions tab
+QUESTIONS_GRID = "questions-grid"
+QUESTIONS_STATUS = "questions-status"
+QUESTIONS_FEEDBACK = "questions-feedback"
+# The version and branch the questions were last read at.
+QUESTIONS_SHOWN = "questions-shown"
+# The question chosen in the table, and the function that answers it.
+QUESTION_CHOSEN = "question-chosen"
+QUESTION_TITLE = "question-title"
+QUESTION_FORM = "question-form"
+QUESTION_FORM_FEEDBACK = "question-form-feedback"
+# Role of the pattern-matching ids of the form's fields, one per argument.
+QUESTION_ARG = "question-arg"
+QUESTION_AT = "question-at"
+QUESTION_BRANCH = "question-branch"
+ASK = "ask"
+# Where a refusal is shown: beside the form, which keeps what was typed.
+ASK_FEEDBACK = "ask-feedback"
+ANSWER = "answer"
+# Role of the pattern-matching id of the grid of an answer's rows, made per answer.
+ANSWER_GRID = "answer-grid"
+ANSWER_CHART = "answer-chart"
+ANSWER_FEEDBACK = "answer-feedback"
+
+# Scenarios tab
+SCENARIO_LIST = "scenario-list"
+SCENARIO_LIST_STATUS = "scenario-list-status"
+SCENARIO_LIST_FEEDBACK = "scenario-list-feedback"
+# The head of the live twin the list was last read at.
+SCENARIO_LIST_SHOWN = "scenario-list-shown"
+# The scenario chosen in the list, as the list described it.
+SCENARIO_PICKED = "scenario-picked"
+SCENARIO_TITLE = "scenario-title"
+COMPARE_TARGETS = "compare-targets"
+COMPARE_AGAINST = "compare-against"
+COMPARE = "compare"
+COMPARE_FEEDBACK = "compare-feedback"
+COMPARISON = "comparison"
+# Roles of the pattern-matching ids made per comparison: a chart and its choice of
+# objects per target, and the grid of every row.
+COMPARE_CHART = "compare-chart"
+COMPARE_PICK = "compare-pick"
+COMPARE_NOTE = "compare-note"
+COMPARE_GRID = "compare-grid"
+COMPARE_GRID_FEEDBACK = "compare-grid-feedback"
+COMPARE_PRELOAD = "compare-preload"
 
 # The sync section of the history tab: the twin at its head, whatever version is selected.
 SYNC_SECTION = "sync-section"

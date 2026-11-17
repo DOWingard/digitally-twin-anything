@@ -130,8 +130,11 @@ class ApiClient:
         path: Mapping[str, str] | None = None,
         params: Params | None = None,
         body: Mapping[str, Any] | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> dict[str, Any]:
-        return self._call("POST", route, path, params, body)
+        """`timeout` replaces the client's own for a call that is allowed longer, such as
+        asking a question whose function has a latency budget of its own."""
+        return self._call("POST", route, path, params, body, timeout)
 
     def _call(
         self,
@@ -140,6 +143,7 @@ class ApiClient:
         path: Mapping[str, str] | None,
         params: Params | None,
         body: Mapping[str, Any] | None,
+        timeout: httpx.Timeout | None = None,
     ) -> dict[str, Any]:
         """One request to `route`, a template such as `/objects/{type}` filled from `path`.
 
@@ -153,7 +157,12 @@ class ApiClient:
         names = sorted({name for name, _ in query_pairs(params)})
         try:
             response = self._http.request(
-                method, url, params=query_pairs(params), json=body, headers=headers
+                method,
+                url,
+                params=query_pairs(params),
+                json=body,
+                headers=headers,
+                timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
             )
         except httpx.TimeoutException as exc:
             elapsed = _ms(started)

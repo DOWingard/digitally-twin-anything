@@ -41,14 +41,27 @@ from live_api_testkit import (  # noqa: E402
 )
 from live_testkit import Folder, at  # noqa: E402
 from sync_testkit import T0  # noqa: E402
+from ui_compute import (  # noqa: E402
+    PLAIN_LAST,
+    Computed,
+    prepare_computed,
+    prepare_plain,
+    serve_computed,
+)
 from ui_testkit import (  # noqa: E402
+    COMPARE_LIMIT_S,
+    COMPARE_S,
     DRIVER_AGENT,
     FIRST_RENDER_LIMIT_S,
     FIRST_RENDER_S,
     FOLLOW_LIMIT_S,
     FOLLOW_S,
+    QUESTIONS_LIMIT_S,
+    QUESTIONS_S,
     RUN_NOW_LIMIT_S,
     RUN_NOW_S,
+    SWITCH_LIMIT_S,
+    SWITCH_S,
     ApiServer,
     RequestLog,
     ResponseLog,
@@ -80,6 +93,17 @@ def pytest_terminal_summary(terminalreporter: Any) -> None:
             f"UI 'Run now' answered (limit {RUN_NOW_LIMIT_S:.0f} s): "
             f"{len(RUN_NOW_S)} clicks, slowest {max(RUN_NOW_S):.2f} s"
         )
+    for what, limit, measured in (
+        ("questions tab first render", QUESTIONS_LIMIT_S, QUESTIONS_S),
+        ("scenario comparison drawn from the click", COMPARE_LIMIT_S, COMPARE_S),
+        ("open tab redrawn on a switch of branch", SWITCH_LIMIT_S, SWITCH_S),
+    ):
+        if measured:
+            terminalreporter.write_line(
+                f"UI {what} (limit {limit:.0f} s): "
+                + ", ".join(f"{seconds:.2f}" for seconds in measured)
+                + " s"
+            )
 
 
 @dataclass
@@ -182,6 +206,53 @@ def make_stack(
 def stack(make_stack: Callable[[], Stack]) -> Stack:
     """The stack the read-only tests share; tests that write versions start their own."""
     return make_stack()
+
+
+@pytest.fixture(scope="session")
+def computed(
+    server_settings: StoreSettings,
+    _databases: list[str],
+    water_text: str,
+    ui_logs: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Computed]:
+    """A computed twin with its models evaluated, its questions measured and its scenarios
+    made and run through a real worker, served with its interface; shared, read only."""
+    name = database_name(server_settings, "uicompute")
+    _databases.append(name)
+    root = tmp_path_factory.mktemp("computed")
+    with serve_computed(
+        with_database(server_settings, name),
+        water_text,
+        root,
+        ui_logs,
+        prepare=prepare_computed,
+    ) as world:
+        yield world
+
+
+@pytest.fixture(scope="session")
+def plain(
+    server_settings: StoreSettings,
+    _databases: list[str],
+    water_text: str,
+    ui_logs: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Computed]:
+    """The same twin without a worker, with no model evaluated and no scenario."""
+    name = database_name(server_settings, "uiplain")
+    _databases.append(name)
+    root = tmp_path_factory.mktemp("plain")
+    with serve_computed(
+        with_database(server_settings, name),
+        water_text,
+        root,
+        ui_logs,
+        worker=False,
+        last=PLAIN_LAST,
+        prepare=prepare_plain,
+    ) as world:
+        yield world
 
 
 @dataclass

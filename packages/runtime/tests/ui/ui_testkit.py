@@ -34,6 +34,16 @@ FOLLOW_S: list[float] = []
 # A click on "Run now" disables the button and says a run is in progress within a second.
 RUN_NOW_LIMIT_S = 1.0
 RUN_NOW_S: list[float] = []
+# The questions tab's first render, a comparison of scenarios from the click that asks for
+# it, and a switch of branch until the open tab is drawn from the other branch: 5 s each,
+# measured three times.
+QUESTIONS_LIMIT_S = 5.0
+COMPARE_LIMIT_S = 5.0
+SWITCH_LIMIT_S = 5.0
+TIMED_RUNS = 3
+QUESTIONS_S: list[float] = []
+COMPARE_S: list[float] = []
+SWITCH_S: list[float] = []
 # The tests' own calls to the API (starting runs, waiting for them) carry this user agent,
 # so that what the page asked for can be told apart.
 DRIVER_AGENT = "dta-ui-tests"

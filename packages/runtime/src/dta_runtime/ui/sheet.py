@@ -36,8 +36,9 @@ from . import ids
 from .backend import Backend
 from .client import ApiProblem
 from .feedback import block_response, guarded
+from .parts import at_version, branch_of
 from .schema import NUMERIC_KINDS, Schema, filterable
-from .text import cell
+from .text import cell, on_branch_text
 
 log = Log("ui.sheet")
 
@@ -263,7 +264,7 @@ def register(app: Dash, backend: Backend) -> None:
     def sheet_choices(version: dict[str, Any] | None, chosen: str | None) -> Any:
         if not version:
             raise PreventUpdate
-        schema = backend.schema(version["id"])
+        schema = backend.schema_at(version)
         options = [
             {"label": schema.type_label(name), "value": name} for name in schema.sheet_types()
         ]
@@ -287,16 +288,17 @@ def register(app: Dash, backend: Backend) -> None:
         that stays is asked to read its rows again at the selected version."""
         if not version or not type_name:
             raise PreventUpdate
-        schema = backend.schema(version["id"])
+        schema = backend.schema_at(version)
         if not schema.has(type_name):
             raise PreventUpdate
+        where = on_branch_text(branch_of(version), version.get("scenario"))
         status = (
-            f"{type_name} at #{version['seq']}: sorted, filtered and paged by the API, "
-            f"{BLOCK_ROWS} rows at a time"
+            f"{type_name} at #{version['seq']}{f' of {where}' if where else ''}: sorted, "
+            f"filtered and paged by the API, {BLOCK_ROWS} rows at a time"
         )
         if grid_id(schema, type_name) in (present or []):
             log.debug("the sheet's grid stays; its rows are read again", sheet=type_name)
-            return no_update, status, version["id"]
+            return no_update, status, f"{branch_of(version)}@{version['id']}"
         log.debug("the sheet's grid is made", sheet=type_name, version=version["id"])
         return grid(schema, type_name), status, no_update
 
@@ -338,8 +340,8 @@ def read_block(
     end: int,
 ) -> tuple[list[dict[str, Any]], int | None]:
     """A block of the sheet a grid shows, at the selected version."""
-    type_name, version_id = str(grid_id["sheet"]), str(version["id"])
-    schema = backend.schema(version_id)
+    type_name = str(grid_id["sheet"])
+    schema = backend.schema_at(version)
     if not schema.has(type_name):
         raise ApiProblem(
             code="ui.unknown_sheet",
@@ -355,7 +357,7 @@ def read_block(
         prop["name"]: prop["kind"] for prop in schema.properties(type_name)
     }
     params: dict[str, Any] = {
-        "at": version_id,
+        **at_version(version),
         "where": where_clauses(request.get("filterModel"), kinds) or None,
         "sort": sort_parameter(request.get("sortModel")),
     }

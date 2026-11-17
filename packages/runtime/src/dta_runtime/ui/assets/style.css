@@ -69,6 +69,53 @@ body {
   flex: 1 1 320px;
 }
 
+/* The branch selector, and the header while a scenario is shown: told in words and set
+   apart by a band, so that a scenario is never taken for the live twin. */
+
+.branch-select {
+  flex: 0 1 320px;
+  min-width: 220px;
+  font-weight: 400;
+}
+
+.header.scenario-shown {
+  border-left: 6px solid #7a3fb0;
+  padding-left: 10px;
+  background: #f6f0fb;
+}
+
+.scenario-notice:empty {
+  display: none;
+}
+
+.scenario-notice {
+  margin: 4px 0;
+  padding: 6px 10px;
+  border: 2px dashed #7a3fb0;
+  border-radius: 4px;
+  color: #4b2370;
+  background: #fff;
+}
+
+.scenario-badge {
+  letter-spacing: 0.08em;
+  background: #7a3fb0;
+  color: #fff;
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+
+.fact-mark {
+  font-size: 11px;
+  font-weight: 600;
+  color: #4b2370;
+}
+
+.fact-assumed td,
+.fact-simulated td {
+  background: #f6f0fb;
+}
+
 .version-id {
   margin-left: 8px;
   font-size: 11px;
@@ -323,4 +370,184 @@ body {
 
 .runs-grid .run-failed {
   background: var(--error-bg);
+}
+
+/* Questions tab. A status is told by a word and a sign; its colour only adds to them. */
+
+.questions-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.questions-heading h3 {
+  margin: 4px 0;
+}
+
+.questions-grid .status-validated {
+  color: #1b6e2d;
+  font-weight: 600;
+}
+
+.questions-grid .status-provisional {
+  color: var(--warn-ink);
+  background: var(--warn-bg);
+}
+
+.questions-grid .status-failing {
+  color: var(--error-ink);
+  background: var(--error-bg);
+  font-weight: 600;
+}
+
+.ask-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.ask-box,
+.answer-box {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+
+.ask-box h4,
+.answer-box h4 {
+  margin: 0 0 6px;
+}
+
+.question-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.question-form .field,
+.question-where .field {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 8px;
+}
+
+.question-form label,
+.question-where label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.question-form input[type="text"],
+.question-where input[type="text"] {
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.argument-help {
+  font-size: 12px;
+}
+
+.button:disabled {
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--panel);
+  cursor: not-allowed;
+}
+
+.answer-version,
+.answer-model {
+  margin-bottom: 4px;
+}
+
+.answer-scalar {
+  margin: 8px 0;
+}
+
+.answer-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.answer-unit {
+  font-size: 16px;
+}
+
+.notice {
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin: 6px 0;
+}
+
+.notice.provisional {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border: 1px solid #e8cf86;
+  font-weight: 600;
+}
+
+.notice.notes {
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.answer-list {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+/* Scenarios tab. A status is told by a word and a sign; a failed or deleted scenario is
+   also coloured. */
+
+.scenario-list .scenario-failed {
+  color: var(--error-ink);
+  background: var(--error-bg);
+  font-weight: 600;
+}
+
+.scenario-list .scenario-deleted {
+  color: var(--muted);
+  background: var(--panel);
+  text-decoration: line-through;
+}
+
+.scenario-list .scenario-done {
+  color: #1b6e2d;
+  font-weight: 600;
+}
+
+.compare-box {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 12px;
+}
+
+.compare-box h4 {
+  margin: 0 0 8px;
+}
+
+.compare-controls {
+  display: grid;
+  grid-template-columns: minmax(260px, 2fr) minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.compare-controls .field,
+.compare-pick {
+  display: flex;
+  flex-direction: column;
+}
+
+.compare-controls label,
+.compare-pick label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.compare-target {
+  margin: 12px 0;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
 }

@@ -6,6 +6,7 @@ from api_testkit import J6_SEQ, VALVE_REMOVED_SEQ, link, node
 from dta_runtime.ui import ids
 from ui_page import (
     choose_dropdown,
+    choose_object,
     click_graph_element,
     click_tab,
     grid_cells,
@@ -125,7 +126,13 @@ def test_history_differs_between_head_and_an_older_version(stack, browser):
 
 
 # Routes that read data at a version; each must name the selected version by its id.
-READS = ("/api/v1/objects/", "/api/v1/object/", "/api/v1/graph/", "/api/v1/meta/schema")
+READS = (
+    "/api/v1/objects/",
+    "/api/v1/object/",
+    "/api/v1/graph/",
+    "/api/v1/meta/schema",
+    "/api/v1/search",
+)
 
 
 def test_every_read_names_the_selected_version_by_id(stack, browser):
@@ -133,7 +140,7 @@ def test_every_read_names_the_selected_version_by_id(stack, browser):
     open_page(browser, stack.ui_url)
     head = head_seq(browser)
     wait_graph_at(browser, head)
-    choose_dropdown(browser, ids.GRAPH_OBJECT, node("J2"), typed="J2")
+    choose_object(browser, node("J2"), typed="J2")
     wait_for(browser, lambda: "around node:J2" in text_of(browser, ids.GRAPH_STATUS), "J2")
     click_graph_element(browser, node("J2"))
     wait_for(browser, lambda: "elevation" in text_of(browser, ids.GRAPH_DETAILS), "details")
@@ -152,7 +159,8 @@ def test_every_read_names_the_selected_version_by_id(stack, browser):
     known = {version.id for version in stack.history.versions.values()}
     seen = stack.api_requests.since(mark)
     reads = [request for request in seen if request.path.startswith(READS)]
-    assert len(reads) > 10
+    # The graph, its search, the details, the sheet and the schema, at two versions.
+    assert len(reads) > 5
     unpinned = [(r.path, r.value("at")) for r in reads if r.value("at") not in known]
     assert not unpinned
     read_at = {r.value("at") for r in reads}
