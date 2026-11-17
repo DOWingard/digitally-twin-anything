@@ -1,7 +1,7 @@
 """How big the pools are, and the limits the worker puts on every process that runs code.
 
-The standard library only: a run process applies these before it imports anything
-heavy, because some of them only take effect if they come first.
+The standard library and the twin's log only: a run process applies these before it
+imports anything heavy, because some of them only take effect if they come first.
 
 An address-space limit counts every byte a process maps, not what it uses. The
 numeric libraries map memory per thread when they load: on a 12-core machine a
@@ -19,6 +19,10 @@ import math
 import os
 import resource
 from pathlib import Path
+
+from dta_core.log import Log
+
+log = Log("worker.limits")
 
 MIB = 1024 * 1024
 MIN_PROCESS_MEMORY = 256 * MIB
@@ -68,17 +72,21 @@ def cpu_seconds(budget_s: float) -> int:
 
 
 def cap_threads(threads: int = THREADS_PER_PROCESS) -> dict[str, str]:
-    """Few threads and arenas for the libraries this process loads from now on; the
-    variables set, so that a process of own code can take them away again."""
+    """Few threads for the libraries this process loads from now on, and Arrow's system
+    allocator; the variables set, so that a process of own code can take them away."""
     caps = {name: str(threads) for name in THREAD_CAPS}
     caps[ARROW_POOL_ENV] = "system"
     os.environ.update(caps)
-    try:
-        ctypes.CDLL(None).mallopt(_M_ARENA_MAX, MALLOC_ARENAS)
-    except (AttributeError, OSError):
-        # Not glibc: its allocator has no arenas to cap.
-        pass
     return caps
+
+
+def cap_arenas() -> bool:
+    """At most `MALLOC_ARENAS` malloc arenas, each of which reserves 64 MiB of address
+    space; whether the allocator took the cap (only glibc's has arenas)."""
+    try:
+        return bool(ctypes.CDLL(None).mallopt(_M_ARENA_MAX, MALLOC_ARENAS))
+    except (AttributeError, OSError):
+        return False
 
 
 def release_thread_caps(caps: dict[str, str]) -> None:
@@ -99,11 +107,13 @@ def limit_cpu(seconds: int) -> None:
 def _cgroup_events() -> Path | None:
     try:
         lines = Path("/proc/self/cgroup").read_text(encoding="ascii").splitlines()
-    except OSError:
+    except OSError as exc:
+        log.debug("the process's cgroup cannot be read", error=repr(exc))
         return None
     for line in lines:
         if line.startswith("0::"):
             return Path("/sys/fs/cgroup" + line[3:].rstrip("/")) / "memory.events"
+    log.debug("the process is in no cgroup v2")
     return None
 
 
@@ -118,6 +128,7 @@ def oom_kills() -> int | None:
             name, _, value = line.partition(" ")
             if name == "oom_kill":
                 return int(value)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        log.debug("the cgroup's memory events cannot be read", path=str(events), error=repr(exc))
         return None
     return None

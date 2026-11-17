@@ -14,10 +14,11 @@ import sys
 
 def main() -> int:
     from .channel import take_channels
-    from .limits import cap_threads, limit_memory
+    from .limits import cap_arenas, cap_threads, limit_memory
 
     receiver, sender = take_channels()
-    cap_threads()
+    caps = cap_threads()
+    arenas = cap_arenas()
 
     from dta_core.log import Log
 
@@ -33,7 +34,7 @@ def main() -> int:
     limit_memory(setup.memory_bytes)
     runner = Runner(setup, sender)
     send_ready(sender, pid=os.getpid())
-    log.debug("pool process ready", pid=os.getpid())
+    log.debug("pool process ready", pid=os.getpid(), threads=caps, arenas_capped=arenas)
     runs = 0
     try:
         while True:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 
 import httpx
+from api_testkit import TOKEN
 from dta_runtime.protocol import FrameRef
 from worker_testkit import (
     AUTH,
@@ -16,6 +17,7 @@ from worker_testkit import (
     problem_of,
     table_of,
     trace_id,
+    wait_until,
 )
 
 
@@ -58,9 +60,7 @@ def test_log_lines_past_two_hundred_are_dropped_and_counted(worker: Worker):
     assert logs[-1]["data"] == {"dropped": 250 - len(fitting), "kept": 199}
 
 
-def test_a_shipped_run_reads_the_twin_at_its_head_and_keeps_an_artifact(
-    worker: Worker, twin_api
-):
+def test_a_shipped_run_reads_the_twin_at_its_head_and_keeps_an_artifact(worker: Worker, twin_api):
     head = twin_api.water.head
     table, result = table_of(worker.run(predict_body("read", limit=2)))
     # Six junctions at the head, read two to a page.
@@ -84,7 +84,11 @@ def test_a_frame_is_read_from_the_api_with_the_runs_token_and_trace(worker: Work
 
 
 def test_a_request_without_the_token_is_refused(worker: Worker):
-    for headers in ({}, {"Authorization": "Bearer not-the-token-at-all-0000000"}, {"Authorization": "Basic x"}):
+    for headers in (
+        {},
+        {"Authorization": "Bearer not-the-token-at-all-0000000"},
+        {"Authorization": "Basic x"},
+    ):
         response = worker.run(predict_body(), headers=headers)
         problem_of(response, 401, "worker.unauthorized")
         assert response.headers["www-authenticate"] == "Bearer"
@@ -134,3 +138,32 @@ def test_a_handlers_errors_pass_through_with_their_code(worker: Worker):
     assert document["detail"] == "the state was fitted to another frame"
     document = problem_of(worker.run(predict_body("refuse")), 422, "model.unknown_family")
     assert document["detail"] == "no such family here"
+
+
+def test_every_request_logs_one_line_naming_what_ran_never_the_values(worker: Worker, log_file):
+    secret = "SECRET-ARG-VALUE-31d7"
+    body = predict_body("noop", secret=secret)
+    worker.ok(body)
+    problem_of(worker.run(predict_body(), headers={}), 401, "worker.unauthorized")
+
+    def answered() -> list[dict]:
+        lines = [json.loads(line) for line in log_file.read_text().splitlines()]
+        return [line for line in lines if line["message"] == "request answered"]
+
+    wait_until(lambda: len(answered()) == 2, what="two request lines")
+    ran, refused = answered()
+    assert ran["level"] == "info" and ran["trace_id"] == body["trace_id"]
+    assert {key: ran["data"][key] for key in ("op", "pool", "own_code", "outcome", "status")} == {
+        "op": "predict",
+        "pool": "interactive",
+        "own_code": False,
+        "outcome": "ok",
+        "status": 200,
+    }
+    assert ran["data"]["duration_ms"] > 0
+    assert refused["data"]["outcome"] == "worker.unauthorized" and refused["data"]["op"] is None
+    text = log_file.read_text()
+    assert secret not in text and TOKEN not in text
+    # The names of what was sent, at debug.
+    asked = [json.loads(line) for line in text.splitlines() if '"run asked"' in line]
+    assert asked[0]["data"]["params"] == ["do", "secret"]

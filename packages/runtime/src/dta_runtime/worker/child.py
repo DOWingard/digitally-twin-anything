@@ -16,10 +16,13 @@ import sys
 
 def main() -> None:
     from .channel import take_channels
-    from .limits import cap_threads, limit_cpu, limit_memory
+    from .limits import cap_arenas, cap_threads, limit_cpu, limit_memory
 
     receiver, sender = take_channels()
     caps = cap_threads()
+    arenas = cap_arenas()
+
+    from dta_core.log import Log
 
     from .channel import Job, Setup
     from .run import Runner, configure_logging, limit_arrow
@@ -32,6 +35,7 @@ def main() -> None:
     limit_arrow()
     limit_memory(setup.memory_bytes)
     limit_cpu(job.cpu_s)
+    Log("worker.child").debug("process of own code ready", pid=os.getpid(), arenas_capped=arenas)
     runner = Runner(setup, sender, caps=caps)
     try:
         runner.run(job)

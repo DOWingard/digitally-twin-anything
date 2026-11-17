@@ -35,7 +35,7 @@ FRAME = {"target": "Tank.level", "start": "#4", "end": "#9", "step": "PT1H"}
 STATE = "0" * 64
 
 # Code a twin brings: one module, one function per thing the tests make it do.
-TWIN_CODE = '''
+TWIN_CODE = """
 import os
 import resource
 import signal
@@ -45,7 +45,8 @@ import time
 
 def level(twin, artifacts, uid):
     found = twin.get(f"/objects/Tank/{uid}")
-    return {"level": found["data"]["values"]["level"], "at": twin.at, "read": found["version"]["id"]}
+    value = found["data"]["values"]["level"]
+    return {"level": value, "at": twin.at, "read": found["version"]["id"]}
 
 
 def environment(twin, artifacts):
@@ -116,7 +117,7 @@ def shout(twin, artifacts):
 
 def family(twin, artifacts, **params):
     return {"at": twin.at, "branch": twin.branch, "params": params}
-'''
+"""
 
 
 def archive(files: Mapping[str, str]) -> bytes:
@@ -229,7 +230,9 @@ class Worker:
         return self.app.state.pools
 
     def run(self, body: Any, *, headers: Mapping[str, str] | None = None) -> httpx.Response:
-        return self.client.post("/run", json=body, headers=dict(AUTH if headers is None else headers))
+        return self.client.post(
+            "/run", json=body, headers=dict(AUTH if headers is None else headers)
+        )
 
     def ok(self, body: Any) -> dict[str, Any]:
         response = self.run(body)
@@ -244,4 +247,3 @@ def wait_until(check: Any, timeout_s: float = 30.0, what: str = "a condition") -
     while not check():
         assert time.monotonic() < deadline, f"{what} did not come within {timeout_s} s"
         pause.wait(0.01)
-

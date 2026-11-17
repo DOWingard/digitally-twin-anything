@@ -8,6 +8,7 @@ Without the `DTA_STORE_*` variables every test that needs them is skipped.
 from __future__ import annotations
 
 import contextlib
+import logging
 import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 import httpx
 import pyarrow as pa
 import pytest
+from dta_core import log as core_log
 from dta_core.log import current_trace_id
 from dta_core.store import StoreSettings
 
@@ -120,9 +122,7 @@ def worker(twin_api: TwinApi, tmp_path_factory: pytest.TempPathFactory) -> Itera
 
 
 @pytest.fixture
-def start_worker(
-    twin_api: TwinApi, tmp_path_factory: pytest.TempPathFactory
-) -> Iterator[object]:
+def start_worker(twin_api: TwinApi, tmp_path_factory: pytest.TempPathFactory) -> Iterator[object]:
     """A worker of the test's own, with other limits; stopped after the test."""
     stack = contextlib.ExitStack()
 
@@ -133,3 +133,23 @@ def start_worker(
 
     with stack:
         yield start
+
+
+@pytest.fixture
+def log_file(tmp_path: Path) -> Iterator[Path]:
+    """Every line this process logs during the test, written as JSON to the returned file."""
+    root = logging.getLogger("dta")
+    saved = (list(root.handlers), root.propagate, root.level)
+    path = tmp_path / "test.jsonl"
+    core_log.configure(log_file=path, level="debug")
+    try:
+        yield path
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+            handler.close()
+        handlers, propagate, level = saved
+        for handler in handlers:
+            root.addHandler(handler)
+        root.propagate = propagate
+        root.setLevel(level)

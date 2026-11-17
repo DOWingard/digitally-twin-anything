@@ -111,7 +111,8 @@ class Gate:
                         )
                     await refusal(scope, receive, send_status)
                     return
-            await self.app(scope, receive, send_status)
+            with trace(info["trace_id"]):
+                await self.app(scope, receive, send_status)
         except Exception as exc:
             info["outcome"] = INTERNAL
             with trace(info["trace_id"]):

@@ -141,6 +141,7 @@ class Proc:
         try:
             os.killpg(self.pid, signal.SIGKILL)
         except ProcessLookupError:
+            # Nothing of the group is left.
             pass
         except PermissionError as exc:
             # The group is gone and its id taken by someone else's: kill the process alone.
@@ -179,31 +180,40 @@ class Proc:
         return self.read(oom_before)
 
     def _death(self, oom_before: int | None) -> Reply:
+        """Why the process ended without an answer, as the run's error."""
         try:
-            code = self.popen.wait(timeout=STOP_GRACE_S)
+            status = self.popen.wait(timeout=STOP_GRACE_S)
         except subprocess.TimeoutExpired:
             log.error("a run process closed its answer pipe and lives on; killed", pid=self.pid)
             self.kill()
             self.popen.wait()
             message = "the run's process stopped answering before it gave a result"
             return Reply(kind=ERROR, code=FAILED, message=message, retire=True)
+        code, message = self._cause(status, oom_before)
+        log.warn(
+            "a run process ended without answering",
+            pid=self.pid,
+            status=status,
+            killed_at_deadline=self.expired,
+            code=code,
+        )
+        return Reply(kind=ERROR, code=code, message=message, retire=True)
+
+    def _cause(self, status: int, oom_before: int | None) -> tuple[str, str]:
         if self.expired:
-            message = "the run passed its budget and was stopped"
-            return Reply(kind=ERROR, code=TIMEOUT, message=message, retire=True)
-        if code < 0:
-            number = -code
-            if number == signal.SIGXCPU:
-                message = "the run used up its CPU time and was stopped"
-                return Reply(kind=ERROR, code=TIMEOUT, message=message, retire=True)
-            if number == signal.SIGKILL:
-                after = oom_kills()
-                if oom_before is None or after is None or after > oom_before:
-                    message = "the run's process was killed for memory"
-                    return Reply(kind=ERROR, code=MEMORY, message=message, retire=True)
-            message = f"the run's process was killed by {_signal_name(number)}"
-            return Reply(kind=ERROR, code=FAILED, message=message, retire=True)
-        message = f"the run's process exited with status {code} before it answered"
-        return Reply(kind=ERROR, code=FAILED, message=message, retire=True)
+            return TIMEOUT, "the run passed its budget and was stopped"
+        if status >= 0:
+            return FAILED, f"the run's process exited with status {status} before it answered"
+        number = -status
+        if number == signal.SIGXCPU:
+            return TIMEOUT, "the run used up its CPU time and was stopped"
+        if number == signal.SIGKILL:
+            # The worker did not send it. In a container the kernel's OOM killer is the
+            # one other sender; the cgroup's count of its kills says, where it can be read.
+            after = oom_kills()
+            if oom_before is None or after is None or after > oom_before:
+                return MEMORY, "the run's process was killed for memory"
+        return FAILED, f"the run's process was killed by {_signal_name(number)}"
 
     def close(self) -> None:
         """Tell the process to stop, then kill its group; safe to call more than once."""
@@ -212,8 +222,8 @@ class Proc:
         self.closed = True
         try:
             self.sender.close()
-        except OSError:
-            pass
+        except OSError as exc:
+            log.debug("a run process's job pipe was closed already", pid=self.pid, error=repr(exc))
         if self.popen.poll() is None:
             try:
                 self.popen.wait(timeout=STOP_GRACE_S)
@@ -243,7 +253,7 @@ def start_pool_process(setup: Setup, env: Mapping[str, str], cwd: Path) -> Proc:
     return proc
 
 
-@dataclass
+@dataclass(eq=False)
 class Slot:
     """A run admitted to a pool; its deadline once it has one."""
 
