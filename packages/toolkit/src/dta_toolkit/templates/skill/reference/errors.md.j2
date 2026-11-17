@@ -30,8 +30,8 @@ Branch on `code`, not on the text. Quote `trace_id` when you report a failure to
 | 400 | `scenario.bad_request` | a scenario cannot be made as asked, or a comparison names what it does not have | read `errors`: each names the member and what is wrong with it |
 | 400 | `training.bad_spec` | a training set cannot be built as asked | read `detail`: the target and features are numeric properties, the step and horizon are positive |
 | 400 | `derived.bad_inputs_version` | `inputs_version` is not a version of the branch or of `main` | give the id of the version the rows were worked out from |
-| 403 | `derived.observed_refused` | derived rows were given as observed | observed facts are written by sync runs only; write what was worked out as `inferred`, `assumed` or `simulated` |
 | 401 | `api.unauthorized` | the token is missing or wrong | check that `{{ token_env }}` is set and sent as a bearer token; ask the user if it is not |
+| 403 | `derived.observed_refused` | derived rows were given as observed | observed facts are written by sync runs only; write what was worked out as `inferred`, `assumed` or `simulated` |
 | 404 | `api.not_found` | no such endpoint | check the path against `reference/api.md` |
 | 404 | `api.unknown_object` | no object with that uid at that version | it may not exist yet, or no longer, at the version you asked for; check `at` |
 | 404 | `store.unknown_type` | the schema has no such type at that version | read `/meta/schema` again at the same `at` |
