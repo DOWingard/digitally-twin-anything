@@ -133,8 +133,15 @@ def wait_job(
     limit_s: float = RUN_WAIT_S,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    what: str = "sync",
+    code: str = WAIT_TIMEOUT,
+    follow: str = "dta sync status",
 ) -> dict[str, Any]:
-    """The job once it has succeeded or failed; `limit_s` seconds at most."""
+    """The job once it has succeeded or failed; `limit_s` seconds at most.
+
+    `what` names the kind of job in what is logged and said, `code` is the code of
+    giving up, and `follow` says where the job can be followed afterwards.
+    """
     begun = clock()
     pause = POLL_FIRST_S
     polls = 0
@@ -145,7 +152,7 @@ def wait_job(
         waited = clock() - begun
         if job.get("state") in JOB_FINISHED:
             log.info(
-                "sync job ended",
+                f"{what} job ended",
                 job=job_id,
                 state=job.get("state"),
                 polls=polls,
@@ -155,18 +162,18 @@ def wait_job(
             return job
         if waited >= limit_s:
             log.error(
-                "gave up waiting for a sync job",
+                f"gave up waiting for a {what} job",
                 job=job_id,
                 state=job.get("state"),
                 limit_s=limit_s,
             )
             raise CheckFailed(
-                f"the sync job did not end within {limit_s:g} s; it may still be running "
-                "(see dta sync status)",
-                code=WAIT_TIMEOUT,
+                f"the {what} job did not end within {limit_s:g} s; it may still be running "
+                f"(see {follow})",
+                code=code,
                 detail={"job": job, "limit_s": limit_s},
             )
-        log.debug("sync job not ended yet", job=job_id, state=job.get("state"), polls=polls)
+        log.debug(f"{what} job not ended yet", job=job_id, state=job.get("state"), polls=polls)
         sleep(pause)
         pause = min(pause * 2, POLL_MAX_S)
 

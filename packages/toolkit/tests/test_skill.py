@@ -192,7 +192,8 @@ def test_a_static_twin_is_not_offered_what_only_a_live_twin_does():
     skill = render(manifest())
     body = skill.files[SKILL_FILE]
     assert "## A live twin" not in body and "POST /sync/runs" not in body
-    assert "This API only reads" in body
+    assert "What does change it: registrations" in body and "sync runs" not in body
+    assert "a static twin's data was loaded once" in skill.files["reference/api.md"]
     assert "POST /sync/runs" not in skill.files["reference/api.md"]
     assert "Work with a live twin" not in skill.files["reference/recipes.md"]
     # What its load did is still there to read.
@@ -200,7 +201,22 @@ def test_a_static_twin_is_not_offered_what_only_a_live_twin_does():
 
 
 _SPAN = re.compile(r"`([^`\n]+)`")
-_GROUPS = ("meta", "objects", "object", "graph", "history", "block", "lifecycle", "sync")
+_GROUPS = (
+    "meta",
+    "objects",
+    "object",
+    "graph",
+    "history",
+    "block",
+    "lifecycle",
+    "sync",
+    "functions",
+    "models",
+    "questions",
+    "scenarios",
+    "derived",
+    "search",
+)
 
 
 def _endpoint_path(span: str) -> str | None:

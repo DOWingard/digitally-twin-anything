@@ -25,6 +25,7 @@ def test_rebuilding_a_live_twin_keeps_its_data_and_its_scheduler(make_twin) -> N
         "api": ("ran", "ok"),
         "contract": ("ran", "ok"),
         "sync": ("ran", "ok"),
+        **live.COMPUTE_STEPS,
         "ui": ("ran", "skipped"),
         "skill": ("ran", "ok"),
     }

@@ -91,12 +91,20 @@ class TwinApi:
         *,
         params: Mapping[str, Any] | list[tuple[str, Any]] | None = None,
         json: Any = None,
+        content: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         """One request; an unreachable API raises ApiUnavailable naming the path only."""
         started = time.perf_counter()
         self.requests += 1
+        extra: dict[str, Any] = {}
+        if timeout is not None:
+            extra["timeout"] = timeout
         try:
-            response = self.client.request(method, path, params=params, json=json)
+            response = self.client.request(
+                method, path, params=params, json=json, content=content, headers=headers, **extra
+            )
         except httpx.HTTPError as exc:
             log.error(
                 "API request failed",
@@ -120,6 +128,34 @@ class TwinApi:
 
     def get(self, path: str, **kwargs: Any) -> httpx.Response:
         return self.request("GET", path, **kwargs)
+
+    def status_of(self, path: str) -> int:
+        """The status a GET answers with, its body left unread: whether a large file is
+        there is known without downloading it."""
+        started = time.perf_counter()
+        self.requests += 1
+        try:
+            with self.client.stream("GET", path) as response:
+                status = response.status_code
+        except httpx.HTTPError as exc:
+            log.error(
+                "API request failed",
+                method="GET",
+                path=path,
+                error_type=type(exc).__name__,
+                duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
+            )
+            raise ApiUnavailable(
+                f"GET {path} did not get an answer: {type(exc).__name__}",
+                detail={"method": "GET", "path": path, "error_type": type(exc).__name__},
+            ) from None
+        log.debug(
+            "API status read",
+            path=path,
+            status=status,
+            duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
+        )
+        return status
 
     def wait_healthy(self, attempts: int = 30) -> httpx.Response:
         """`GET /healthz` until it answers; the service may still be binding its port."""

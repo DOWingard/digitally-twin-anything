@@ -15,7 +15,7 @@ curl -sS -H "$AUTH" "$API/meta/health"
 Python (httpx and pyarrow; pandas or polars only if you want dataframes):
 
 ```python
-import io, os
+import io, json, os, time, uuid
 import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -26,17 +26,32 @@ client = httpx.Client(
     timeout=120.0,
 )
 
-def get(path, **params):
-    response = client.get(path, params=params)
+def checked(response):
     if response.status_code >= 400:
         problem = response.json()
         raise RuntimeError(f"{problem['code']}: {problem['detail']} (trace {problem['trace_id']})")
     return response
 
+def get(path, **params):
+    return checked(client.get(path, params=params))
+
+def post(path, body=None, headers=None, **params):
+    """A POST with a JSON body (an empty object when none is given)."""
+    return checked(client.post(path, params=params, json={} if body is None else body, headers=headers))
+
 def table(path, **params):
     """Any listing or table endpoint as an Arrow table, whole."""
     response = get(path, format="arrow", **params)
     return pa.ipc.open_stream(response.content).read_all()
+
+def wait(job):
+    """A job of the API (evaluate, measure, a scenario's run), followed to its end."""
+    while job["state"] in ("queued", "running"):
+        time.sleep(1)
+        job = get(f"/lifecycle/jobs/{job['id']}").json()["data"]
+    if job["state"] == "failed":
+        raise RuntimeError(f"{job['error']['code']}: {job['error']['message']} (trace {job['trace_id']})")
+    return job
 ```
 
 Python with the standard library only (JSON; enough for everything except Arrow and Parquet):
@@ -273,3 +288,154 @@ print(job["state"], job["error"], report and (report["status"], report["versions
 - A run writes at least one version, so the head has moved when the job ends: read `/meta/health` again and pin the new head.
 - A run takes the data up to the last interval that has ended on the twin's clock. Data newer than that arrives with the next run; starting another run at once brings nothing.
 {% endif %}
+{% set n = 9 if live else 8 %}
+
+## {{ n }}. Answer a question
+
+```python
+for q in get("/questions").json()["data"]:          # what each question may claim now
+    print(q["id"], q["status"], q["basis"], q["measured_error"], q["tolerance"], q["reason"])
+
+answer = post("/questions/<question>/answer", {"<argument>": "<value>"}, at=version).json()
+print(answer["value"], answer["unit"])              # a table answer: value is a list of rows
+print(answer["version"]["id"], answer["version"]["t"])  # the version it was answered at
+if answer["provisional"]:
+    print("provisional:", answer["reasons"])        # not validated: say so with the answer
+print(answer["notes"])                              # e.g. question_failing, outside_validity
+```
+
+- The body holds the arguments of the question's function by name; the ones its registration fixes are not given. `GET /functions/{id}` lists its `parameters`, and which of them are fixed.
+- `provisional: true` means the question is not validated (`reasons` says why: not measured yet, or too little history for a backtest). Give the answer, and say that no accuracy was established for it. The note `question_failing` means it was measured outside its tolerance: report that with the answer.
+- A table answer is paged like any table: follow `next_cursor`, or ask for `format=arrow`.
+
+## {{ n + 1 }}. Run a function with arguments
+
+```python
+for f in get("/functions").json()["data"]:
+    print(f["id"], f["kind"], f["entry"], f["params"], f["status"])
+described = get("/functions/<function>").json()["data"]
+print(described["parameters"])                      # what it takes, and which are fixed
+
+ran = post("/functions/<function>/run", {"<argument>": "<value>"}, at=version).json()
+print(ran["value"], ran["unit"], ran["notes"], ran["version"]["id"])
+print(ran.get("wrote"))                             # set only when it gave rows to write
+```
+
+- `kind` `builtin` is shipped with the twin; `registered` is code the twin brought, run in its worker. A function runs on the data of the version `at` names.
+- A function that gives rows to write has them written as one version, named in `wrote`; any other run writes nothing.
+
+## {{ n + 2 }}. List models and read a backtest
+
+```python
+models = get("/models", spec="<spec>").json()["data"]
+for m in models:
+    print(m["uid"], m["family"], m["status"], m["interventional"], m["fitted_from"], m["fitted_to"])
+active = next(m for m in models if m["status"] == "active")
+backtest = get(f"/models/{active['uid']}/backtests", limit=1).json()["data"][0]
+print(backtest["metric"], backtest["error"], backtest["threshold"],
+      backtest["baseline"], backtest["baseline_error"], backtest["accepted"])
+print(backtest["origins"], backtest["horizon_steps"], backtest["range_from"], backtest["range_to"])
+```
+
+- A model specification has candidates; `status` is `candidate` (not evaluated), `active` (the one selected, with a fitted state), `rejected` (not accepted, or beaten) or `retired`.
+- A backtest forecasts from many past origins with only the data before each, and scores the forecasts against what happened. A candidate is accepted when its `error` is within the `threshold` and, where a `baseline` is named, strictly below the baseline's error on the same origins. The accepted candidate with the lowest error becomes `active`.
+- `GET /models` lists every specification's candidates; `spec=`, `status=` and `question=` narrow it.
+
+## {{ n + 3 }}. Predict
+
+```python
+prediction = post(f"/models/{active['uid']}/predict", {"horizon": 2, "levels": [80]}, at=version).json()
+for row in prediction["data"]:
+    print(row["unique_id"], row["ds"], row["mean"], row["lo_80"], row["hi_80"])
+print(prediction["model"], prediction["notes"])
+```
+
+- `horizon` is a number of steps of the twin's grid, or an ISO 8601 duration such as `"PT2H"`; without it, the horizon of the model's question. The forecast starts after the version `at` names.
+- `levels` are the coverages of the intervals, in percent: each gives `lo_<level>` and `hi_<level>`.
+- The note `outside_validity` means the inputs lie outside what the model was fitted on, `no_intervals` that it gives none. Say so with the forecast.
+- Predicting writes nothing. To keep a forecast in the twin, run a scenario (below).
+
+## {{ n + 4 }}. Evaluate again after new data
+
+```python
+job = post("/models/evaluate", {"spec": "<spec>"}, headers={"Idempotency-Key": str(uuid.uuid4())}).json()["job"]
+result = wait(job)["result"]
+for spec in result["specs"]:
+    print(spec["spec"], spec["selected"], spec["question_status"], spec["measured_error"])
+    for c in spec["candidates"]:
+        print("  ", c["candidate"], c["status"], c["error"], c["accepted"], c["reasons"])
+
+job = post("/questions/measure", {}, headers={"Idempotency-Key": str(uuid.uuid4())}).json()["job"]
+for q in wait(job)["result"]["questions"]:
+    print(q["id"], q["status"], q["basis"], q["measured_error"], q["tolerance"])
+```
+
+- Body `{}` evaluates every specification. Each evaluation backtests every candidate on the history up to the head, selects the best accepted one, fits it and records the question's status, in one version.
+- A specification whose question becomes `provisional` with "the history has room for N forecast origins" needs more history; nothing was evaluated.
+- The jobs of the compute lane run one at a time. The same `Idempotency-Key` gives back the same job; a new key asks for the work again.
+
+## {{ n + 5 }}. Build a training set
+
+```python
+first = get("/history/versions", cause="sync", order="asc", limit=1).json()["data"][0]["id"]
+body = {"target": "<Type>.<property>", "start": first, "end": version, "step": "PT1H", "horizon": "PT2H"}
+frame = pa.ipc.open_stream(post("/block/training-set", body, format="arrow").content).read_all()
+meta = json.loads(frame.schema.metadata[b"dta:training"])
+print(frame.column_names, frame.num_rows, meta["grid"])
+```
+
+- One row per object of the target's type and grid time: `unique_id`, `ds`, `y` (the value in force at `ds`), a column per feature and, with `horizon`, `label` (the value that far ahead) and `label_ds`. Every value is the one stored at or before its time, so no row holds its own future.
+- `step` is the spacing of the grid. `features`, `uids` and `ahead` are described in `GET /api/v1/openapi.json`.
+- Split by `ds`, never at random, and keep the two version ids of the range with what you train, so the frame can be built again exactly.
+
+## {{ n + 6 }}. Ask what would happen: scenarios
+
+An intervention is an assumed value of one property of one object, from `start` until `end` (or the end of the horizon). A scenario starts from a version of `main`, applies its interventions, and lets the models it names predict the horizon, on a branch of its own; `main` is left as it is.
+
+```python
+start = get("/meta/health").json()["head"]["t"]
+change = {"target": "<Type>.<property>", "uid": "<uid>", "value": "<number>", "start": start}
+spec = {"horizon": "PT2H", "models": ["<model uid>"]}
+made = post("/scenarios", {"name": "<name>", "description": "<why>", "interventions": [change], **spec},
+            at=version).json()["data"]
+as_is = post("/scenarios", {"name": "<name>, unchanged", "interventions": [], **spec},
+             at=version).json()["data"]
+for scenario in (made, as_is):
+    wait(post(f"/scenarios/{scenario['id']}/run").json()["job"])
+
+target = "<Type>.<property the models predict>"
+compared = get(f"/scenarios/{made['id']}/compare", targets=target, against=as_is["id"]).json()
+for row in compared["data"]:
+    print(row["uid"], row["t"], row["scenario"], row["against"], row["difference"])
+for scenario in (made, as_is):
+    checked(client.delete(f"/scenarios/{scenario['id']}"))
+```
+
+- Each model named must be `active` with a fitted state; one model predicts one property, and a property is either assumed or predicted, not both.
+- A control of the twin (`manifest.contract.boundary.controls` in `GET /meta/manifest`) can be changed only when every model of the scenario is interventional (`interventional: true` in `GET /models`): its predictions hold when a control is changed. Otherwise the request is refused with 409 `scenario.not_interventional`.
+- `against=main` compares with the twin's own versions, which end at its head: beyond it `against` is null. To compare predictions with predictions, run a scenario of the same base without the change, as above.
+- A scenario's branch is read like any other (`branch=<its branch>`). `GET /scenarios` lists them; `DELETE /scenarios/{id}` removes the branch.
+
+## {{ n + 7 }}. Keep values you worked out
+
+```python
+rows = [{"uid": "<uid>", "<property>": "<number>"}]
+written = post("/derived", {"branch": "main", "type": "<Type>", "rows": rows, "kind": "inferred",
+                            "source": "<function or model uid>", "inputs_version": version,
+                            "confidence": 0.5}).json()
+print(written["version"]["id"], written["rows"])
+```
+
+- Every value written carries its `kind`, its `source` (the uid of the function or model that made it, as `GET /functions` and `GET /models` give it) and the version of its inputs, so it is never mistaken for an observation.
+- Refused: `kind` `observed` (403 `derived.observed_refused`); `assumed` or `simulated` on `main` (409 `derived.live_refused`: write them on a scenario's branch); a property a source fills (409 `derived.mapped_property`); a `source` that is no function or model of the twin (404 `derived.unknown_source`). At most 100,000 rows and 16 MiB.
+
+## {{ n + 8 }}. Search across types
+
+```python
+found = get("/search", q="%<text>%", at=version, count="true").json()
+for row in found["data"]:
+    print(row["uid"], row["type"], row["name"])
+print(found["total"])
+```
+
+- `q` is an SQL pattern (`%` any run of characters, `_` one) matched against every object's uid and name, whatever its type; `types=` narrows it.

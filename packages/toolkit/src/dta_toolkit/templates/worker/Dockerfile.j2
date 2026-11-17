@@ -1,0 +1,30 @@
+# The worker of the twin "{{ twin_id }}": its runtime image and the packages its own
+# code needs. Written by the toolkit from the manifest's runtime.worker_requirements;
+# the tag names a hash of the requirements file and of the runtime image's id.
+#
+# The packages go into the runtime's environment (/opt/venv), installed by the image's
+# own pip into that environment's interpreter. Only wheels are taken: the image holds no
+# compiler, so a package that would have to be built is refused by pip with its own
+# message. The requirements file is mounted for the install, not copied; no download
+# cache is kept. The new packages are compiled to bytecode here, because the worker's
+# root is read-only and a run of the twin's code is a new process each time.
+
+FROM {{ runtime_image }}
+
+USER root
+
+RUN --mount=type=bind,source={{ requirements_name }},target=/run/dta-worker/requirements.txt \
+    pip --python /opt/venv/bin/python install \
+        --no-cache-dir --only-binary=:all: --no-input --disable-pip-version-check \
+        --root-user-action=ignore --no-warn-script-location \
+        --requirement /run/dta-worker/requirements.txt \
+    && site=$(/opt/venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])') \
+    && /opt/venv/bin/python -m compileall -q -j 0 "$site" \
+    && rm -rf /root/.cache /tmp/*
+
+# The worker's root is read-only and only /tmp is writable: a package that keeps a
+# configuration or a cache in the user's home (matplotlib's, say) finds it there.
+ENV XDG_CONFIG_HOME=/tmp/.config \
+    XDG_CACHE_HOME=/tmp/.cache
+
+USER twin

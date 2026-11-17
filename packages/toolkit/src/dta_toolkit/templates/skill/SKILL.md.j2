@@ -29,7 +29,7 @@ This skill was written from manifest `{{ short_hash }}`. If `manifest.hash` in `
 {% if live %}
 Tier: live. The twin reads its sources {% if interval %}every {{ interval }}{% else %}on a schedule{% endif %} and writes a new version each time, so its head moves while you work. Read "A live twin" below before the first answer about the present.
 {% else %}
-Tier: static. The twin was loaded once from recorded data and does not change. Its head is the end of the recording, not the present.
+Tier: static. The twin's data was loaded once from recorded data and does not change. Its head is the end of the recording, not the present.
 {% endif %}
 
 {% if questions %}
@@ -40,10 +40,29 @@ The questions it was built to answer, each with the accuracy agreed for it:
 {% for q in questions %}
 | `{{ q.id }}` | {{ q.text }} | {{ q.kind or "-" }} | {{ q.tolerance or "-" }} | {{ q.staleness or "-" }} | {{ q.targets | join(", ") or "-" }} |
 {% endfor %}
+
+Ask a question with `POST /questions/{id}/answer` (recipe "Answer a question"): the twin computes the answer the way that was agreed and says what the answer may claim. What each question may claim is measured by the twin: `validated` (measured within its tolerance), `provisional` (not validated yet; `reason` says why, for instance that it was not measured yet or that the history is too short for a backtest) or `failing` (measured outside its tolerance).
+{% if states_known %}
+
+As recorded when this skill was written. These change with every evaluation and measurement: read `GET /questions` for what each may claim now, and trust it over this table.
+
+| Id | Status | Basis | Measured error | Tolerance | Reason |
+|---|---|---|---|---|---|
+{% for q in questions %}
+{% if q.state %}
+| `{{ q.id }}` | {{ q.state.status }} | {{ q.state.basis }} | {{ q.state.measured_error }} | {{ q.state.tolerance }} | {{ q.state.reason }} |
+{% else %}
+| `{{ q.id }}` | not registered | – | – | – | – |
+{% endif %}
+{% endfor %}
+{% else %}
+
+What each may claim was not known when this skill was written: read `GET /questions`.
+{% endif %}
 {% endif %}
 
 {% if questions | selectattr("method") | list %}
-How each answer is defined. Compute it from the twin's data exactly as stated, with the settings given; do not substitute your own definition or thresholds:
+How each answer is defined. Ask the twin for it; when you work it out from the twin's data yourself, do it exactly as stated, with the settings given, and do not substitute your own definition or thresholds:
 
 {% for q in questions if q.method %}
 - `{{ q.id }}`: {{ q.method }}
@@ -86,7 +105,7 @@ What the twin did, and why data is missing:
 - `GET /sync/runs`: every run, newest first, with the rows it read, wrote, set aside and found late. Status `partial` means some sources failed and the others were synced.
 - `GET /sync/runs/{uid}/rejects`: the rows a run set aside, each with the rule it broke. They are not in the twin.
 
-`POST /sync/runs` makes the twin read its sources now instead of at the next interval. It is the only request that changes the twin. Use it when the user asks for the newest data, or after a source was mended. Do not call it in a loop: the schedule already does that. The answer is a job; wait for it as recipe 8 shows.
+`POST /sync/runs` makes the twin read its sources now instead of at the next interval; it is the only request that brings new observed data. Use it when the user asks for the newest data, or after a source was mended. Do not call it in a loop: the schedule already does that. The answer is a job; wait for it as recipe 8 shows.
 
 {% endif %}
 ## How to do things
@@ -109,6 +128,15 @@ Read `reference/recipes.md` before the first request of each kind. In short:
 | see whether the data is current, and the state of each source | `/meta/health` (`clock`, `sync`), `/sync/sources` |
 | make the twin read its sources now | `POST /sync/runs`, then `/lifecycle/jobs/{id}` |
 {% endif %}
+| find objects of any type by uid or name | `/search` |
+| ask a question it was built to answer | `GET /questions`, `POST /questions/{id}/answer` |
+| run one of its functions with arguments | `GET /functions`, `POST /functions/{id}/run` |
+| see its models and how well each forecast in its backtests | `GET /models`, `GET /models/{uid}/backtests` |
+| forecast with a model | `POST /models/{uid}/predict` |
+| evaluate the models again after new data | `POST /models/evaluate`, then `POST /questions/measure` |
+| build a frame for training your own model | `POST /block/training-set` |
+| see what the twin would do under a change | `POST /scenarios`, `POST /scenarios/{id}/run`, `GET /scenarios/{id}/compare` |
+| keep values you worked out in the twin | `POST /derived` |
 | read the twin's own logs | `/lifecycle/logs` |
 
 All endpoints, with parameters: `reference/api.md`. Error codes and what to do about each: `reference/errors.md`.
@@ -121,11 +149,7 @@ All endpoints, with parameters: `reference/api.md`. Error codes and what to do a
 4. Let the twin do the filtering, the sorting, the counting, the traversal and the history: use `where`, `sort`, `count=true`, the graph endpoints with `edge_where`, and the slice endpoint instead of downloading everything and searching it yourself.
 5. Every value has provenance (`include=provenance`): where it came from, whether it was observed, inferred, assumed or simulated, and when it was true. Quote it when the user asks how a number is known.
 6. Report what the twin says. If the data does not answer a question, say that; do not fill the gap with an estimate presented as the twin's. A null is "no value held", never zero. If a definition leaves a choice open (how to integrate, what counts as an occurrence, which time zone a day is in), state the choice you made with the answer.
-{% if live %}
-7. This API reads, with one exception: `POST /sync/runs` makes the twin read its sources. You cannot change the twin's data in any other way, and you should not try to reach its database or its sources directly.
-{% else %}
-7. This API only reads. You cannot change the twin through it, and you should not try to reach its database or its sources directly.
-{% endif %}
+7. Reading never changes the twin, nor does asking a question, running a function or forecasting, unless the function gives rows to write. What does change it: registrations, evaluations and measurements, scenarios, derived data{% if live %} and sync runs (`POST /sync/runs`){% endif %} (`reference/api.md`, "What changes the twin"). Ask the user before any of these. Observed data cannot be edited through the API, and you should not try to reach the twin's database or its sources directly.
 8. If the user needs something the contract does not cover (a new question, a tighter tolerance, another source), that is a revision of the contract: tell the user it has to be agreed and rebuilt; do not improvise it.
 {% if ui %}
 

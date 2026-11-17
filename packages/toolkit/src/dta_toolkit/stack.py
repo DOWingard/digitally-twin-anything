@@ -14,7 +14,7 @@ import re
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,7 @@ from dta_core.sources import PLACEHOLDER, placeholders
 from jinja2 import Environment, StrictUndefined
 
 from .envfile import missing, read_env, scrub
+from .workerimage import recorded_tag
 from .workspace import Workspace
 
 log = Log("stack")
@@ -162,8 +163,12 @@ def _networks(names: list[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
-def plan_stack(manifest: Manifest) -> StackPlan:
-    """What the stack of this manifest consists of."""
+def plan_stack(manifest: Manifest, worker_image: str | None = None) -> StackPlan:
+    """What the stack of this manifest consists of.
+
+    `worker_image` is the image built for the worker's requirements, when the
+    manifest names some and it was built; the worker runs the runtime image otherwise.
+    """
     if manifest.twin is None or not manifest.twin.id:
         raise StackError("the manifest names no twin id")
     twin_id = manifest.twin.id
@@ -200,7 +205,7 @@ def plan_stack(manifest: Manifest) -> StackPlan:
         live=manifest.contract is not None and manifest.contract.tier == Tier.live,
         scheduler_poll_s=manifest.runtime.scheduler_poll.total_seconds(),
         worker=bool(code) or bool(manifest.models),
-        worker_image=manifest.runtime.image,
+        worker_image=worker_image or manifest.runtime.image,
         worker_cpus=manifest.runtime.worker_cpus,
         worker_memory_mb=manifest.runtime.worker_memory_mb,
         worker_env=tuple(worker_env),
@@ -272,7 +277,7 @@ class Stack:
 
     def __init__(self, workspace: Workspace, manifest: Manifest) -> None:
         self.workspace = workspace
-        self.plan = plan_stack(manifest)
+        self.plan = plan_stack(manifest, recorded_tag(workspace, manifest))
         self.compose_path = workspace.stack_dir / COMPOSE_FILE
         self.env_file = workspace.env_path
         # Names whose values may be shown: what the manifest declares as not secret, and
@@ -290,6 +295,12 @@ class Stack:
         """
         values = read_env(self.env_file)
         return {name: value for name, value in values.items() if name not in self._shown_env}
+
+    def use_worker_image(self, image: str) -> None:
+        """Run the worker from `image` from now on; the compose file follows at its next write."""
+        if self.plan.worker_image != image:
+            log.info("the worker's image changes", image=image, was=self.plan.worker_image)
+            self.plan = replace(self.plan, worker_image=image)
 
     # -- files ---------------------------------------------------------------
 

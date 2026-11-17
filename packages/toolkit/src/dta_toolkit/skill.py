@@ -97,16 +97,38 @@ def _method(function: Any) -> str | None:
     return f"{text} ({settings})" if settings else text
 
 
-def _context(manifest: Manifest, manifest_hash: str) -> dict[str, Any]:
+def _number(value: Any) -> str:
+    return f"{value:.4g}" if isinstance(value, int | float) else "–"
+
+
+def _state(found: dict[str, Any] | None) -> dict[str, str] | None:
+    """A question's state as the API reported it, as the skill shows it."""
+    if found is None:
+        return None
+    reason = _one_line(found.get("reason"), 200).replace("|", "\\|")
+    return {
+        "status": str(found.get("status") or "unknown"),
+        "basis": str(found.get("basis") or "–"),
+        "measured_error": _number(found.get("measured_error")),
+        "tolerance": _number(found.get("tolerance")),
+        "reason": reason or "–",
+    }
+
+
+def _context(
+    manifest: Manifest, manifest_hash: str, states: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     twin, contract = manifest.twin, manifest.contract
     if twin is None or not twin.id:
         raise SkillError("the manifest names no twin id")
     if contract is None or not contract.purpose or contract.tier is None:
         raise SkillError("the manifest's contract has no purpose or tier")
     functions = manifest.functions or {}
+    by_id = {found.get("id"): found for found in states or []}
     questions = [
         {
             "id": qid,
+            "state": _state(by_id.get(qid)) if states is not None else None,
             "method": _method(functions.get(question.function) if question.function else None),
             # A vertical bar would end the table cell the text is shown in.
             "text": _one_line(question.text, 400).replace("|", "\\|"),
@@ -133,6 +155,7 @@ def _context(manifest: Manifest, manifest_hash: str) -> dict[str, Any]:
         "live": contract.tier.value == "live",
         "interval": _duration(manifest.sync.interval if manifest.sync is not None else None),
         "questions": questions,
+        "states_known": states is not None,
         "base_url_env": interfaces.base_url_env,
         "token_env": interfaces.token_env,
         "ui": interfaces.ui,
@@ -166,9 +189,18 @@ def _description(context: dict[str, Any]) -> str:
     return _one_line(" ".join(parts), _DESCRIPTION_MAX)
 
 
-def render_skill(manifest: Manifest, *, manifest_hash: str) -> RenderedSkill:
-    """The skill of the twin this manifest describes, as files to write side by side."""
-    context = _context(manifest, manifest_hash)
+def render_skill(
+    manifest: Manifest,
+    *,
+    manifest_hash: str,
+    questions: list[dict[str, Any]] | None = None,
+) -> RenderedSkill:
+    """The skill of the twin this manifest describes, as files to write side by side.
+
+    `questions` are the questions' states as the API reported them when the skill was
+    written; without them the skill says they were not known.
+    """
+    context = _context(manifest, manifest_hash, questions)
     environment = Environment(
         undefined=StrictUndefined, autoescape=False, keep_trailing_newline=True, trim_blocks=True
     )

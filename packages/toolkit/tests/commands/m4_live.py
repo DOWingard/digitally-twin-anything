@@ -25,8 +25,32 @@ SCHEDULED_PICKUP_LIMIT_S = 150.0
 BUSY_RETRIES = 10
 BUSY_PAUSE_S = 3.0
 
-STEPS = ("scaffold", "store", "install", "load", "api", "contract", "sync", "ui", "skill")
+STEPS = (
+    "scaffold",
+    "image",
+    "store",
+    "install",
+    "load",
+    "api",
+    "contract",
+    "sync",
+    "code",
+    "functions",
+    "models",
+    "questions",
+    "ui",
+    "skill",
+)
+# What a twin with questions and no code or model of its own does in each build.
+COMPUTE_STEPS = {
+    "image": ("ran", "skipped"),
+    "code": ("ran", "skipped"),
+    "functions": ("ran", "ok"),
+    "models": ("ran", "skipped"),
+    "questions": ("ran", "ok"),
+}
 SYNC_CHECKS = ("sync.scheduler", "sync.runs", "sync.sources", "sync.freshness")
+COMPUTE_CHECKS = ("questions.answered", "questions.error", "models.accepted", "compute.worker")
 CHECKS = {
     "api.contract",
     "readiness.R1",
@@ -40,6 +64,7 @@ CHECKS = {
     "skill.current",
     "skill.endpoints",
     *SYNC_CHECKS,
+    *COMPUTE_CHECKS,
 }
 LIVE_LOADED = "the twin already holds data; its runs keep it in step"
 
@@ -93,16 +118,21 @@ def api(twin: kit.KitTwin) -> TwinApi:
     return TwinApi(manifest, read_env(twin.env_file))
 
 
-def sync_run(twin: kit.KitTwin, *args: str) -> tuple[int, dict[str, Any]]:
+def sync_run(twin: kit.KitTwin, *args: str, fresh: bool = False) -> tuple[int, dict[str, Any]]:
     """`dta sync run`, asked again while the scheduler's own run holds the twin.
 
     A run with other parameters than the scheduler's is refused while that one
-    is going; the scheduler starts one a minute, so the test waits it out.
+    is going; the scheduler starts one a minute, so the test waits it out. With
+    `fresh`, a run the API hands back because the scheduler had already started
+    it (before whatever the test just changed) is waited out too, and a new one
+    asked for.
     """
     for _ in range(BUSY_RETRIES):
         code, document = twin.run("sync", "run", *args)
         if code != 0 and document["error"]["code"] == "sync.busy":
             time.sleep(BUSY_PAUSE_S)
+            continue
+        if fresh and code == 0 and document["result"].get("created") is False:
             continue
         return code, document
     raise AssertionError("the twin stayed busy with other sync runs")
