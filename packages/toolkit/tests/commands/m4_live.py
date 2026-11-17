@@ -118,16 +118,21 @@ def api(twin: kit.KitTwin) -> TwinApi:
     return TwinApi(manifest, read_env(twin.env_file))
 
 
-def sync_run(twin: kit.KitTwin, *args: str) -> tuple[int, dict[str, Any]]:
+def sync_run(twin: kit.KitTwin, *args: str, fresh: bool = False) -> tuple[int, dict[str, Any]]:
     """`dta sync run`, asked again while the scheduler's own run holds the twin.
 
     A run with other parameters than the scheduler's is refused while that one
-    is going; the scheduler starts one a minute, so the test waits it out.
+    is going; the scheduler starts one a minute, so the test waits it out. With
+    `fresh`, a run the API hands back because the scheduler had already started
+    it (before whatever the test just changed) is waited out too, and a new one
+    asked for.
     """
     for _ in range(BUSY_RETRIES):
         code, document = twin.run("sync", "run", *args)
         if code != 0 and document["error"]["code"] == "sync.busy":
             time.sleep(BUSY_PAUSE_S)
+            continue
+        if fresh and code == 0 and document["result"].get("created") is False:
             continue
         return code, document
     raise AssertionError("the twin stayed busy with other sync runs")

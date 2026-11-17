@@ -32,7 +32,7 @@ def test_a_stopped_scheduler_and_a_failing_source_fail_only_their_checks(make_tw
 
     # The source cannot be read: the run fails and names it; the twin keeps what it had.
     os.chmod(readings, 0)
-    code, document = live.sync_run(twin)
+    code, document = live.sync_run(twin, fresh=True)
     assert code == 1, document
     assert document["error"]["code"] == "sync.source_failed"
     assert "plant" in document["error"]["message"]
