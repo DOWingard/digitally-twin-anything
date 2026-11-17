@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -388,17 +387,34 @@ class Plant:
         self._server.server_close()
 
 
-def start_later(port: int, delay_s: float) -> tuple[threading.Thread, list[Plant]]:
-    """A plant that starts listening only after a while."""
+class _StartOnRetry(logging.Handler):
+    def __init__(self, port: int, made: list[Plant]) -> None:
+        super().__init__(logging.WARNING)
+        self.port = port
+        self.made = made
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not self.made and "trying again" in record.getMessage():
+            self.made.append(Plant(self.port))
+
+
+@contextmanager
+def plant_on_first_retry(port: int) -> Iterator[list[Plant]]:
+    """A plant that starts listening when the executor first says it will try again: the
+    first attempt is refused and the next one, after the wait, is answered."""
     made: list[Plant] = []
-
-    def start() -> None:
-        time.sleep(delay_s)
-        made.append(Plant(port))
-
-    thread = threading.Thread(target=start, daemon=True)
-    thread.start()
-    return thread, made
+    handler = _StartOnRetry(port, made)
+    logger = logging.getLogger("dta")
+    level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    try:
+        yield made
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+        for found in made:
+            found.stop()
 
 
 # -- executors of the tests' own ---------------------------------------------------------

@@ -22,8 +22,8 @@ from actions_testkit import (
     environ,
     executor,
     manifest_of,
+    plant_on_first_retry,
     register,
-    start_later,
     stored_text,
 )
 from dta_core.errors import DtaError
@@ -223,18 +223,17 @@ def test_a_refused_connection_is_tried_twice_more(world: World):
 
 
 def test_a_connection_refused_once_then_accepted_executes(world: World):
-    late = executor(world.manifest, f"http://127.0.0.1:{LATE_PORT}", backoff_s=0.6)
-    thread, made_plants = start_later(LATE_PORT, 0.2)
+    late = executor(world.manifest, f"http://127.0.0.1:{LATE_PORT}", backoff_s=0.1)
     try:
-        made = send(world, late)
+        with plant_on_first_retry(LATE_PORT) as made_plants:
+            made = send(world, late)
+            received = list(made_plants[0].received)
     finally:
         late.close()
-        thread.join()
-        for found in made_plants:
-            found.stop()
     assert made["status"] == "executed"
     assert made["execution"]["attempts"] == 2
-    assert len(made_plants[0].received) == 1
+    assert len(received) == 1
+    assert received[0].headers["Idempotency-Key"] == made["id"]
 
 
 def test_a_hang_ends_at_the_timeout(world: World, fresh_plant: Plant):
