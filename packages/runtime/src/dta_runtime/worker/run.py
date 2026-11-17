@@ -195,48 +195,43 @@ class Runner:
         capture = Capture()
         logger = logging.getLogger(_LOGGER)
         logger.addHandler(capture)
-        retire = False
         with trace(request.trace_id):
             log.info("run started", op=request.op, own_code=job.own_code)
             try:
-                try:
-                    returned = self._call(job)
-                    media_type, body = encode(returned, _elapsed_ms(started), capture.lines())
-                except MemoryError:
-                    retire = True
-                    log.error(
-                        "the run went past its memory limit",
-                        op=request.op,
-                        limit_mb=self._setup.memory_bytes // MIB,
-                    )
-                    send_error(
-                        self._sender,
-                        MEMORY,
-                        f"the run went past its memory limit of "
-                        f"{self._setup.memory_bytes // MIB} MiB",
-                        retire=True,
-                    )
-                except DtaError as exc:
-                    log.warn("the run ended with an error", op=request.op, code=exc.code)
-                    send_error(self._sender, exc.code, exc.message[:MAX_MESSAGE_CHARS])
-                except (Exception, SystemExit) as exc:
-                    # The code asked for its process to end: it runs nothing more.
-                    retire = isinstance(exc, SystemExit)
-                    log.error("the run's code raised", exc=exc, op=request.op)
-                    send_error(
-                        self._sender, FAILED, _message(exc), frames=_frames(exc), retire=retire
-                    )
-                else:
-                    send_result(self._sender, media_type, body)
-                    log.info(
-                        "run finished",
-                        op=request.op,
-                        media_type=media_type,
-                        elapsed_ms=_elapsed_ms(started),
-                    )
+                retire = self._answer(job, started, capture)
+            except OSError as exc:
+                # The worker gave up on the run (its budget passed) or is stopping.
+                log.error("a run's answer cannot be sent", exc=exc, op=request.op)
+                retire = True
             finally:
                 logger.removeHandler(capture)
         return retire
+
+    def _answer(self, job: Job, started: float, capture: Capture) -> bool:
+        """Call the handler and send what came of it; whether the process must retire."""
+        op = job.request.op
+        try:
+            returned = self._call(job)
+            media_type, body = encode(returned, _elapsed_ms(started), capture.lines())
+        except MemoryError:
+            limit_mb = self._setup.memory_bytes // MIB
+            log.error("the run went past its memory limit", op=op, limit_mb=limit_mb)
+            message = f"the run went past its memory limit of {limit_mb} MiB"
+            send_error(self._sender, MEMORY, message, retire=True)
+            return True
+        except DtaError as exc:
+            log.warn("the run ended with an error", op=op, code=exc.code)
+            send_error(self._sender, exc.code, exc.message[:MAX_MESSAGE_CHARS])
+            return False
+        except (Exception, SystemExit) as exc:
+            # Code that asked for its process to end is not given that process again.
+            retire = isinstance(exc, SystemExit)
+            log.error("the run's code raised", exc=exc, op=op)
+            send_error(self._sender, FAILED, _message(exc), frames=_frames(exc), retire=retire)
+            return retire
+        send_result(self._sender, media_type, body)
+        log.info("run finished", op=op, media_type=media_type, elapsed_ms=_elapsed_ms(started))
+        return False
 
     def _call(self, job: Job) -> Any:
         request = job.request

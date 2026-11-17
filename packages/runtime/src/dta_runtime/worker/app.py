@@ -88,12 +88,18 @@ class Gate:
             await self.app(scope, receive, send)
             return
         started = time.perf_counter()
-        info: dict[str, Any] = {"trace_id": new_trace_id(), "outcome": "ok", "status": 500}
+        info: dict[str, Any] = {
+            "trace_id": new_trace_id(),
+            "outcome": "ok",
+            "status": 500,
+            "started": False,
+        }
         scope[RUN_INFO] = info
 
         async def send_status(message: Any) -> None:
             if message["type"] == "http.response.start":
                 info["status"] = message["status"]
+                info["started"] = True
             await send(message)
 
         try:
@@ -116,6 +122,9 @@ class Gate:
         except Exception as exc:
             info["outcome"] = INTERNAL
             with trace(info["trace_id"]):
+                if info["started"]:
+                    log.error("request failed after its answer had begun", exc=exc)
+                    raise
                 log.error("request failed unexpectedly", exc=exc, path=scope["path"])
                 failure = problem(500, INTERNAL, "the request failed in the worker")
             await failure(scope, receive, send_status)
