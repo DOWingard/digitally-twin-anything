@@ -359,7 +359,7 @@ def test_a_patch_may_not_change_anything_outside_the_owned_keys_even_indirectly(
     patched = apply_patch(manifest, {"models.new.candidates": {"c": {"family": "arima"}}})
     reasons = side_effect_reasons(spec, manifest, patched)
     assert [reason["code"] for reason in reasons] == ["tasks.patch.side_effect"]
-    assert reasons[0]["detail"]["paths"] == ["models.new.interventional"]
+    assert reasons[0]["detail"]["paths"] == ["models.new.features", "models.new.interventional"]
     whole = TaskSpec(id="t", kind="synthetic", stage="x", owns=("models.new",))
     assert side_effect_reasons(whole, manifest, patched) == []
 
