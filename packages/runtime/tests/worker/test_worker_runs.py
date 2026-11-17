@@ -8,6 +8,7 @@ import json
 import httpx
 from api_testkit import TOKEN
 from dta_runtime.protocol import FrameRef
+from dta_runtime.training import frame
 from worker_testkit import (
     AUTH,
     FRAME,
@@ -90,14 +91,17 @@ def test_a_model_run_reads_the_twin_at_the_version_its_frame_ends_at(worker: Wor
     assert sorted(table.column("uid").to_pylist()) == sorted(expected)
 
 
-def test_a_frame_is_read_from_the_api_with_the_runs_token_and_trace(worker: Worker, twin_api):
-    body = predict_body("frame")
-    table, result = table_of(worker.run(body))
-    assert table.column("y").to_pylist() == [2.4, 2.5, 2.6]
-    assert table.column("target").to_pylist() == ["Tank.level"] * 3
-    seen_trace, sent = twin_api.frames[-1]
-    assert seen_trace == body["trace_id"]
-    assert FrameRef.model_validate(sent) == FrameRef.model_validate(FRAME)
+def test_a_frame_is_read_from_the_api_as_the_twin_builds_it(worker: Worker, twin_api):
+    """The run asks the API for the frame its request names and gets what the twin's own
+    frame builder gives for it."""
+    twin = twin_api.water.twin
+    table, _result = table_of(worker.run(predict_body("frame")))
+    first, last = twin.store.resolve("#4")[0], twin.store.head()
+    ref = FrameRef.model_validate({**FRAME, "start": first.id, "end": last.id})
+    expected = frame(twin.store, twin.ontology, ref)
+    assert table.num_rows == expected.num_rows > 0
+    assert table.column_names == expected.column_names
+    assert table.to_pylist() == expected.to_pylist()
 
 
 def test_a_request_without_the_token_is_refused(worker: Worker):

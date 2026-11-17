@@ -10,7 +10,7 @@ import time
 import uuid
 import zipfile
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -200,8 +200,6 @@ class TwinApi:
     settings: RuntimeSettings
     water: WaterHistory
     app: Any
-    # Trace ids the API saw on `POST /block/training-set`, and the bodies it was sent.
-    frames: list[tuple[str | None, dict[str, Any]]] = field(default_factory=list)
 
     def upload(self, content: bytes) -> str:
         response = httpx.post(

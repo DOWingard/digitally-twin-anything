@@ -14,10 +14,8 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import httpx
-import pyarrow as pa
 import pytest
 from dta_core import log as core_log
-from dta_core.log import current_trace_id
 from dta_core.store import StoreSettings
 
 HERE = Path(__file__).parent
@@ -34,13 +32,10 @@ from api_testkit import (  # noqa: E402
     with_database,
 )
 from dta_runtime.api import create_app as create_api  # noqa: E402
-from dta_runtime.protocol import TrainingSetRequest  # noqa: E402
 from dta_runtime.settings import RuntimeSettings, WorkerSettings  # noqa: E402
 from dta_runtime.worker import create_app as create_worker  # noqa: E402
-from fastapi import Request  # noqa: E402
 from live_api_testkit import served  # noqa: E402
-from starlette.responses import Response  # noqa: E402
-from worker_testkit import ARROW, HANDLERS, TwinApi, Worker  # noqa: E402
+from worker_testkit import HANDLERS, TwinApi, Worker  # noqa: E402
 
 WATER_ONTOLOGY = (
     Path(__file__).resolve().parents[3] / "core/tests/ontology/fixtures/water_network.yaml"
@@ -61,29 +56,6 @@ def water(server_settings: StoreSettings, _databases: list[str]) -> Iterator[Wat
     history.twin.close()
 
 
-def _training_set(seen: list) -> object:
-    """What the API will answer on `POST /block/training-set`: a small frame."""
-
-    async def training_set(request: Request) -> Response:
-        body = await request.json()
-        ref = TrainingSetRequest.model_validate(body)
-        seen.append((current_trace_id(), body))
-        table = pa.table(
-            {
-                "unique_id": ["node:T1"] * 3,
-                "ds": pa.array([0, 1, 2], pa.timestamp("us", tz="UTC")),
-                "y": [2.4, 2.5, 2.6],
-                "target": [ref.target] * 3,
-            }
-        )
-        sink = pa.BufferOutputStream()
-        with pa.ipc.new_stream(sink, table.schema) as writer:
-            writer.write_table(table)
-        return Response(sink.getvalue().to_pybytes(), media_type=ARROW)
-
-    return training_set
-
-
 @pytest.fixture(scope="session")
 def twin_api(water: WaterHistory, tmp_path_factory: pytest.TempPathFactory) -> Iterator[TwinApi]:
     settings = RuntimeSettings(
@@ -93,10 +65,8 @@ def twin_api(water: WaterHistory, tmp_path_factory: pytest.TempPathFactory) -> I
         logs_dir=tmp_path_factory.mktemp("worker-logs"),
     )
     app = create_api(settings, water.twin)
-    frames: list = []
-    app.add_api_route("/api/v1/block/training-set", _training_set(frames), methods=["POST"])
     with served(app) as url:
-        yield TwinApi(url=url, settings=settings, water=water, app=app, frames=frames)
+        yield TwinApi(url=url, settings=settings, water=water, app=app)
 
 
 @contextlib.contextmanager
