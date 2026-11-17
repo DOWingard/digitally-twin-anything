@@ -157,7 +157,9 @@ def one_question(
     "by the question's active model. The answer is the one `POST /functions/{id}/run` gives, "
     "marked with what the question may claim: `provisional` with its `reasons` while the "
     "question is not validated, the note `question_failing` when it was measured outside "
-    "its tolerance. The answer is given either way: what it is worth is for the reader.",
+    "its tolerance. The answer is given either way: what it is worth is for the reader. "
+    "Answering writes nothing to the twin, also when the function gives rows to write: "
+    "run the function itself for that.",
     response_model=AnswerOut,
     responses={
         200: {"headers": dict(VERSION_HEADERS)},

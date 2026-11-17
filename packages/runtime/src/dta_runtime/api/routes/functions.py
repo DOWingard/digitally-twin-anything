@@ -219,7 +219,10 @@ def run_and_answer(
             "the arguments of code of the twin's own are given in the body, as JSON",
             code="api.bad_request",
         )
-    ran = running.run(services, record, version, {**body, **given}, known=known)
+    # Answering a question is a read: rows its function would have written are not.
+    ran = running.run(
+        services, record, version, {**body, **given}, known=known, write=question is None
+    )
     if asked is not None:
         provisional, reasons, notes = running.question_state(asked)
         ran.provisional = ran.provisional or provisional
