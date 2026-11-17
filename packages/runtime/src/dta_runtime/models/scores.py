@@ -84,6 +84,13 @@ def score(
     folds: pd.DataFrame, models: Sequence[str], metrics: Sequence[str]
 ) -> dict[str, dict[str, float]]:
     """Per model column, the error in each measure over every fold and series."""
+    if "mape" in metrics and (folds[Y] == 0).any():
+        # The library leaves such points out of the mean without a word.
+        raise bad_params(
+            "mape is not defined on these folds: the truth is zero at "
+            f"{int((folds[Y] == 0).sum())} of their points",
+            param="metrics",
+        )
     # Without the cutoff the library scores a series over all its folds at once.
     pooled = folds[[UNIQUE_ID, DS, Y, *models]]
     found: dict[str, dict[str, float]] = {model: {} for model in models}
