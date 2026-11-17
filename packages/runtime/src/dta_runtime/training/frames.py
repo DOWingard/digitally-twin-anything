@@ -45,28 +45,29 @@ MAX_CELLS = 5_000_000
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MICROSECOND = timedelta(microseconds=1)
 _KEYS = [inforce.UID, inforce.SEQ, inforce.T, inforce.REMOVED]
-_AGGREGATES = ("mean", "sum", "min", "max", "count")
 _NARROW = "narrow it with uids, a later start, a longer step or fewer features"
+# Up to this many objects are asked of the store by name; beyond it the type is read whole.
+_ASKED_BY_NAME = 1_000
 
 # The neighbours of an object at a grid time and their values then, as one row per object
 # and time. A neighbour joined by several links, or from both ends, counts once. Sums are
 # taken in the order of the neighbours' uids: the order a hash join yields them in changes
 # from run to run, and with it the last bits of a sum of floats.
 _NEIGHBOURS = """
-SELECT p.o AS uid, p.i AS i,
-       avg(v.v ORDER BY p.n) AS "mean", sum(v.v ORDER BY p.n) AS "sum",
-       min(v.v) AS "min", max(v.v) AS "max", count(v.v) AS "count"
-FROM (SELECT DISTINCT o, n, i FROM pairs WHERE o IN (SELECT uid FROM series)) AS p
+SELECT p.o AS uid, p.i AS i, {aggregates}
+FROM (SELECT DISTINCT o, n, i FROM pairs) AS p
 JOIN vals AS v ON v.uid = p.n AND v.i = p.i
 GROUP BY p.o, p.i
 """
-_NO_NEIGHBOURS = pa.schema(
-    [
-        pa.field("uid", pa.string()),
-        pa.field("i", pa.int64()),
-        *(pa.field(name, pa.float64()) for name in _AGGREGATES[:-1]),
-        pa.field("count", pa.int64()),
-    ]
+_AGGREGATES = {
+    "mean": "avg(v.v ORDER BY p.n)",
+    "sum": "sum(v.v ORDER BY p.n)",
+    "min": "min(v.v)",
+    "max": "max(v.v)",
+    "count": "count(v.v)",
+}
+_NO_PAIRS = pa.schema(
+    [pa.field("o", pa.string()), pa.field("n", pa.string()), pa.field("i", pa.int64())]
 )
 
 
@@ -131,10 +132,12 @@ class _Reads:
         self._needs = needs
         self._found: dict[str, pa.Table] = {}
 
-    def of(self, type_name: str, only: Sequence[str] | None = None) -> pa.Table:
-        """Every event of the type over the range. `only` asks the store for these objects
-        alone; it is honoured when given at the first read of the type."""
+    def of(self, type_name: str, only: pa.Array | None = None) -> pa.Table:
+        """The events of the type over the range: of every object, or at least of the
+        objects in `only` when the type has not been read yet. A caller that wants no
+        others narrows what it gets."""
         if type_name not in self._found:
+            few = only is not None and len(only) <= _ASKED_BY_NAME
             self._found[type_name] = inforce.events(
                 self._store,
                 self._ontology,
@@ -142,7 +145,7 @@ class _Reads:
                 self._first,
                 self._last,
                 properties=self._needs[type_name],
-                uids=only,
+                uids=only.to_pylist() if few else None,
             )
         return self._found[type_name]
 
@@ -181,25 +184,20 @@ def _needs(spec: Spec) -> dict[str, list[str]]:
     return needs
 
 
-def _neighbour_values(
-    connection: duckdb.DuckDBPyConnection,
-    reads: _Reads,
-    neighbours: Neighbours,
-    series: pa.Array,
-    grid: _Grid,
-) -> pa.Table:
-    """Per series object and grid time: the aggregates of the property over the objects
-    that links in force at that time join to it, each neighbour read as of that time."""
+def _pairs(reads: _Reads, neighbours: Neighbours, anchors: pa.Array, grid: _Grid) -> pa.Table:
+    """Who is joined to whom, when: one row per link in force at a grid time and way of
+    following it, `o` the object at the row's end, `n` the one at the other, `i` the
+    position of the time. Only links that ever touch one of `anchors` are followed."""
     times = grid.times(grid.base)
-    pairs = []
+    pairs = [_NO_PAIRS.empty_table()]
     for link_type in dict.fromkeys(hop.link_type for hop in neighbours.hops):
         hops = [hop for hop in neighbours.hops if hop.link_type == link_type]
         events = reads.of(link_type)
-        # Only the links that ever touch a series object: the others can add nothing,
-        # and a network has far more links than a frame has series.
+        # The other links can add nothing, and a network has far more links than a
+        # frame has series.
         touching = None
         for name in dict.fromkeys(hop.row_field for hop in hops):
-            held = pc.fill_null(pc.is_in(events.column(name), value_set=series), False)
+            held = pc.fill_null(pc.is_in(events.column(name), value_set=anchors), False)
             touching = held if touching is None else pc.or_(touching, held)
         touched = pc.unique(events.column(inforce.UID).filter(touching))
         if len(touched) * grid.base > MAX_CELLS:
@@ -222,17 +220,39 @@ def _neighbour_values(
                     "o": state.column(hop.row_field),
                     "n": state.column(hop.neighbour_field),
                     "i": positions,
-                }
+                },
+                schema=_NO_PAIRS,
             )
             for hop in hops
         )
-    if not pairs:
-        return _NO_NEIGHBOURS.empty_table()
     joined = pa.concat_tables(pairs)
-    reached = pc.unique(joined.column("n").filter(pc.is_in(joined.column("o"), value_set=series)))
+    return joined.filter(pc.is_in(joined.column("o"), value_set=anchors))
+
+
+def _aggregates(
+    connection: duckdb.DuckDBPyConnection,
+    reads: _Reads,
+    neighbours: Neighbours,
+    pairs: pa.Table,
+    grid: _Grid,
+    only: dict[str, pa.Array],
+    wanted: Sequence[str],
+) -> pa.Table:
+    """Per object and grid time of `pairs`: the `wanted` aggregates of the property over
+    its neighbours then, each neighbour read as of that time. `only`: per type, the
+    objects the whole frame needs of it."""
+    schema = pa.schema(
+        [
+            pa.field("uid", pa.string()),
+            pa.field("i", pa.int64()),
+            *(pa.field(name, pa.int64() if name == "count" else pa.float64()) for name in wanted),
+        ]
+    )
+    reached = pc.unique(pairs.column("n").combine_chunks())
+    times = grid.times(grid.base)
     values = []
     for type_name in neighbours.types:
-        events = _of_objects(reads.of(type_name), reached)
+        events = _of_objects(reads.of(type_name, only[type_name]), reached)
         if not events.num_rows:
             continue
         state = inforce.at_times(events.select([*_KEYS, neighbours.property]), times)
@@ -246,11 +266,12 @@ def _neighbour_values(
             )
         )
     if not values:
-        return _NO_NEIGHBOURS.empty_table()
-    connection.register("pairs", joined)
+        return schema.empty_table()
+    aggregates = ", ".join(f'{_AGGREGATES[name]} AS "{name}"' for name in wanted)
+    connection.register("pairs", pairs)
     connection.register("vals", pa.concat_tables(values))
     try:
-        return connection.sql(_NEIGHBOURS).to_arrow_table()
+        return connection.sql(_NEIGHBOURS.format(aggregates=aggregates)).to_arrow_table()
     finally:
         connection.unregister("pairs")
         connection.unregister("vals")
@@ -328,19 +349,23 @@ def _build(
             points=grid.points,
             columns=len(names),
         )
-    needs = _needs(spec)
-    reads = _Reads(store, ontology, first, last, needs)
+    reads = _Reads(store, ontology, first, last, _needs(spec))
     target_type = spec.type.name
-    # A type that is also read for its neighbours is read whole, once, and narrowed here.
-    shared = any(
-        target_type in column.neighbours.types
-        or target_type in {h.link_type for h in column.neighbours.hops}
-        for column in spec.features
-        if column.neighbours is not None
-    )
-    events = reads.of(target_type, None if shared else ref.uids)
-    if ref.uids and shared:
-        events = _of_objects(events, pa.array(list(ref.uids), pa.string()))
+    groups = list(dict.fromkeys(column.neighbours for column in spec.features if column.neighbours))
+    asked = pa.array(sorted(set(ref.uids)), pa.string()) if ref.uids else None
+    # Which objects the series are is known from the request, or from reading them all.
+    events = reads.of(target_type) if asked is None else None
+    anchors = asked if events is None else inforce.objects(events)
+    pairs = {neighbours: _pairs(reads, neighbours, anchors, grid) for neighbours in groups}
+    # A type is read once: for every object of it that any column needs.
+    needed: dict[str, list[pa.Array]] = {} if asked is None else {target_type: [asked]}
+    for neighbours, found in pairs.items():
+        reached = pc.unique(found.column("n").combine_chunks())
+        for type_name in neighbours.types:
+            needed.setdefault(type_name, []).append(reached)
+    only = {name: pc.unique(pa.concat_arrays(parts)) for name, parts in needed.items()}
+    if events is None:
+        events = _of_objects(reads.of(target_type, only[target_type]), asked)
     series = inforce.objects(events)
     if len(series) * grid.points * len(names) > MAX_CELLS:
         raise _too_large(
@@ -362,16 +387,18 @@ def _build(
     )
     connection = inforce.connect()
     try:
-        connection.register("series", pa.table({"uid": series}))
-        groups: dict[Neighbours, str] = {}
-        for column in spec.features:
-            if column.neighbours is not None and column.neighbours not in groups:
-                name = f"a{len(groups)}"
-                found = _neighbour_values(connection, reads, column.neighbours, series, grid)
-                connection.register(name, found)
-                groups[column.neighbours] = name
+        tables: dict[Neighbours, str] = {}
+        for neighbours, found in pairs.items():
+            tables[neighbours] = f"a{len(tables)}"
+            wanted = dict.fromkeys(
+                str(column.agg) for column in spec.features if column.neighbours == neighbours
+            )
+            connection.register(
+                tables[neighbours],
+                _aggregates(connection, reads, neighbours, found, grid, only, list(wanted)),
+            )
         connection.register("rows", rows)
-        result = connection.sql(_query(spec, own, groups, grid.base - 1)).to_arrow_table()
+        result = connection.sql(_query(spec, own, tables, grid.base - 1)).to_arrow_table()
     finally:
         connection.close()
     table = pa.table(
