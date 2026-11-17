@@ -21,15 +21,23 @@ ENV PYTHONUNBUFFERED=1 \
     RUNTIME__DLTHUB_TELEMETRY=false \
     PATH=/opt/venv/bin:$PATH
 
-# One layer holds everything. The sources are mounted for the build, not
-# copied; the installer is removed again; no download or build cache is kept.
-# The packages are compiled once here: a container cannot write bytecode next
-# to them, and compiling at every start costs each process seconds.
-RUN --mount=type=bind,source=.,target=/src,rw \
+# Two layers. The first holds the third-party packages and is made from the
+# lock file and the packages' metadata alone, so it is built once per lock
+# file and shared by every image built after it; the second holds this
+# project's own packages and is all that a change to their code rebuilds.
+# Nothing is copied for the build, only mounted; the installer is removed
+# again in the layer that brought it; no download or build cache is kept.
+# Packages are compiled here: a container cannot write bytecode next to
+# them, and compiling at every start costs each process seconds.
+RUN --mount=type=bind,source=uv.lock,target=/src/uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=/src/pyproject.toml \
+    --mount=type=bind,source=packages/core/pyproject.toml,target=/src/packages/core/pyproject.toml \
+    --mount=type=bind,source=packages/runtime/pyproject.toml,target=/src/packages/runtime/pyproject.toml \
+    --mount=type=bind,source=packages/toolkit/pyproject.toml,target=/src/packages/toolkit/pyproject.toml \
     pip install --no-cache-dir --root-user-action=ignore uv==0.9.18 \
     && cd /src \
     && UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy \
-       uv sync --frozen --no-dev --no-editable --no-cache --package dta-runtime \
+       uv sync --frozen --no-dev --no-install-workspace --no-cache --package dta-runtime \
          --python /usr/local/bin/python3.12 \
     && pip uninstall --yes --root-user-action=ignore uv \
     && for package in numpy pandas pyarrow; do \
@@ -41,6 +49,16 @@ RUN --mount=type=bind,source=.,target=/src,rw \
     && useradd --no-create-home --shell /usr/sbin/nologin --uid 10001 twin \
     && mkdir -p /var/lib/dta/artifacts /var/log/dta \
     && chown -R twin:twin /var/lib/dta /var/log/dta
+
+RUN --mount=type=bind,source=.,target=/src,rw \
+    pip install --no-cache-dir --root-user-action=ignore uv==0.9.18 \
+    && cd /src \
+    && UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy \
+       uv sync --frozen --no-dev --no-editable --no-cache --package dta-runtime \
+         --python /usr/local/bin/python3.12 \
+    && pip uninstall --yes --root-user-action=ignore uv \
+    && python -m compileall -q -j 0 /opt/venv/lib/python3.12/site-packages/dta_* \
+    && rm -rf /root/.cache /tmp/*
 
 USER twin
 WORKDIR /var/lib/dta
