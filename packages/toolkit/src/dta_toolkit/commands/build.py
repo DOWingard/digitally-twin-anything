@@ -25,9 +25,10 @@ evaluates a specification when a candidate of it was registered anew or
 changed, when its definition or its question's horizon changed since a build
 last evaluated it, or when it has no active model and a candidate never
 backtested (every one with `--force` or from `--from models`), and
-`questions` measures the questions when anything they rest on changed. Each asks the API only for what
-differs, so building a built twin again builds no image, uploads nothing,
-registers nothing, evaluates nothing and measures nothing.
+`questions` measures the questions when anything they rest on changed. Each
+asks the API only for what differs, so building a built twin again builds no
+image, uploads nothing, registers nothing, evaluates nothing and measures
+nothing.
 """
 
 from __future__ import annotations
