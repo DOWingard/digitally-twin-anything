@@ -8,6 +8,7 @@ and nothing else.
 from __future__ import annotations
 
 import hmac
+import math
 import os
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -164,7 +165,7 @@ async def _body(request: Request) -> bytes:
 
 def _parse(body: bytes) -> Any:
     try:
-        return REQUEST.validate_json(body)
+        parsed = REQUEST.validate_json(body)
     except ValidationError as exc:
         # The location and kind of each problem, never the value that was sent.
         errors = [
@@ -176,6 +177,16 @@ def _parse(body: bytes) -> Any:
         raise WorkerError(
             f"the body is not a valid run: {named}", code=BAD_REQUEST, extra={"errors": errors}
         ) from exc
+    if not math.isfinite(parsed.budget_s):
+        # JSON parsing lets `inf` through; a run without an end is not one the worker takes.
+        log.info("request refused: a budget without an end")
+        errors = [{"loc": [parsed.op, "budget_s"], "type": "finite_number"}]
+        raise WorkerError(
+            "the body is not a valid run: budget_s (finite_number)",
+            code=BAD_REQUEST,
+            extra={"errors": errors},
+        )
+    return parsed
 
 
 def _check_env(request: Any) -> None:

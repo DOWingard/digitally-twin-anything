@@ -109,6 +109,14 @@ def test_a_malformed_body_is_refused_naming_fields_never_values(worker: Worker):
     named = {".".join(error["loc"]) for error in document["errors"]}
     assert named == {"predict.budget_s", "predict.horizon"}
     assert "budget_s" in document["detail"]
+    # A budget that never ends is no budget.
+    response = worker.client.post(
+        "/run",
+        content=json.dumps(predict_body()).replace('"budget_s": 30', '"budget_s": "inf"'),
+        headers={**AUTH, "Content-Type": "application/json"},
+    )
+    document = problem_of(response, 400, "worker.bad_request")
+    assert document["errors"] == [{"loc": ["predict", "budget_s"], "type": "finite_number"}]
 
 
 def test_an_unknown_op_is_refused(worker: Worker):
