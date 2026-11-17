@@ -60,7 +60,12 @@ def down(
         typer.Option("--destroy-data", help="Also remove the volumes: the twin's data is lost."),
     ] = False,
 ) -> None:
-    """Remove the stack's containers; its volumes are kept unless --destroy-data."""
+    """Remove the stack's containers; its volumes are kept unless --destroy-data.
+
+    The worker image built for the twin's requirements is kept either way.
+    List it with `docker image ls dta-worker-<twin id>`, and remove it by its
+    tag with `docker image rm dta-worker-<twin id>:<hash>`.
+    """
     workspace = session(ctx).workspace
     stack = _stack(workspace)
     with timed(log, "stack down", volumes=destroy_data):

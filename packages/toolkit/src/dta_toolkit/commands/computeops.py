@@ -357,18 +357,19 @@ def spec_summary(found: Mapping[str, Any]) -> dict[str, Any]:
 
 def evaluate(
     api: TwinApi,
-    specs: Sequence[str],
+    specs: Sequence[str | None],
     *,
     keys: Mapping[str, str] | None = None,
     limit_s: float = EVALUATE_WAIT_S,
     wait: bool = True,
 ) -> list[dict[str, Any]]:
-    """Evaluate each specification in a job of its own, one after the other; with
-    `wait`, the summary of each once its job has ended, else the jobs as started."""
+    """Evaluate each specification in a job of its own, one after the other (None: every
+    specification in one job); with `wait`, the summary of each specification once its
+    job has ended, else the jobs as started."""
     results = []
     for spec in specs:
-        key = (keys or {}).get(spec)
-        job, created = start_job(api, EVALUATE, {"spec": spec}, key)
+        key = (keys or {}).get(spec) if spec else None
+        job, created = start_job(api, EVALUATE, {"spec": spec} if spec else {}, key)
         if not wait:
             results.append({"spec": spec, "job": job, "created": created})
             continue

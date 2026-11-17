@@ -7,6 +7,7 @@ import typer
 from . import (
     accept,
     build,
+    compute,
     env,
     init,
     lifecycle,
@@ -64,6 +65,22 @@ def register(app: typer.Typer) -> None:
     app.command("logs")(lifecycle.logs)
     app.command("build")(build.build)
     app.command("accept")(accept.accept)
+
+    app.command("register")(compute.register)
+    models_app = typer.Typer(add_completion=False, no_args_is_help=True)
+    models_app.command("evaluate")(compute.models_evaluate)
+    models_app.command("list")(compute.models_list)
+    app.add_typer(models_app, name="models", help="The twin's models: evaluate and list them.")
+    questions_app = typer.Typer(add_completion=False, no_args_is_help=True)
+    questions_app.command("list")(compute.questions_list)
+    questions_app.command("measure")(compute.questions_measure)
+    questions_app.command("answer")(compute.questions_answer)
+    app.add_typer(
+        questions_app, name="questions", help="The twin's questions: list, measure and ask them."
+    )
+    scenarios_app = typer.Typer(add_completion=False, no_args_is_help=True)
+    scenarios_app.command("list")(compute.scenarios_list)
+    app.add_typer(scenarios_app, name="scenarios", help="The twin's what-if scenarios.")
 
     generate_app = typer.Typer(add_completion=False, no_args_is_help=True)
     generate_app.command("skill")(skill.generate_skill)
