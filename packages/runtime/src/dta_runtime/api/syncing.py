@@ -15,14 +15,17 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from dta_core.errors import DtaError
 from dta_core.log import Log
 from dta_core.manifest import Manifest
 from dta_core.manifest.models import Source
 
+from ..notify import SYNC_FAILED
 from ..sync import Replay, run
-from ..sync.report import FAILED
+from ..sync.report import FAILED, PARTIAL
 from .jobs import SYNC_LANE, Job, JobRunner, Outcome, Work
 from .problems import ApiError
 
@@ -161,18 +164,47 @@ def sync_work(services: Services, params: SyncParams) -> Work:
     """One run of the sync pipeline with the manifest and the clock in force when it starts."""
 
     def work() -> Outcome:
-        state = services.head_state(services.store.head())
-        clock = services.clocks.get(state.manifest, state.manifest_hash)
-        report = run(
-            services.twin,
-            services.settings,
-            os.environ,
-            clock,
-            sources=list(params.sources) if params.sources is not None else None,
-            replay=Replay(*params.replay) if params.replay is not None else None,
-            connect=services.connect,
-        )
+        head = services.store.head()
+        state = services.head_state(head)
+        try:
+            clock = services.clocks.get(state.manifest, state.manifest_hash)
+            report = run(
+                services.twin,
+                services.settings,
+                os.environ,
+                clock,
+                sources=list(params.sources) if params.sources is not None else None,
+                replay=Replay(*params.replay) if params.replay is not None else None,
+                connect=services.connect,
+            )
+        except DtaError as exc:
+            # No record of the run could be left; the job fails with the error.
+            _tell_failed(
+                services,
+                None,
+                {"status": FAILED, "error": {"code": exc.code, "message": exc.message}},
+                head.t,
+            )
+            raise
         document = report.as_dict()
+        if report.status in (FAILED, PARTIAL):
+            failing = {
+                name: found.get("error")
+                for name, found in document["sources"].items()
+                if found.get("status") == FAILED or found.get("error")
+            }
+            _tell_failed(
+                services,
+                report.run,
+                {
+                    "run": report.run,
+                    "status": report.status,
+                    "error": document["error"],
+                    "sources": failing,
+                    "head": document["head"],
+                },
+                report.now,
+            )
         if report.status == FAILED:
             error = dict(report.error) if report.error else None
             return Outcome(
@@ -182,3 +214,13 @@ def sync_work(services: Services, params: SyncParams) -> Work:
         return Outcome(result=document)
 
     return work
+
+
+def _tell_failed(
+    services: Services, run_uid: str | None, data: dict[str, Any], moment: datetime
+) -> None:
+    """One `twin.sync.failed` notice for a run that ended failed or partial."""
+    try:
+        services.notifier.emit(SYNC_FAILED, run_uid, data, time=moment)
+    except Exception as exc:
+        log.error("the failure of a sync run could not be told", exc=exc, run=run_uid)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
@@ -12,6 +12,7 @@ from importlib.metadata import version as package_version
 import anyio.to_thread
 from dta_core.errors import ConfigError, DtaError
 from dta_core.log import Log
+from dta_core.store import StoreUnavailable
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -19,10 +20,12 @@ from starlette.responses import JSONResponse, Response
 
 from ..clock import Clock
 from ..graph import GraphCache
+from ..notify import BACKOFF_S, LOG, Notifier, notifier_for
 from ..settings import ENV_API_TOKEN, MIN_TOKEN_LENGTH, RuntimeSettings
 from ..sync.extract import Connect
 from ..twin import Twin, open_twin
 from .docs import API_PREFIX, OPEN_PATHS, build_openapi
+from .fidelity_work import CORRECTION_BUDGET_S
 from .jobs import JobRunner
 from .live import Clocks
 from .middleware import ApiMiddleware
@@ -32,6 +35,7 @@ from .routes import (
     artifacts,
     block,
     derived,
+    fidelity,
     functions,
     graph,
     history,
@@ -93,6 +97,8 @@ def create_app(
     clock: Clock | None = None,
     connect: Connect | None = None,
     graph_cache_versions: int = GRAPH_CACHE_VERSIONS,
+    notify_backoff_s: Sequence[float] = BACKOFF_S,
+    correction_budget_s: float = CORRECTION_BUDGET_S,
 ) -> FastAPI:
     """The API of the twin whose store `settings` names.
 
@@ -100,6 +106,11 @@ def create_app(
     A twin passed in is used as it is and left open. So is a clock: by default
     the twin's clock is the one its manifest names. `connect` opens the
     sources of a sync run; by default the real connectors do.
+
+    Notifications go where the manifest in force at start says; a webhook whose
+    variable is not set stops the start, naming it. `notify_backoff_s` are the
+    waits between the tries of one delivery, `correction_budget_s` the time one
+    correction of the fidelity ladder may take.
     """
     if not settings.api_token or len(settings.api_token) < MIN_TOKEN_LENGTH:
         log.error("the API token is missing or too short", name=ENV_API_TOKEN)
@@ -126,6 +137,33 @@ def create_app(
                 database=settings.store.database,
             )
             raise
+        try:
+            notifier = await anyio.to_thread.run_sync(
+                lambda: notifier_for(
+                    opened.manifest(at=opened.store.head()), os.environ, backoff_s=notify_backoff_s
+                )
+            )
+        except StoreUnavailable as exc:
+            # A twin handed in may have its store down: the API still starts and answers
+            # 503 to what needs the store, as it always did. Its manifest cannot be read,
+            # so notifications are logged only until the API is started again.
+            log.error(
+                "the manifest cannot be read at start: notifications are only logged until "
+                "the API starts again",
+                exc=exc,
+                code=exc.code,
+            )
+            notifier = Notifier(twin_id="twin", kind=LOG)
+        except DtaError as exc:
+            log.error(
+                "the API cannot start: its notifications cannot be set up",
+                exc=exc,
+                code=exc.code,
+                detail=exc.detail,
+            )
+            if twin is None:
+                opened.close()
+            raise
         # Handlers talking to the store run in worker threads. With no more
         # workers than pooled connections, a burst of requests waits for a
         # worker instead of failing for want of a connection.
@@ -133,6 +171,7 @@ def create_app(
         anyio.to_thread.current_default_thread_limiter().total_tokens = workers
         jobs = JobRunner()
         jobs.start()
+        notifier.start()
         services = Services(
             twin=opened,
             settings=settings,
@@ -140,6 +179,8 @@ def create_app(
             jobs=jobs,
             clocks=Clocks(clock, os.environ),
             connect=connect,
+            notifier=notifier,
+            correction_budget_s=correction_budget_s,
         )
         app.state.services = services
         try:
@@ -158,6 +199,7 @@ def create_app(
             logs_dir=str(settings.logs_dir),
             clock_given=clock is not None,
             worker=services.compute.configured,
+            notifications=notifier.kind,
             scenarios_interrupted=len(swept),
             elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
         )
@@ -166,7 +208,7 @@ def create_app(
         finally:
             # The job in progress may be writing to the twin: it ends before the store closes.
             await anyio.to_thread.run_sync(jobs.shutdown)
-            services.close()
+            await anyio.to_thread.run_sync(services.close)
             services.clocks.close()
             graphs = services.graphs
             if twin is None:
@@ -210,6 +252,7 @@ def create_app(
         questions,
         scenarios,
         derived,
+        fidelity,
     ):
         app.include_router(module.router)
 

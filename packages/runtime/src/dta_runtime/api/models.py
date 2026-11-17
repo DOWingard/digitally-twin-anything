@@ -288,7 +288,11 @@ class TwinHealth(BaseModel):
     tier: str | None
     head: VersionOut
     versions: int = Field(description="Number of versions on the branch")
-    fidelity: str = Field(description="`unknown` until fidelity is measured")
+    fidelity: str = Field(
+        description="`unknown` until a fidelity check has completed, then `healthy`, "
+        "`correcting` or `failed`"
+    )
+    fidelity_detail: FidelityDetail
     manifest: TwinManifestInfo
     ontology_hash: str
     type_signature: str
@@ -922,3 +926,250 @@ class SearchPage(BaseModel):
     next_cursor: str | None
     version: VersionOut
     total: int | None = None
+
+
+# -- fidelity ------------------------------------------------------------------------------
+
+FidelityState = Literal["unknown", "healthy", "correcting", "failed"]
+IncidentKind = Literal["breach", "stale", "signal", "reconcile"]
+IncidentStatus = Literal["open", "remodel_requested", "failed", "resolved"]
+IncidentFilter = Literal["open", "remodel_requested", "failed", "resolved", "unresolved"]
+SignalStatus = Literal["suspect", "ok"]
+CorrectionRung = Literal["recalibrate", "reselect"]
+
+_CHECK_UID = "twin_fidelity_check:20260119T001500Z"
+_INCIDENT_UID = "twin_incident:breach-level_ahead-20260119T001500Z"
+_SIGNAL_UID = "twin_signal:Gauge.level/gauge-1"
+
+
+class FidelityCheckRef(BaseModel):
+    uid: str = Field(examples=[_CHECK_UID])
+    at: datetime | None = Field(description="The check's time on the twin's clock")
+
+
+class FidelityQuestion(BaseModel):
+    """What the last check measured of one predictive question."""
+
+    id: str = Field(examples=["level_ahead"])
+    model: str | None = Field(description="The active model the check measured")
+    origin: datetime | None = Field(description="The origin scored, or tried, at that check")
+    scored: bool
+    error: float | None = Field(description="The scored origin's error in the question's metric")
+    n: int | None = Field(description="Points that error was measured on")
+    window_error: float | None = Field(description="Mean error of the origins in the window")
+    window_n: int | None = Field(description="Origins in the window")
+    tolerance: float | None = Field(description="The question's tolerance, ε")
+    metric: str | None = Field(examples=["mae"])
+    breach: bool = Field(description="At least 3 origins in the window, and their mean above ε")
+    warning_sum: float | None = Field(description="The drift warning's running sum")
+    reason: dict[str, Any] | None = Field(
+        description="Why nothing was scored at that check: `code` and `message`",
+        examples=[{"code": "already_scored", "message": "this origin was scored before"}],
+    )
+
+
+class IncidentBrief(BaseModel):
+    uid: str = Field(examples=[_INCIDENT_UID])
+    kind: IncidentKind
+    subject: str = Field(description="The question, signal or object it is about")
+    status: IncidentStatus
+    rung: int | None = Field(description="1 recalibrate, 2 reselect, 3 re-model")
+
+
+class SignalBrief(BaseModel):
+    uid: str = Field(examples=[_SIGNAL_UID])
+    property: str = Field(examples=["Gauge.level"])
+    object: str = Field(examples=["gauge-1"])
+    reason: str | None = Field(examples=["stuck"])
+    since: datetime | None
+
+
+class FidelityOut(BaseModel):
+    """The twin's fidelity: its state and what the last check found."""
+
+    state: FidelityState
+    since: datetime | None = Field(description="Data time the state began")
+    check: FidelityCheckRef | None = Field(description="The last check; null before the first")
+    questions: list[FidelityQuestion]
+    freshness: dict[str, Any] = Field(
+        description="As the last check measured it: per question `fresh`, `age_s`, "
+        "`staleness_s`, `source`; per source what the twin knows of it"
+    )
+    coverage: dict[str, Any] = Field(
+        description="Questions by status, and the rows the sync runs in the window set aside"
+    )
+    incidents: list[IncidentBrief] = Field(description="Incidents not resolved, oldest first")
+    suspect_signals: list[SignalBrief]
+    version: VersionOut
+
+
+class FidelityCheckOut(BaseModel):
+    """One check's record."""
+
+    uid: str = Field(examples=[_CHECK_UID])
+    at: datetime | None
+    at_version: str | None = Field(description="Id of the head the check measured")
+    state: str | None = Field(description="The twin's state the check left")
+    questions: dict[str, Any] = Field(description="Per question what was measured")
+    freshness: dict[str, Any]
+    signals: dict[str, Any] = Field(description="Signals tested, flagged, cleared, inferred")
+    coverage: dict[str, Any]
+    duration_ms: int | None
+    trace_id: str | None
+
+
+class FidelityCheckList(BaseModel):
+    data: list[FidelityCheckOut] = Field(description="Newest first")
+    next_cursor: str | None = Field(description="Pass as `cursor` for the next page")
+    version: VersionOut
+
+
+class FidelityCheckOne(BaseModel):
+    data: FidelityCheckOut
+    version: VersionOut
+
+
+class IncidentOut(BaseModel):
+    """An incident and every step it went through."""
+
+    uid: str = Field(examples=[_INCIDENT_UID])
+    kind: IncidentKind
+    subject: str | None
+    status: IncidentStatus
+    opened_at: datetime | None
+    opened_version: str | None
+    resolved_at: datetime | None
+    rung: int | None
+    attempt: int | None
+    cycle: int | None
+    awaiting: datetime | None = Field(
+        description="End of the data of the model a correction put in place, while it is judged"
+    )
+    requested_at: datetime | None = Field(description="When a re-model was asked for")
+    detail: dict[str, Any] = Field(description="Question, specification, pending correction")
+    steps: list[dict[str, Any]] = Field(description="Every step, oldest first")
+    resolved_version: str | None = Field(
+        default=None, description="On one incident: the version that resolved it"
+    )
+
+
+class IncidentList(BaseModel):
+    data: list[IncidentOut] = Field(description="Newest first")
+    next_cursor: str | None = Field(description="Pass as `cursor` for the next page")
+    version: VersionOut
+
+
+class IncidentOne(BaseModel):
+    data: IncidentOut
+    version: VersionOut
+
+
+class SignalOut(BaseModel):
+    """An observed signal found suspect at some time."""
+
+    uid: str = Field(examples=[_SIGNAL_UID])
+    property: str | None
+    object: str | None
+    status: SignalStatus
+    reason: str | None
+    since: datetime | None
+    value_at_flag: Any = Field(description="The value when it was flagged")
+    reading: Any = Field(description="The latest raw reading sync kept instead of the value")
+    reading_at: datetime | None
+    clear_checks: int
+    detail: dict[str, Any]
+
+
+class SignalList(BaseModel):
+    data: list[SignalOut] = Field(description="By property, then object")
+    version: VersionOut
+
+
+class OperatorStep(BaseModel):
+    """Who takes a step by hand, and why."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"by": "operator@plant", "note": "sensor replaced"}]},
+    )
+
+    by: str = Field(min_length=1, max_length=200, description="Who takes the step")
+    note: str | None = Field(default=None, max_length=2_000)
+
+
+class IncidentStepped(BaseModel):
+    data: IncidentOut
+    events: list[dict[str, Any]] = Field(description="What was told the notifier, in order")
+    version: VersionOut | None = Field(description="The version written; null when none was")
+
+
+class SignalCleared(BaseModel):
+    data: SignalOut
+    events: list[dict[str, Any]]
+    version: VersionOut | None
+
+
+class CorrectionAsked(BaseModel):
+    """A correction asked for by hand."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"question": "level_ahead", "rung": "recalibrate"}]},
+    )
+
+    question: str = Field(min_length=1, max_length=190)
+    rung: CorrectionRung = Field(
+        description="`recalibrate`: re-fit the active model; `reselect`: evaluate every "
+        "candidate that is not retired and make the best accepted one active"
+    )
+
+
+class ScheduleEntryOut(BaseModel):
+    id: str = Field(examples=["sync"])
+    kind: str = Field(description="`sync` entries are asked for first", examples=["sync"])
+    interval: str = Field(description="ISO 8601 duration", examples=["PT15M"])
+    method: str = Field(examples=["POST"])
+    path: str = Field(examples=["/api/v1/sync/runs"])
+    key: str = Field(
+        description="The Idempotency-Key to send, `{boundary}` replaced by the boundary in "
+        "ISO 8601",
+        examples=["sync:{boundary}"],
+    )
+    body: dict[str, Any]
+
+
+class ScheduleOut(BaseModel):
+    now: datetime | None = Field(description="The twin's clock; null when it cannot be read")
+    entries: list[ScheduleEntryOut]
+
+
+class NotificationOut(BaseModel):
+    sequence: int
+    id: str = Field(description="The event's CloudEvents id")
+    type: str = Field(examples=["twin.fidelity.state"])
+    subject: str | None
+    time: str = Field(description="Data time of what it reports")
+    status: Literal["queued", "delivered", "failed", "dropped", "logged", "unsent"]
+    tries: int
+    http_status: int | None = Field(description="The status of the webhook's last answer")
+    error: str | None = Field(description="Why the last try failed, without the address")
+    data: dict[str, Any] | None
+
+
+class NotificationList(BaseModel):
+    data: list[NotificationOut] = Field(description="Newest first, the last 200")
+    kind: Literal["webhook", "log"]
+
+
+class FidelityDetail(BaseModel):
+    since: datetime | None
+    check: FidelityCheckRef | None
+    incidents: dict[str, int] = Field(
+        description="`open` (not resolved and not failed) and `failed`",
+        examples=[{"open": 1, "failed": 0}],
+    )
+    suspect_signals: int
+
+
+# Defined above the fidelity models it refers to.
+TwinHealth.model_rebuild()

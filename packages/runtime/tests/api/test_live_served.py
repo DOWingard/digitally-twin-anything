@@ -42,25 +42,30 @@ def test_the_scheduler_starts_one_run_per_interval(
     live = live_api(sources, served=True)
     scheduler = scheduler_of(live, tmp_path / "scheduler")
     try:
-        # The clock shows 00:16: the interval that ended at 00:15 is due.
+        # The clock shows 00:16: the interval that ended at 00:15 is due. The API's
+        # schedule holds the sync alone: the twin sets no fidelity checks.
         first = scheduler.tick()
-        assert (first["started"], first["due"]) == ("sync", "2026-01-05T00:15:00+00:00")
-        assert live.wait(first["job"])["state"] == "succeeded"
-        assert scheduler.tick() == {"started": None, "reason": NOT_DUE}
+        assert first["started"] == ["sync"], first
+        (fired,) = first["fired"]
+        assert fired["due"] == "2026-01-05T00:15:00+00:00"
+        assert live.wait(fired["job"])["state"] == "succeeded"
+        idle = scheduler.tick()
+        assert (idle["started"], idle["reason"]) == (None, NOT_DUE)
         # A scheduler started again asks for the same interval and is given its job.
         restarted = scheduler_of(live, tmp_path / "scheduler")
         try:
             again = restarted.tick()
         finally:
             restarted.close()
-        assert (again["started"], again["job"]) == ("sync", first["job"])
+        assert again["started"] == ["sync"] and again["fired"][0]["job"] == fired["job"]
 
         folders["scada"].append("levels", [("T1", at(20), 3.0)])
         live.clock.set(at(31))
         second = scheduler.tick()
-        assert (second["started"], second["due"]) == ("sync", "2026-01-05T00:30:00+00:00")
-        assert second["job"] != first["job"]
-        assert live.wait(second["job"])["state"] == "succeeded"
+        assert second["started"] == ["sync"], second
+        (later,) = second["fired"]
+        assert later["due"] == "2026-01-05T00:30:00+00:00" and later["job"] != fired["job"]
+        assert live.wait(later["job"])["state"] == "succeeded"
         live.clock.set(at(44))
         assert scheduler.tick()["started"] is None
     finally:

@@ -45,9 +45,17 @@ class ComputeJobs:
             )
 
     def start(
-        self, kind: str, params: Mapping[str, Any], work: Work, key: str | None
+        self,
+        kind: str,
+        params: Mapping[str, Any],
+        work: Work,
+        key: str | None,
+        *,
+        again: bool = False,
     ) -> tuple[dict[str, Any], bool]:
-        """The job document for the request and whether the job was made for it."""
+        """The job document for the request and whether the job was made for it. With
+        `again`, a key whose job has ended starts the work anew under the same key: for
+        work whose caller knows it did not take effect."""
         asked = dict(params)
         with self._lock:
             if key is not None and key in self._keys:
@@ -59,8 +67,19 @@ class ComputeJobs:
                         code="job.key_reused",
                         detail={"job": job.id},
                     )
-                log.info("work was asked for again; its job is given back", job=job.id, kind=kind)
-                return self._runner.document(job), False
+                document = self._runner.document(job)
+                if not again or document["state"] in ACTIVE:
+                    log.info(
+                        "work was asked for again; its job is given back", job=job.id, kind=kind
+                    )
+                    return document, False
+                log.warn(
+                    "work whose job ended without taking effect is started again",
+                    job=job.id,
+                    kind=kind,
+                    state=document["state"],
+                )
+                del self._keys[key]
             for document in self._runner.list(kind=kind, lane=COMPUTE_LANE, limit=1_000):
                 if document["state"] in ACTIVE and document["params"] == asked:
                     log.info(

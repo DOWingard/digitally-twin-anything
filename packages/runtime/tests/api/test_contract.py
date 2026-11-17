@@ -163,7 +163,36 @@ def test_the_document_describes_every_route(app_client: TestClient, auth: dict[s
         "/api/v1/derived",
         "/api/v1/block/training-set",
         "/api/v1/search",
+        "/api/v1/fidelity",
+        "/api/v1/fidelity/checks",
+        "/api/v1/fidelity/checks/{uid}",
+        "/api/v1/fidelity/corrections",
+        "/api/v1/fidelity/questions/{id}/errors",
+        "/api/v1/fidelity/incidents",
+        "/api/v1/fidelity/incidents/{id}",
+        "/api/v1/fidelity/incidents/{id}/retry",
+        "/api/v1/fidelity/incidents/{id}/resolve",
+        "/api/v1/fidelity/signals",
+        "/api/v1/fidelity/signals/{uid}/clear",
+        "/api/v1/lifecycle/schedule",
+        "/api/v1/lifecycle/notifications",
     }
+    checked = document["paths"]["/api/v1/fidelity/checks"]["post"]
+    assert {"200", "202", "409", "503"} <= set(checked["responses"])
+    assert {"200", "202", "400", "404", "409"} <= set(
+        document["paths"]["/api/v1/fidelity/corrections"]["post"]["responses"]
+    )
+    for step in ("retry", "resolve"):
+        stepped = document["paths"][f"/api/v1/fidelity/incidents/{{id}}/{step}"]["post"]
+        assert {"200", "400", "404", "409"} <= set(stepped["responses"])
+        assert stepped["description"] and stepped["requestBody"]
+    assert {"fidelity", "fidelity_detail"} <= set(
+        document["components"]["schemas"]["TwinHealth"]["properties"]
+    )
+    for path, operations in document["paths"].items():
+        if path.startswith(("/api/v1/fidelity", "/api/v1/lifecycle/schedule")):
+            for operation in operations.values():
+                assert operation.get("description"), path
     for path, operations in document["paths"].items():
         for method, operation in operations.items():
             assert operation.get("summary"), (method, path)

@@ -22,6 +22,8 @@ from dta_core.store import StoreSettings
 sys.path.insert(0, str(Path(__file__).parent))
 # The sync tests' sources that change between runs, used as they are.
 sys.path.append(str(Path(__file__).resolve().parents[1] / "sync"))
+# The notification tests' webhook and the ports this package's servers may listen on.
+sys.path.append(str(Path(__file__).resolve().parents[1] / "notify"))
 
 from api_testkit import (  # noqa: E402
     TOKEN,
@@ -46,6 +48,7 @@ from dta_runtime.api import create_app  # noqa: E402
 from dta_runtime.clock import FixedClock  # noqa: E402
 from dta_runtime.settings import RuntimeSettings  # noqa: E402
 from dta_runtime.twin import Bundle, Twin  # noqa: E402
+from fidelity_api_testkit import Checked, serve_checked  # noqa: E402
 from live_api_testkit import (  # noqa: E402
     PLANT_ENV,
     LiveApi,
@@ -229,6 +232,24 @@ def evaluated(world: World, registered: dict[str, Any]) -> dict[str, Any]:
     return world.done(
         world.post("/models/evaluate", json={}, headers={"Idempotency-Key": "evaluate-all"})
     )
+
+
+@pytest.fixture
+def checked(
+    new_settings: Callable[[], StoreSettings], water_text: str, tmp_path: Path
+) -> Iterator[Callable[..., Checked]]:
+    """A fresh live twin whose fidelity is checked through its API, with a worker beside
+    it and its models evaluated; stopped and dropped after the test."""
+    stack = contextlib.ExitStack()
+    made: list[Checked] = []
+
+    def make(**options: Any) -> Checked:
+        root = tmp_path / f"checked-{len(made)}"
+        made.append(stack.enter_context(serve_checked(new_settings(), water_text, root, **options)))
+        return made[-1]
+
+    with stack:
+        yield make
 
 
 @pytest.fixture

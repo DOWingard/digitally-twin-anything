@@ -26,6 +26,7 @@ from dta_core.manifest.models import Source
 from dta_core.store import EPOCH, ChangeSet, CommitMeta, VersionRef
 from dta_core.store.model import iso_utc
 
+from ..fidelity import suspects as fidelity_suspects
 from ..settings import RuntimeSettings
 from ..twin import Twin
 from .errors import (
@@ -160,6 +161,8 @@ class _Run:
         self.sources: Mapping[str, Source] = {}
         self.plan: Plan | None = None
         self.state: State | None = None
+        # (`Type.property`, uid) of the signals whose readings are withheld from the graph.
+        self.suspect: frozenset[tuple[str, str]] = frozenset()
         # The mappings the run evaluates, and the sources they belong to.
         self.active: tuple[MappingPlan, ...] = ()
         self.run_sources: tuple[str, ...] = ()
@@ -1070,6 +1073,7 @@ class _Run:
             or self.state.interrupted is not None,
             # Only a load of existing history marks its versions as such.
             extra={"backfill": True} if self.plan.interval_us and not self.recurring else {},
+            suspect=self.suspect,
         )
         started = time.perf_counter()
         self.loader.run()
@@ -1087,6 +1091,30 @@ class _Run:
                 # The last version already holds the run, recorded as failed.
                 error.detail["recorded"] = True
             raise error
+
+    def _suspects(self) -> frozenset[tuple[str, str]]:
+        """The observed signals fidelity found suspect, read once: the run writes their
+        readings to their signal records instead of to the graph. A twin with none pays
+        this one read."""
+        started = time.perf_counter()
+        try:
+            found = frozenset(fidelity_suspects(self.twin, self.state.head if self.state else None))
+        except Exception as exc:
+            # Writing a suspect value is the lesser harm than writing nothing.
+            log.error(
+                "the suspect signals cannot be read; nothing is withheld in this run",
+                exc=exc,
+                error_type=type(exc).__name__,
+            )
+            return frozenset()
+        log.debug(
+            "suspect signals read",
+            count=len(found),
+            elapsed_ms=round((time.perf_counter() - started) * 1000.0, 2),
+        )
+        if found:
+            log.info("readings of suspect signals are withheld from the graph", count=len(found))
+        return found
 
     def _attempt(self) -> SyncError | None:
         """Read, map and write. Returns what failed the run, having recorded it."""
@@ -1124,6 +1152,7 @@ class _Run:
             return self._report(SUCCEEDED)
         self._connector()
         self.state = read_state(self.store)
+        self.suspect = self._suspects()
         self._window()
         try:
             failure = self._attempt()

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -31,6 +31,8 @@ from dta_core.store import (
     ViolationError,
 )
 
+from ..fidelity import withhold
+from ..fidelity.records import SIGNAL_TYPE
 from .errors import StoreFailed
 from .mapper import Prepared, bucket_end_us
 from .plan import MappingPlan
@@ -119,8 +121,11 @@ class Loader:
         records: Records,
         must_record: bool,
         extra: Mapping[str, Any] | None = None,
+        suspect: Collection[tuple[str, str]] = (),
     ) -> None:
         self.store = store
+        # (`Type.property`, uid) whose readings go to their signal records, not the graph.
+        self.suspect = set(suspect)
         self.prepared = prepared
         self.plan = prepared.plan
         self.head = head
@@ -235,7 +240,28 @@ class Loader:
         for type_name, uids in bucket.deletes.items():
             if uids:
                 changes.deletes[type_name] = list(uids)
+        if self.suspect:
+            self._withhold(changes, t)
         return changes
+
+    def _withhold(self, changes: ChangeSet, t: datetime) -> None:
+        """Leave the values of suspect signals out of a version and keep their raw readings
+        on their signal records in the same version."""
+        kept, readings = withhold(changes.upserts, self.suspect, t=t)
+        for type_name, rows in kept.items():
+            changes.upserts[type_name] = rows
+        if not readings:
+            return
+        for text, uid in self.suspect:
+            own = changes.property_provenance.get(uid)
+            if own is not None:
+                own.pop(text.partition(".")[2], None)
+        changes.upserts.setdefault(SIGNAL_TYPE, []).extend(readings)
+        log.info(
+            "readings of suspect signals kept on their signal records",
+            readings=len(readings),
+            t=t.isoformat(),
+        )
 
     # -- committing -------------------------------------------------------------
 

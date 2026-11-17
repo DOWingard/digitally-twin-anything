@@ -1,10 +1,12 @@
-"""The running stack: the log lines of its services and the jobs of the API."""
+"""The running stack: the log lines of its services, the jobs of the API, what the
+scheduler asks for and the notifications the twin sent."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated, Literal
 
+from dta_core.store import LIVE_BRANCH
 from fastapi import APIRouter, Body, Path, Query
 from starlette.responses import Response
 
@@ -15,9 +17,19 @@ from ..docs import API_PREFIX, errors, versioned
 from ..formats import json_response
 from ..jobs import KEEP
 from ..logfiles import LogQuery, read_logs
-from ..models import JobList, JobOne, JobState, LogsOut, Registered, RegisterRequest
+from ..models import (
+    JobList,
+    JobOne,
+    JobState,
+    LogsOut,
+    NotificationList,
+    Registered,
+    RegisterRequest,
+    ScheduleOut,
+)
 from ..params import split_list
 from ..problems import ApiError
+from ..schedule import entries as schedule_entries
 from ..tables import version_json
 
 router = APIRouter(prefix=f"{API_PREFIX}/lifecycle", tags=["lifecycle"])
@@ -102,6 +114,48 @@ async def job(
     if found is None:
         raise ApiError(f"no job {id!r} is kept by this API process", code="job.not_found")
     return json_response({"data": found})
+
+
+@router.get(
+    "/schedule",
+    summary="What the scheduler asks for, and how often",
+    description="`now` is the twin's clock. Each entry is asked for once per boundary of its "
+    "`interval` on that clock (the multiples of the interval counted from the Unix epoch), "
+    "with `method`, `path` and `body`, and `key` as its Idempotency-Key, `{boundary}` "
+    "replaced by the boundary in ISO 8601. Entries of kind `sync` come first; the others "
+    "are asked for once the sync run of the newest sync boundary has ended, whatever it "
+    "came to. A live twin has its sync run and, when its manifest sets a fidelity interval, "
+    "its fidelity check; a static twin has none. Built from the manifest at the head: the "
+    "scheduler reads it again when the manifest's hash changes.",
+    response_model=ScheduleOut,
+    responses=versioned(400),
+)
+def schedule(services: ServicesDep) -> Response:
+    version = services.resolve("head", LIVE_BRANCH)
+    state = services.head_state(version)
+    reading = services.clocks.read(state.manifest, state.manifest_hash)
+    return json_response(
+        {
+            "now": reading.now if reading.available else None,
+            "entries": [found.document() for found in schedule_entries(services, state)],
+        },
+        version,
+    )
+
+
+@router.get(
+    "/notifications",
+    summary="The twin's last notifications, newest first",
+    description="The last 200 CloudEvents the twin emitted since the API started, with what "
+    "became of each: `queued`, `delivered` (the webhook answered 2xx), `failed` (three "
+    "tries without), `dropped` (the queue of 1000 was full), `logged` (notifications of "
+    "kind `log`) or `unsent` (the API stopped first). The webhook's address is never shown.",
+    response_model=NotificationList,
+    responses=errors(400),
+)
+async def notifications(services: ServicesDep) -> Response:
+    # A coroutine: it reads memory only.
+    return json_response({"data": services.notifier.listing(), "kind": services.notifier.kind})
 
 
 @router.get(
