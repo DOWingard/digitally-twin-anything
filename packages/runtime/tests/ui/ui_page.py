@@ -21,6 +21,7 @@ from selenium.webdriver.remote.webelement import WebElement
 from ui_testkit import RUN_NOW_S
 
 WAIT_S = 15.0
+NETWORK_CHANGED = "net::ERR_NETWORK_CHANGED"
 
 
 def wait_for[T](driver: WebDriver, check: Callable[[], T], what: str, timeout: float = WAIT_S) -> T:
@@ -71,8 +72,20 @@ def text_of(driver: WebDriver, element_id: str) -> str:
 
 
 def open_page(driver: WebDriver, url: str) -> None:
-    driver.get(url)
-    wait_for(driver, lambda: "#" in text_of(driver, ids.VERSION_DETAIL), "the selected version")
+    """Load the page and wait for its version. Chrome drops the requests in flight when a
+    network interface of the machine changes (docker adds or removes one for each container
+    started on it), and the page then never renders: such a load, and only such a load, is
+    tried once more."""
+    for attempt in (1, 2):
+        driver.get(url)
+        try:
+            wait_for(
+                driver, lambda: "#" in text_of(driver, ids.VERSION_DETAIL), "the selected version"
+            )
+            return
+        except AssertionError as failure:
+            if attempt == 2 or NETWORK_CHANGED not in str(failure):
+                raise
 
 
 def selected_seq(driver: WebDriver) -> int | None:
