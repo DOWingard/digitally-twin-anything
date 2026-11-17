@@ -7,32 +7,19 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
 
 from dta_runtime import fidelity
-from fidelity_api_testkit import BUILT, HOLD, Checked, at, shift, story
-
-OPENS = BUILT + 4
-
-
-def breach(world: Checked) -> dict[str, Any]:
-    (found,) = world.incidents(kind="breach")
-    return world.ok(f"/fidelity/incidents/{found['uid']}")["data"]
-
-
-def held_check(world: Checked) -> tuple[dict[str, Any], threading.Event]:
-    """The check that opens the breach, finished, with the correction it queued held
-    behind a gate of the test's."""
-    world.write(OPENS)
-    first = world.gate()
-    response = world.ask(OPENS)
-    second = world.gate()
-    first.set()
-    checked = world.wait(response)
-    assert checked["state"] == "succeeded", checked
-    (correction,) = checked["result"]["corrections"]
-    assert world.ok(f"/lifecycle/jobs/{correction['job']}")["data"]["state"] == "queued"
-    return checked, second
+from fidelity_api_testkit import (
+    BUILT,
+    HOLD,
+    OPENS,
+    Checked,
+    at,
+    breach,
+    held_check,
+    shift,
+    story,
+)
 
 
 def test_a_correction_the_worker_refuses_reports_back_and_changes_no_model(

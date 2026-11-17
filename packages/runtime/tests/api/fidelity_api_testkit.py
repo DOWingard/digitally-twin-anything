@@ -51,6 +51,9 @@ from webhook_testkit import own_port
 T0 = datetime(2026, 1, 5, tzinfo=UTC)
 STEP = timedelta(minutes=15)
 BUILT = 24
+# The step whose check opens the breach of a shift of 0.55 from BUILT + 1: the third
+# origin after the fit is scored there, and no warning comes before it.
+OPENS = BUILT + 4
 BASE = {"T1": 5.0, "T2": 8.0}
 TOLERANCE = 0.5
 QUESTION = "level_ahead"
@@ -200,6 +203,27 @@ class Clock(FixedClock):
         if self.stopped:
             raise ClockUnavailable("the test stopped the clock")
         return super().now()
+
+
+def breach(world: Checked) -> dict[str, Any]:
+    """The one breach incident, as the API shows one incident."""
+    (found,) = world.incidents(kind="breach")
+    return world.ok(f"/fidelity/incidents/{found['uid']}")["data"]
+
+
+def held_check(world: Checked) -> tuple[dict[str, Any], threading.Event]:
+    """The check that opens the breach of `shift(0.55)` at OPENS, finished, with the
+    correction it queued held behind a gate of the test's."""
+    world.write(OPENS)
+    first = world.gate()
+    response = world.ask(OPENS)
+    second = world.gate()
+    first.set()
+    checked = world.wait(response)
+    assert checked["state"] == "succeeded", checked
+    (correction,) = checked["result"]["corrections"]
+    assert world.ok(f"/lifecycle/jobs/{correction['job']}")["data"]["state"] == "queued"
+    return checked, second
 
 
 def story(steps: Mapping[int, tuple[dict[str, Any], list[dict[str, Any]]]]) -> str:
