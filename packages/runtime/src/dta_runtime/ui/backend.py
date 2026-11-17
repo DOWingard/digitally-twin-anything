@@ -4,6 +4,11 @@ A version id names an immutable state of the twin, so the schema read at a
 version id is kept (bounded) and read again only when that version is
 evicted. The API's own OpenAPI document supplies the values of its
 enumerated parameters, so the filters offer what the API accepts.
+
+What a grid of the page reads its rows from, when those rows were worked out
+for one request (an answer to a question, a comparison of scenarios), is held
+here too, a few at a time, under the key the grid carries in its id: the rows
+stay on the server and only the block a grid asks for reaches the browser.
 """
 
 from __future__ import annotations
@@ -18,30 +23,61 @@ from dta_core.log import Log
 from ..settings import UiSettings
 from .client import ApiClient, ApiProblem
 from .paging import PagedReader
+from .parts import LIVE_BRANCH
 from .schema import Schema
 
 log = Log("ui.backend")
 
 SCHEMAS_KEPT = 32
+HELD_KEPT = 32
+
+
+class Held[T]:
+    """The latest few things worked out for the page, by key; the oldest is let go."""
+
+    def __init__(self, what: str, kept: int = HELD_KEPT) -> None:
+        self._what = what
+        self._kept = kept
+        self._items: OrderedDict[str, T] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def put(self, key: str, item: T) -> None:
+        with self._lock:
+            self._items[key] = item
+            self._items.move_to_end(key)
+            while len(self._items) > self._kept:
+                gone, _ = self._items.popitem(last=False)
+                log.debug("a held result was let go", what=self._what, key=gone[:80])
+
+    def get(self, key: str) -> T | None:
+        with self._lock:
+            found = self._items.get(key)
+            if found is not None:
+                self._items.move_to_end(key)
+            return found
 
 
 class Backend:
     def __init__(self, settings: UiSettings, *, client: ApiClient | None = None) -> None:
         self.client = client or ApiClient(settings.api_url, settings.api_token)
         self.pages = PagedReader(self.client)
+        # Answers to questions and comparisons of scenarios, by the key of their grid.
+        self.answers: Held[Any] = Held("answer")
+        self.comparisons: Held[Any] = Held("comparison")
         self._schemas: OrderedDict[str, Schema] = OrderedDict()
         self._openapi: dict[str, Any] | None = None
         self._lock = threading.Lock()
 
-    def schema(self, version_id: str) -> Schema:
-        """The ontology in force at a version, read once per version id."""
+    def schema(self, version_id: str, branch: str = LIVE_BRANCH) -> Schema:
+        """The ontology in force at a version, read once per version id. A version of a
+        scenario is read on its own branch."""
         with self._lock:
             found = self._schemas.get(version_id)
             if found is not None:
                 self._schemas.move_to_end(version_id)
                 return found
         started = time.perf_counter()
-        document = self.client.get("/meta/schema", params={"at": version_id})
+        document = self.client.get("/meta/schema", params={"at": version_id, "branch": branch})
         schema = Schema.from_document(version_id, document)
         with self._lock:
             self._schemas[version_id] = schema

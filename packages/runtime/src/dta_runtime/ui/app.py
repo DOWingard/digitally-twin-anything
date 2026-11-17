@@ -18,7 +18,8 @@ from dta_core.log import Log
 from flask import jsonify
 
 from ..settings import UiSettings
-from . import graph, guard, header, history, ids, sheet, sync
+from . import answers, graph, guard, header, history, ids, questions, sheet, sync
+from . import text as T
 from .backend import Backend
 
 log = Log("ui")
@@ -37,6 +38,9 @@ def layout() -> html.Div:
                     dcc.Tab(label="Graph", value="graph", children=graph.layout()),
                     dcc.Tab(label="Spreadsheet", value="sheet", children=sheet.layout()),
                     dcc.Tab(label="History", value="history", children=history.layout()),
+                    dcc.Tab(
+                        label=T.QUESTIONS_TAB, value=questions.TAB, children=questions.layout()
+                    ),
                 ],
                 className="tabs",
             ),
@@ -68,6 +72,8 @@ def create_app(settings: UiSettings) -> Dash:
     sheet.register(app, backend)
     history.register(app, backend)
     sync.register(app, backend)
+    questions.register(app, backend)
+    answers.register(app, backend)
 
     @app.server.route("/healthz")
     def healthz():  # type: ignore[no-untyped-def]

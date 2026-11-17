@@ -394,6 +394,117 @@ def run_outcome(driver: WebDriver) -> str:
     )
 
 
+# -- questions ---------------------------------------------------------------------
+
+
+def question_ids(driver: WebDriver) -> list[str]:
+    """The questions the table shows, in the order it shows them."""
+    return grid_cells(driver, ids.QUESTIONS_GRID, "id")
+
+
+def question_row(driver: WebDriver, question: str) -> dict[str, str]:
+    """What the table shows of one question, by column; empty while it is not drawn."""
+    bring_into_view(driver, ids.QUESTIONS_GRID)
+    found: dict[str, str] = {}
+    for row in driver.find_elements(
+        By.CSS_SELECTOR, f"#{ids.QUESTIONS_GRID} .ag-row[row-id='{question}']"
+    ):
+        for cell in row.find_elements(By.CSS_SELECTOR, ".ag-cell"):
+            found[str(cell.get_attribute("col-id"))] = cell.text
+            classes = cell.get_attribute("class") or ""
+            if cell.get_attribute("col-id") == "status":
+                found["status_class"] = classes
+    return found
+
+
+def choose_question(driver: WebDriver, question: str) -> None:
+    """Click a question in the table; wait for its form."""
+    selector = f"#{ids.QUESTIONS_GRID} .ag-row[row-id='{question}'] .ag-cell[col-id='id']"
+
+    def click() -> bool:
+        bring_into_view(driver, ids.QUESTIONS_GRID)
+        found = driver.find_elements(By.CSS_SELECTOR, selector)
+        if not found or not found[0].is_displayed():
+            return False
+        found[0].click()
+        return True
+
+    wait_for(driver, click, f"question {question} to be clicked")
+    wait_for(
+        driver,
+        lambda: (
+            text_of(driver, ids.QUESTION_TITLE).startswith(f"{question}:")
+            or text_of(driver, ids.QUESTION_TITLE) == question
+        ),
+        f"the form of {question}",
+    )
+    wait_for(
+        driver,
+        lambda: driver.find_element(By.ID, ids.ASK).is_enabled(),
+        "the Ask button to be enabled",
+    )
+
+
+def argument_field(driver: WebDriver, name: str) -> WebElement:
+    selector = f"#{ids.QUESTION_FORM} [data-argument='{name}'] input"
+    return driver.find_element(By.CSS_SELECTOR, selector)
+
+
+def argument_names(driver: WebDriver) -> list[str]:
+    return [
+        str(found.get_attribute("data-argument"))
+        for found in driver.find_elements(By.CSS_SELECTOR, f"#{ids.QUESTION_FORM} [data-argument]")
+    ]
+
+
+def type_argument(driver: WebDriver, name: str, value: str) -> None:
+    found = argument_field(driver, name)
+    found.send_keys(Keys.CONTROL, "a")
+    found.send_keys(Keys.DELETE)
+    found.send_keys(value)
+
+
+def press_ask(driver: WebDriver) -> None:
+    button = driver.find_element(By.ID, ids.ASK)
+    bring_into_view(driver, ids.ASK)
+    button.click()
+
+
+def answer_text(driver: WebDriver) -> str:
+    return text_of(driver, ids.ANSWER)
+
+
+def wait_answered(driver: WebDriver, timeout: float = 60.0) -> str:
+    """The answer's words once one is shown."""
+    return wait_for(
+        driver,
+        lambda: (text := answer_text(driver)).startswith("Answered at") and text,
+        "an answer",
+        timeout=timeout,
+    )
+
+
+def wait_refused(driver: WebDriver, timeout: float = 60.0) -> str:
+    """The refusal shown beside the form."""
+    return wait_for(
+        driver,
+        lambda: text_of(driver, ids.ASK_FEEDBACK),
+        "a refusal beside the form",
+        timeout=timeout,
+    )
+
+
+def figure_data(driver: WebDriver, element_id: str) -> list[dict[str, Any]]:
+    """The traces of a drawn Plotly figure, as the browser holds them."""
+    found = driver.execute_script(
+        "const box = document.getElementById(arguments[0]);"
+        "const plot = box && box.querySelector('.js-plotly-plot');"
+        "return plot && plot.data ? JSON.parse(JSON.stringify(plot.data)) : null;",
+        element_id,
+    )
+    return list(found or [])
+
+
 # -- network ---------------------------------------------------------------------
 
 

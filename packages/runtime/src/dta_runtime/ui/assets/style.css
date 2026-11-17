@@ -324,3 +324,127 @@ body {
 .runs-grid .run-failed {
   background: var(--error-bg);
 }
+
+/* Questions tab. A status is told by a word and a sign; its colour only adds to them. */
+
+.questions-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.questions-heading h3 {
+  margin: 4px 0;
+}
+
+.questions-grid .status-validated {
+  color: #1b6e2d;
+  font-weight: 600;
+}
+
+.questions-grid .status-provisional {
+  color: var(--warn-ink);
+  background: var(--warn-bg);
+}
+
+.questions-grid .status-failing {
+  color: var(--error-ink);
+  background: var(--error-bg);
+  font-weight: 600;
+}
+
+.ask-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.ask-box,
+.answer-box {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+
+.ask-box h4,
+.answer-box h4 {
+  margin: 0 0 6px;
+}
+
+.question-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.question-form .field,
+.question-where .field {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 8px;
+}
+
+.question-form label,
+.question-where label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.question-form input[type="text"],
+.question-where input[type="text"] {
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.argument-help {
+  font-size: 12px;
+}
+
+.button:disabled {
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--panel);
+  cursor: not-allowed;
+}
+
+.answer-version,
+.answer-model {
+  margin-bottom: 4px;
+}
+
+.answer-scalar {
+  margin: 8px 0;
+}
+
+.answer-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.answer-unit {
+  font-size: 16px;
+}
+
+.notice {
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin: 6px 0;
+}
+
+.notice.provisional {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border: 1px solid #e8cf86;
+  font-weight: 600;
+}
+
+.notice.notes {
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.answer-list {
+  margin: 4px 0;
+  padding-left: 20px;
+}
