@@ -155,10 +155,11 @@ def check_work(services: Services, at: datetime) -> Work:
         head = services.store.head()
         state = services.head_state(head)
         trace_id = current_trace_id() or new_trace_id()
+        predictor = (services.check_predictor or predictor_for)(services, head)
         outcome = fidelity.check(
             services.twin,
             at,
-            predictor=predictor_for(services, head),
+            predictor=predictor,
             freshness=freshness_at(state, at),
             trace_id=trace_id,
             deadline_s=services.check_budget_s,

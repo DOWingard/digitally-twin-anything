@@ -70,6 +70,9 @@ class Services:
     schedule: list[Provider] = field(default_factory=lambda: list(DEFAULT_PROVIDERS))
     check_budget_s: float = CHECK_BUDGET_S
     correction_budget_s: float = CORRECTION_BUDGET_S
+    # What predicts the check's origins, given the services and the head the check read;
+    # None: the worker, as the predict route asks it. Set by tests and replays.
+    check_predictor: Callable[[Services, VersionRef], fidelity.Predictor] | None = None
     _ontologies: OrderedDict[str, Ontology] = field(default_factory=OrderedDict)
     _heads: OrderedDict[str, HeadState] = field(default_factory=OrderedDict)
     # Version id -> what was counted there: a version never changes.
