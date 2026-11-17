@@ -439,7 +439,6 @@ class Pools:
             handler_paths=tuple(str(path) for path in handler_paths),
             log_level=os.environ.get("DTA_LOG_LEVEL"),
         )
-        self._root = root
         pool_env = {
             "PATH": os.environ.get("PATH", DEFAULT_PATH),
             "LANG": LANG,
@@ -502,7 +501,13 @@ class Pools:
     async def _shipped(self, pool: Pool, request: Any, handler: str, slot: Slot) -> Reply:
         proc = await pool.take()
         deadline = slot.deadline = time.monotonic() + request.budget_s
-        reply = await self._watch(proc, Job(request, handler, deadline), deadline)
+        try:
+            reply = await self._watch(proc, Job(request, handler, deadline), deadline)
+        except BaseException as exc:
+            # Its state is unknown: it is not given another run.
+            log.error("a run failed in the worker; its process is replaced", exc=exc, pid=proc.pid)
+            pool.replace(proc)
+            raise
         if reply.retire or not proc.alive():
             log.info(
                 "a pool process is replaced after a run",
