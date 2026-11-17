@@ -5,24 +5,59 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Path, Query
+from fastapi import APIRouter, Body, Path, Query
 from starlette.responses import Response
 
 from ...filters import repair_plus
+from .. import registry
 from ..deps import ServicesDep
-from ..docs import API_PREFIX, errors
+from ..docs import API_PREFIX, errors, versioned
 from ..formats import json_response
 from ..jobs import KEEP
 from ..logfiles import LogQuery, read_logs
-from ..models import JobList, JobOne, JobState, LogsOut
+from ..models import JobList, JobOne, JobState, LogsOut, Registered, RegisterRequest
 from ..params import split_list
 from ..problems import ApiError
+from ..tables import version_json
 
 router = APIRouter(prefix=f"{API_PREFIX}/lifecycle", tags=["lifecycle"])
 
 LOGS_LIMIT_DEFAULT = 200
 LOGS_LIMIT_MAX = 5_000
 JOBS_LIMIT_DEFAULT = 50
+
+
+@router.post(
+    "/register",
+    summary="Bring the twin's functions, models and questions in line with its manifest",
+    description="The manifest declares what the twin computes; what it runs is what its "
+    "graph records. This writes, in one version (cause `registration`), a `TwinFunction` "
+    "for each function of the manifest, a `TwinModel` for each candidate of each model "
+    "specification and a `TwinQuestion` for each question, and nothing when nothing "
+    "differs: asking again changes nothing. A function the manifest no longer has is "
+    "`disabled`, a candidate it no longer has `retired`; records made while the twin ran "
+    "are left alone. A candidate whose family, code, settings, target or features changed "
+    "is a `candidate` again without its fitted state. A new question is `provisional` "
+    "until it is measured. `code` is the SHA-256 of the packed code the manifest's "
+    "functions and families of its own are found in, as `POST /artifacts` kept it.",
+    response_model=Registered,
+    responses=versioned(
+        400,
+        404,
+        409,
+        notes={
+            404: "No artifact is kept under the hash given (`artifact.not_found`)",
+            409: "The manifest names code of the twin's own and no `code` was given "
+            "(`register.code_missing`)",
+        },
+    ),
+)
+def register(
+    services: ServicesDep, body: Annotated[RegisterRequest | None, Body()] = None
+) -> Response:
+    found = registry.register(services, body.code if body else None)
+    version = found["version"]
+    return json_response({**found, "version": version_json(version)}, version)
 
 
 @router.get(

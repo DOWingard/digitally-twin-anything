@@ -11,11 +11,14 @@ from dta_core.store import LIVE_BRANCH, UnknownProperty, UnknownType
 from fastapi import APIRouter, Path, Query, Request
 from starlette.responses import Response
 
+from ... import training
+from ...filters import repair_plus
 from ...graph import EDGE_SCHEMA, select_kinds
+from ...protocol import TrainingSetRequest
 from ..deps import ServicesDep
-from ..docs import API_PREFIX, tabular
-from ..formats import negotiate, table_response
-from ..models import Page, TensorPage
+from ..docs import API_PREFIX, errors, tabular
+from ..formats import dumps, negotiate, table_response, without_nan
+from ..models import Page, TensorPage, TrainingPage
 from ..paging import next_cursor, paged_response, start, start_range
 from ..params import (
     At,
@@ -30,10 +33,12 @@ from ..params import (
 )
 from ..problems import ApiError
 from ..slices import changes_slice, numeric_properties, state_slice, tensor, tensor_indexes
-from ..tables import fingerprint, readable
+from ..tables import decode_cursor, fingerprint, readable
 from .objects import list_type
 
 router = APIRouter(prefix=f"{API_PREFIX}/block", tags=["block"])
+
+TRAINING_KEY = b"dta:training"
 
 EdgeTypePath = Annotated[
     str,
@@ -268,4 +273,75 @@ def block_slice(
         table, extra = readable(long, object_type), None
     return paged_response(
         table, chosen, last, per_page, position, "slice", query, extra=extra, more={"r": pinned}
+    )
+
+
+@router.post(
+    "/training-set",
+    summary="A frame for learning: a target on a regular grid, with features and labels",
+    description="One row per object of the target's type and grid time: `unique_id`, `ds`, "
+    "`y` (the target in force at `ds`), a column per feature and, with `horizon`, `label` "
+    "(the target that far ahead) and `label_ds`. The grid runs a `step` apart from the time "
+    "of the version `start` to the time of the version `end` on `branch`, then `ahead` "
+    "steps further, where the target is not known and a feature is where its lag reaches "
+    "back far enough. Every value is the one stored at the last version at or before its "
+    "time, so nothing of a row's future is in it. `meta` (in Arrow and Parquet the schema "
+    "metadata `dta:training`) holds the range as resolved, the step, the columns, "
+    "`backfill_until` and a note on what the rows hold. Meant for Arrow or Parquet, which "
+    "give the whole frame; JSON is paged.",
+    response_model=TrainingPage,
+    responses={
+        **tabular(400, 404, 413),
+        **errors(
+            400,
+            404,
+            413,
+            notes={
+                400: "The frame cannot be built as asked (`training.bad_spec`): a target or "
+                "feature that is not a number, a path that does not lead to the feature, a "
+                "step or horizon off the grid",
+                413: "The frame would hold too many cells (`training.too_large`)",
+            },
+        ),
+    },
+)
+def training_set(
+    request: Request,
+    services: ServicesDep,
+    body: TrainingSetRequest,
+    limit: Limit = None,
+    cursor: Cursor = None,
+    fmt: FormatParam = None,
+) -> Response:
+    chosen = negotiate(fmt, request.headers.get("accept"))
+    per_page = page_limit(chosen, limit)
+    query = fingerprint("training", body.model_dump(mode="json"))
+    if cursor:
+        payload = decode_cursor(cursor, "training", query)
+        last, position, first = services.resolve_cursor(payload), payload.get("p"), payload.get("s")
+        if not isinstance(first, str):
+            raise ApiError("the cursor is not one this API issued", code="api.bad_cursor")
+    else:
+        last, position = services.resolve(body.end, body.branch), None
+        first = services.store.resolve(repair_plus(body.start), body.branch)[0].id
+    # Every page is cut from the frame of the same two versions.
+    pinned = body.model_copy(update={"start": first, "end": last.id, "branch": last.branch})
+    built = training.training_set(services.store, services.ontology(last), pinned)
+    table = built.table
+    if chosen == "json":
+        table = without_nan(table)
+    else:
+        metadata = dict(table.schema.metadata or {})
+        metadata[TRAINING_KEY] = dumps(built.metadata)
+        table = table.replace_schema_metadata(metadata)
+    return paged_response(
+        table,
+        chosen,
+        last,
+        per_page,
+        position,
+        "training",
+        query,
+        extra={"meta": built.metadata},
+        more={"s": first},
     )

@@ -28,7 +28,23 @@ from .live import Clocks
 from .middleware import ApiMiddleware
 from .models import Health
 from .problems import error_response, problem
-from .routes import artifacts, block, graph, history, lifecycle, meta, objects, sync
+from .routes import (
+    artifacts,
+    block,
+    derived,
+    functions,
+    graph,
+    history,
+    lifecycle,
+    meta,
+    models,
+    objects,
+    questions,
+    scenarios,
+    search,
+    sync,
+)
+from .scenario_runs import sweep_interrupted
 from .services import Services
 
 log = Log("api")
@@ -126,6 +142,14 @@ def create_app(
             connect=connect,
         )
         app.state.services = services
+        try:
+            # No job runs yet, so a scenario still marked as running was left so by a
+            # process that ended in the middle of it.
+            swept = await anyio.to_thread.run_sync(sweep_interrupted, services)
+        except DtaError as exc:
+            # The API still serves what can be read; a run of such a scenario sweeps again.
+            log.error("scenarios left running could not be looked for", exc=exc, code=exc.code)
+            swept = []
         log.info(
             "API started",
             database=settings.store.database,
@@ -133,6 +157,8 @@ def create_app(
             graph_cache_versions=graph_cache_versions,
             logs_dir=str(settings.logs_dir),
             clock_given=clock is not None,
+            worker=services.compute.configured,
+            scenarios_interrupted=len(swept),
             elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
         )
         try:
@@ -140,6 +166,7 @@ def create_app(
         finally:
             # The job in progress may be writing to the twin: it ends before the store closes.
             await anyio.to_thread.run_sync(jobs.shutdown)
+            services.close()
             services.clocks.close()
             graphs = services.graphs
             if twin is None:
@@ -168,7 +195,22 @@ def create_app(
     app.add_exception_handler(RequestValidationError, _on_invalid_request)
     app.add_exception_handler(StarletteHTTPException, _on_http_error)
 
-    for module in (meta, history, objects, graph, block, lifecycle, sync, artifacts):
+    for module in (
+        meta,
+        history,
+        objects,
+        search,
+        graph,
+        block,
+        lifecycle,
+        sync,
+        artifacts,
+        functions,
+        models,
+        questions,
+        scenarios,
+        derived,
+    ):
         app.include_router(module.router)
 
     @app.get(f"{API_PREFIX}/openapi.json", include_in_schema=False)

@@ -7,23 +7,27 @@ from typing import Any
 from dta_core.manifest import to_plain
 from dta_core.ontology import type_signature
 from dta_core.schema import Ontology
-from dta_core.store import LIVE_BRANCH
+from dta_core.store import LIVE_BRANCH, VersionRef
 from fastapi import APIRouter
 from starlette.responses import Response
 
 from ...graph import edge_kinds
+from .. import registry
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, VERSION_HEADERS, errors, versioned
 from ..formats import json_response
+from ..jobs import COMPUTE_LANE, KEEP
 from ..live import sync_document
 from ..models import ManifestOut, SchemaOut, TwinHealth
 from ..params import At, Branch
+from ..services import Services
 from ..syncing import SYNC_KIND
 from ..tables import version_headers, version_json
 
 router = APIRouter(prefix=f"{API_PREFIX}/meta", tags=["meta"])
 
 FIDELITY_UNKNOWN = "unknown"
+QUESTION_STATUSES = ("validated", "provisional", "failing")
 
 
 YAML_MEDIA = "application/yaml"
@@ -96,6 +100,30 @@ def schema_document(ontology: Ontology) -> dict[str, Any]:
     }
 
 
+def _compute(services: Services, version: VersionRef) -> dict[str, Any]:
+    """The worker, the questions by status at a version, and the compute job in progress."""
+
+    def count() -> dict[str, int]:
+        found = dict.fromkeys(QUESTION_STATUSES, 0)
+        for row in registry.rows(services, registry.QUESTION_TYPE, version):
+            if row["status"] in found:
+                found[row["status"]] += 1
+        return found
+
+    jobs = services.jobs.list(lane=COMPUTE_LANE, limit=KEEP)
+    # Newest first: the one running, else the one that waits longest.
+    current = next((job for job in jobs if job["state"] == "running"), None) or next(
+        (job for job in reversed(jobs) if job["state"] == "queued"), None
+    )
+    return {
+        "worker": {"configured": services.compute.configured, "ok": services.compute.healthy()},
+        "questions": services.counted(version, count),
+        "job": None
+        if current is None
+        else {"id": current["id"], "kind": current["kind"], "state": current["state"]},
+    }
+
+
 @router.get(
     "/health",
     summary="Identity of the twin and the state of a branch",
@@ -105,7 +133,10 @@ def schema_document(ontology: Ontology) -> dict[str, Any]:
     "is still 200). For a live twin, `sync` says how far the twin is behind its sources: "
     "the freshness of each source on that clock, each question that states a staleness "
     "against the sources it is answered from, the last run that recorded itself and the "
-    "sync job in progress. "
+    "sync job in progress. `compute` says what the twin computes with: whether it has a "
+    "worker and whether the worker answers (asked at most every 5 s), how many questions "
+    "are validated, provisional and failing at the head, and the job of the compute lane "
+    "in progress. "
     "Meant to be polled: what depends on the head is read once per head version.",
     response_model=TwinHealth,
     responses=versioned(400, 404),
@@ -136,6 +167,7 @@ def twin_health(services: ServicesDep, branch: Branch = LIVE_BRANCH) -> Response
                 reading,
                 services.jobs.document(active) if active is not None else None,
             ),
+            "compute": _compute(services, version),
         },
         version,
     )
