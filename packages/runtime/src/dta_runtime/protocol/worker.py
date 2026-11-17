@@ -195,7 +195,8 @@ WorkerRequest = Annotated[
 
 
 class _Result(_Model):
-    duration_ms: float
+    # Filled by the worker, which times the run from outside the code that ran.
+    duration_ms: float = 0.0
     # What the run logged, as the twin's log lines; the API records them under the trace.
     logs: list[dict[str, Any]] = Field(default_factory=list)
 
