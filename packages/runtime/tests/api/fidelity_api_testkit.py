@@ -308,7 +308,8 @@ class Checked(Calls):
     def sync(self, step: int) -> dict[str, Any]:
         """A sync run of the step's boundary, through the API, as the scheduler asks."""
         self.clock.set(at(step))
-        response = self.post("/sync/runs", headers={"Idempotency-Key": f"sync:{iso(at(step))}"})
+        key = f"sync:{at(step).isoformat()}"
+        response = self.post("/sync/runs", headers={"Idempotency-Key": key})
         job = self.wait(response, JOB_S)
         assert job["state"] == "succeeded", job
         return job
