@@ -27,6 +27,8 @@ HEALTH = f"{API}/meta/health"
 WORKER_SERVICE = "worker"
 PAGE = 1_000
 VALIDATED, PROVISIONAL, FAILING = "validated", "provisional", "failing"
+# The API's refusal to answer a question whose specification has no active model.
+NONE_ACTIVE = "model.none_active"
 
 ANSWERED_REMEDY = (
     "Ask the question yourself (dta questions answer <id> --arg name=value) and read the "
@@ -92,10 +94,24 @@ def _no_questions(ident: str, examined: str) -> CheckResult:
 # -- questions.answered ---------------------------------------------------------------
 
 
+def _state_of(ctx: Context, qid: str, evidence: dict[str, Any]) -> dict[str, Any] | None:
+    """What a question may claim now, from GET /questions/{id}; None when it cannot be read."""
+    path = f"{QUESTIONS}/{quote(qid, safe='')}"
+    response = ctx.api.get(path)
+    if response.status_code != 200:
+        evidence.setdefault("unread", []).append(
+            {"request": described("GET", path), "response": problem_of(response)}
+        )
+        log.warn("a question's state could not be read", question=qid)
+        return None
+    return response.json().get("data") or {}
+
+
 def questions_answered(ctx: Context) -> CheckResult:
     examined = (
         "each question of the contract, asked once at the head with its manifest example "
-        "arguments, answers 200 within its function's latency budget"
+        "arguments, answers 200 within its function's latency budget (a provisional question "
+        "with no model to answer it yet is reported with its reason)"
     )
     questions = _questions(ctx.manifest)
     if not questions:
@@ -126,7 +142,14 @@ def questions_answered(ctx: Context) -> CheckResult:
         else:
             problem = problem_of(response)
             entry["problem"] = problem
-            failures.append(f"{qid}: {problem.get('code')}: {problem.get('detail')}")
+            state = _state_of(ctx, qid, evidence) if problem.get("code") == NONE_ACTIVE else None
+            if state is not None and state.get("status") == PROVISIONAL and state.get("reason"):
+                # No model could be selected yet, and the question says why: it cannot be
+                # answered until it can be evaluated, which is not a fault of the answer.
+                entry["not_answerable"] = f"provisional: {state['reason']}"
+                log.info("a provisional question has no model to answer it yet", question=qid)
+            else:
+                failures.append(f"{qid}: {problem.get('code')}: {problem.get('detail')}")
         evidence["questions"][qid] = entry
     passed = not failures
     if not passed:

@@ -727,8 +727,11 @@ def _text(outcomes: list[dict[str, Any]]) -> str:
             note = f"{entry['duration_ms'] / 1000:.1f} s"
         else:
             note = str(entry.get("reason") or "")
+        detail = entry.get("detail") or {}
         if entry.get("status") == SKIPPED:
-            note = f"{note}; {(entry.get('detail') or {}).get('reason')}"
+            note = f"{note}; {detail.get('reason')}"
+        elif entry.get("step") == "image" and detail.get("action"):
+            note = f"{note}; {detail['action']} {detail.get('tag')}"
         lines.append(
             f"{entry['step']:<9} {entry['action']:<7} {entry['status']!s:<8} {note}".rstrip()
         )
@@ -740,8 +743,6 @@ def _warnings(entry: dict[str, Any]) -> list[str]:
     """What a step that passed still wants read."""
     detail = entry.get("detail") or {}
     found = []
-    if entry.get("step") == "image" and detail.get("action"):
-        found.append(f"worker image {detail.get('tag')} {detail.get('action')}")
     unaccepted = detail.get("unaccepted") if entry.get("step") == "models" else None
     for spec in unaccepted or []:
         found.append(
