@@ -18,6 +18,7 @@ from dta_core.manifest import Manifest
 from dta_core.schema import Ontology
 
 from .client import ApiUnavailable, TwinApi, probe_health, service_url
+from .compute import compute_worker, models_accepted, questions_answered, questions_error
 from .contract import DEFAULT_EXAMPLES, DEFAULT_SEED, api_contract
 from .data import data_constraints, data_coverage
 from .endpoints import SKILL_API_FILE, skill_endpoints
@@ -181,6 +182,10 @@ def run_checks(
             ("sync.runs", lambda: sync_runs(ctx)),
             ("sync.sources", lambda: sync_sources(ctx)),
             ("sync.freshness", lambda: sync_freshness(ctx)),
+            ("questions.answered", lambda: questions_answered(ctx)),
+            ("questions.error", lambda: questions_error(ctx)),
+            ("models.accepted", lambda: models_accepted(ctx)),
+            ("compute.worker", lambda: compute_worker(ctx, services)),
         ]
         checks = [_guarded(ident, run) for ident, run in plan]
     return AcceptanceRun(checks=checks)

@@ -67,7 +67,7 @@ def _text(document: dict[str, Any], report: str) -> str:
     lines = []
     for check in document["checks"]:
         lines.append(
-            f"{'ok  ' if check['passed'] else 'FAIL'} {check['id']:<17} {check['examined']}"
+            f"{'ok  ' if check['passed'] else 'FAIL'} {check['id']:<18} {check['examined']}"
         )
         if not check["passed"] and check.get("remedy"):
             lines.append(f"     {check['remedy']}")
