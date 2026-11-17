@@ -25,10 +25,13 @@ from dta_core.log import Log
 from dta_core.manifest import Manifest, manifest_hash
 from dta_core.manifest.checks import evaluate_gates, subject_of
 
+from ..acceptance import TwinApi
+from ..envfile import read_env
 from ..output import command, emit, session
 from ..skill import MARKER_FILE, render_skill, skill_name
 from ..workspace import Workspace
 from .common import gate_inputs, timed
+from .computeops import questions
 
 log = Log("commands.skill")
 
@@ -64,10 +67,36 @@ def rendered_hash(directory: Path) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def write_skill(workspace: Workspace, manifest: Manifest) -> dict[str, Any]:
-    """Render the skill and bring `<workspace>/skill/` in line with it."""
+def read_question_states(workspace: Workspace, manifest: Manifest) -> list[dict[str, Any]] | None:
+    """What each question may claim, from the twin's API when it answers; None otherwise,
+    and the skill then says the states were not known when it was written."""
+    contract = manifest.contract
+    if contract is None or not contract.questions:
+        return None
+    try:
+        with TwinApi(manifest, read_env(workspace.env_path)) as client:
+            return questions(client)
+    except (DtaError, OSError) as exc:
+        log.warn(
+            "the questions' states cannot be read from the API; the skill is written without them",
+            error=type(exc).__name__,
+            code=getattr(exc, "code", None),
+        )
+        return None
+
+
+def write_skill(
+    workspace: Workspace,
+    manifest: Manifest,
+    *,
+    questions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Render the skill and bring `<workspace>/skill/` in line with it.
+
+    `questions` are the questions' states as the API reported them, recorded in the skill.
+    """
     digest = manifest_hash(manifest)
-    rendered = render_skill(manifest, manifest_hash=digest)
+    rendered = render_skill(manifest, manifest_hash=digest, questions=questions)
     root = skill_root(workspace)
     directory = root / rendered.name
     written: list[str] = []
@@ -109,7 +138,8 @@ def write_skill(workspace: Workspace, manifest: Manifest) -> dict[str, Any]:
 def generate_skill(ctx: typer.Context) -> None:
     """Render the operator skill from the manifest into `<workspace>/skill/<name>/`."""
     workspace = session(ctx).workspace
-    result = write_skill(workspace, workspace.load_manifest())
+    manifest = workspace.load_manifest()
+    result = write_skill(workspace, manifest, questions=read_question_states(workspace, manifest))
     changed = len(result["written"]) + len(result["removed"])
     text = (
         f"Skill {result['name']} written to {result['path']} ({changed} file(s) changed)."
