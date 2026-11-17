@@ -18,7 +18,7 @@ import httpx
 import pyarrow as pa
 from compute_testkit import ARROW, STEP, Small, World, at, level, plant_code, questions
 from dta_runtime import training
-from dta_runtime.protocol import FrameRef, TrainingSetRequest
+from dta_runtime.protocol import FitRequest, FrameRef, TrainingSetRequest
 from dta_runtime.worker.client import ApiTwin, Calls
 from live_api_testkit import HEADERS, free_port, records
 
@@ -219,8 +219,15 @@ def test_a_training_set_is_what_the_training_package_gives_through_the_workers_r
     expected = training.frame(world.twin.store, world.twin.ontology, ref)
 
     with httpx.Client(base_url=world.url, headers=HEADERS, timeout=60.0) as http:
-        calls = Calls(http, deadline=time.monotonic() + 60.0, trace_id=uuid.uuid4().hex)
-        read = ApiTwin(calls, None).frame(ref)
+        trace_id = uuid.uuid4().hex
+        calls = Calls(http, deadline=time.monotonic() + 60.0, trace_id=trace_id)
+        # The reader of a model run: pinned to where the run's frame ends.
+        run = FitRequest(
+            budget_s=60.0, trace_id=trace_id, family={"name": "theta"}, frame=ref, horizon=1
+        )
+        reader = ApiTwin(calls, run)
+        assert (reader.at, reader.branch) == (world.versions[20].id, "main")
+        read = reader.frame(ref)
 
     assert read.num_rows == 2 * 17 and read.column_names == ["unique_id", "ds", "y"]
     assert read.replace_schema_metadata(None).equals(expected.replace_schema_metadata(None))
