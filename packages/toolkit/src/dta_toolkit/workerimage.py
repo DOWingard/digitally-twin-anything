@@ -90,8 +90,7 @@ def requirements_path(workspace: Workspace, manifest: Manifest) -> Path | None:
 
 
 def recorded_tag(workspace: Workspace, manifest: Manifest) -> str | None:
-    """The worker image the last build made for the requirements file as it is now;
-    None when there is none, or it was made for another file or another twin."""
+    """The worker image the last build made for this twin; None when there is none."""
     path = requirements_path(workspace, manifest)
     record = record_path(workspace)
     if path is None or not record.is_file() or not path.is_file():
@@ -103,16 +102,19 @@ def recorded_tag(workspace: Workspace, manifest: Manifest) -> str | None:
         log.warn("the worker image record cannot be read", error=type(exc).__name__)
         return None
     tag = found.get("tag") if isinstance(found, dict) else None
-    if (
-        not isinstance(tag, str)
-        or found.get("requirements_sha256") != current
-        or found.get("twin_id") != (manifest.twin.id if manifest.twin else None)
+    if not isinstance(tag, str) or found.get("twin_id") != (
+        manifest.twin.id if manifest.twin else None
     ):
-        log.warn(
-            "the worker image on record was made for other requirements; the stack names the "
-            "runtime image until the twin is built again"
-        )
+        log.warn("the worker image on record is not this twin's; the worker runs runtime.image")
         return None
+    if found.get("requirements_sha256") != current:
+        # The image last built still runs the code last registered; the next build makes
+        # the image for the requirements as they are now.
+        log.warn(
+            "the requirements changed since the worker image was built; it is used until the "
+            "twin is built again",
+            tag=tag,
+        )
     return tag
 
 
@@ -193,9 +195,19 @@ def _pip_lines(output: str) -> list[str]:
 
 
 def build_image(
-    tag: str, twin_id: str, runtime_image: str, requirements: bytes, *, timeout: float
+    tag: str,
+    twin_id: str,
+    runtime_image: str,
+    requirements: bytes,
+    *,
+    timeout: float,
+    fresh: bool = False,
 ) -> dict[str, Any]:
-    """Build the worker image under `tag`; refused with pip's own message when it fails."""
+    """Build the worker image under `tag`; refused with pip's own message when it fails.
+
+    `fresh` builds every layer again rather than from the builder's cache, so the
+    packages are downloaded and installed anew.
+    """
     started = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix="dta-worker-") as folder:
         context = Path(folder)
@@ -204,7 +216,16 @@ def build_image(
             render_dockerfile(twin_id, runtime_image), encoding="utf-8"
         )
         done = _docker(
-            ["build", "--progress=plain", "--tag", tag, "--file", "Dockerfile", "."],
+            [
+                "build",
+                "--progress=plain",
+                *(["--no-cache"] if fresh else []),
+                "--tag",
+                tag,
+                "--file",
+                "Dockerfile",
+                ".",
+            ],
             timeout=timeout,
             cwd=context,
         )

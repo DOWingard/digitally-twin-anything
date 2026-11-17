@@ -22,4 +22,9 @@ RUN --mount=type=bind,source={{ requirements_name }},target=/run/dta-worker/requ
     && /opt/venv/bin/python -m compileall -q -j 0 "$site" \
     && rm -rf /root/.cache /tmp/*
 
+# The worker's root is read-only and only /tmp is writable: a package that keeps a
+# configuration or a cache in the user's home (matplotlib's, say) finds it there.
+ENV XDG_CONFIG_HOME=/tmp/.config \
+    XDG_CACHE_HOME=/tmp/.cache
+
 USER twin
