@@ -115,6 +115,11 @@ class Question(Base):
     )
     horizon: timedelta | None = req(Owner.agent, "How far ahead the answer looks", when="forecast")
     function: str | None = req(Owner.agent, "Id of the function that answers it")
+    example: dict[str, Any] = opt(
+        Owner.agent,
+        "Arguments the question is asked with when the twin checks that it can answer it",
+        dict,
+    )
     model: str | None = req(Owner.agent, "Id of the model spec behind it", when="forecast")
     provisional: bool = opt(
         Owner.agent, "Set when history is too short to validate the answer at build", False

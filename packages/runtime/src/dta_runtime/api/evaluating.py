@@ -565,7 +565,11 @@ def _noise_floor(
 
 
 def _measure_function(
-    services: Services, manifest: Manifest, record: Mapping[str, Any], head: VersionRef
+    services: Services,
+    manifest: Manifest,
+    record: Mapping[str, Any],
+    head: VersionRef,
+    example: Mapping[str, Any],
 ) -> dict[str, Any]:
     """What a question answered by a function alone may claim: that the function answers
     inside its latency budget, and how noisy what it reads is, where that is known."""
@@ -585,7 +589,9 @@ def _measure_function(
     if function is None:
         return {**row, "status": FAILING, "reason": "the question names no registered function"}
     try:
-        running.run(services, function, head, {}, write=False)
+        # Asked as the manifest's example asks it: a function that takes arguments at
+        # call time (a path between two objects) cannot be asked without any.
+        running.run(services, function, head, dict(example), write=False)
     except DtaError as exc:
         log.warn(
             "a question's function did not answer",
@@ -687,7 +693,8 @@ def measure_work(services: Services, questions: Sequence[str] | None) -> Work:
             if models.get(question_id) or (behind is not None and behind.model):
                 row = _measure_model(services, manifest, record, models.get(question_id, []), head)
             else:
-                row = _measure_function(services, manifest, record, head)
+                example = behind.example if behind is not None else {}
+                row = _measure_function(services, manifest, record, head, example)
             rows.append(row)
             found.append(
                 {
