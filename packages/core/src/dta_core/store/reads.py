@@ -45,6 +45,7 @@ _TIME_TYPE = pa.timestamp("us", tz="UTC")
 _COMPARISONS = {"=": "=", "!=": "<>", "<": "<", "<=": "<=", ">": ">", ">=": ">="}
 # Above this many versions a range read scans the history once instead of naming each commit.
 _NAMED_COMMITS = 1000
+_NAMED_UIDS = 1000
 _NO_LIMIT = 2**63 - 1
 
 At = str | Selector | VersionRef
@@ -716,15 +717,22 @@ class Reads:
         columns: Sequence[str] | None = None,
         prov: bool = False,
         ontology: Ontology | None = None,
+        uids: Sequence[str] | None = None,
     ) -> pa.Table:
         """Every row of a type that was added, modified or removed in the range.
 
         Each row carries the version, its position and time, the kind of
         change, and the object as it was after it (nulls when removed).
+        With `uids`, only the changes of those objects: the server then sends
+        those rows alone, which is what a read of a few objects out of a long
+        history costs.
         """
         requested = self._requested_type(ontology, type)
         names = self._names(requested, columns)
         schema = self._change_schema(requested, names, prov)
+        only = None if uids is None else set(uids)
+        if only is not None and not only:
+            return schema.empty_table()
         with self._reading("changes", type=type) as conn:
             versions = self._resolve(conn, range, branch)
             last = versions[-1]
@@ -748,16 +756,25 @@ class Reads:
             # changed, so those versions are compared with the one before instead.
             forked = {v.seq for v in versions if chain.after_fork(v.seq)}
             logged = [v.id for v in versions if v.seq not in forked]
-            if not logged:
-                rows = ()
-            elif len(logged) <= _NAMED_COMMITS:
-                rows = conn.query(
-                    f"SELECT {', '.join(select)} FROM {source} "
-                    f"WHERE `to_commit` IN ({', '.join(['%s'] * len(logged))})",
-                    logged,
+            clauses: list[str] = []
+            params: list[str] = []
+            if len(logged) <= _NAMED_COMMITS:
+                clauses.append(f"`to_commit` IN ({', '.join(['%s'] * len(logged))})")
+                params.extend(logged)
+            # Past this many names the statement costs more than the rows it spares;
+            # the rows are then narrowed after they are read.
+            if only is not None and len(only) <= _NAMED_UIDS:
+                marks = ", ".join(["%s"] * len(only))
+                clauses.append(
+                    f"(`to_{UID_FIELD}` IN ({marks}) OR `from_{UID_FIELD}` IN ({marks}))"
                 )
-            else:
-                rows = conn.query(f"SELECT {', '.join(select)} FROM {source}")
+                params.extend([*sorted(only), *sorted(only)])
+            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = (
+                conn.query(f"SELECT {', '.join(select)} FROM {source}{where}", params or None)
+                if logged
+                else ()
+            )
             wanted = {version.seq for version in versions} - forked
             kept = []
             merged: set[str] = set()
@@ -782,6 +799,8 @@ class Reads:
                 records.append((chain.entries[seq], row[2], uid, *row[6:], row[5]))
             for seq in sorted(forked):
                 records.extend(self._changes_at(conn, chain, seq, type, present, prov))
+            if only is not None:
+                records = [record for record in records if record[2] in only]
         return self._change_table(schema, requested, names, present, prov, records)
 
     def _changes_at(

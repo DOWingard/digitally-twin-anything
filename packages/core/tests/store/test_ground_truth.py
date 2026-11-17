@@ -152,6 +152,14 @@ def verify(store: Store, fixture: Fixture, versions: list[VersionRef], steps: li
     assert len(changed) == len(got_changes) and got_changes == want_changes
     assert [row["_seq"] for row in changed] == sorted(row["_seq"] for row in changed)
 
+    # Asked for some objects only: the same rows as picking them out of the whole read.
+    some = sorted({row["uid"] for row in changed})[::3]
+    assert store.changes("Feeds", f"#{low + 1}..#{high + 1}", uids=some).to_pylist() == [
+        row for row in changed if row["uid"] in set(some)
+    ]
+    assert store.changes("Feeds", f"#{low + 1}..#{high + 1}", uids=[]).num_rows == 0
+    assert store.changes("Feeds", f"#{low + 1}..#{high + 1}", uids=["link:none"]).num_rows == 0
+
 
 def test_small_fixture_matches_ground_truth(make_store: Callable[..., Store]):
     store = make_store(graph_ontology())

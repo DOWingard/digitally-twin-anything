@@ -113,12 +113,9 @@ def events(
             branch=first.branch,
             columns=columns,
             ontology=ontology,
+            uids=list(uids) if uids else None,
         )
         changes = changes.filter(pc.greater(changes.column("_seq"), first.seq))
-        if uids:
-            changes = changes.filter(
-                pc.is_in(changes.column(UID), value_set=pa.array(list(uids), pa.string()))
-            )
         if changes.num_rows:
             parts.append(changes.select(value_columns))
             seqs.append(changes.column("_seq").combine_chunks())
