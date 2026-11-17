@@ -24,6 +24,13 @@ Branch on `code`, not on the text. Quote `trace_id` when you report a failure to
 | 400 | `graph.bad_weight` | the weight is not a numeric property of the links on the path | choose a numeric link property from the schema, or leave `weight` out |
 | 400 | `sync.unknown_source`, `sync.replay_unknown` | the request to start a run names a source or dataset the twin does not have | take source ids and dataset names from `/sync/sources` |
 | 400 | `artifact.empty` | the body of `POST /artifacts` is empty | send the file's bytes as the body |
+| 400 | `function.param_unknown`, `function.param_fixed`, `function.param_missing`, `function.bad_param`, `function.bad_unit` | an argument of a run is not one the function takes, is fixed by its registration, is missing, or has the wrong shape or unit | read the function's `parameters` with `GET /functions/{id}` and give only the ones that are not fixed |
+| 400 | `ref.function_entry`, `ref.model_family`, `ontology.unknown_type`, `ontology.unknown_property`, `ontology.function_param` | a function or model being registered names an entry or family that does not exist, or a type or property the ontology does not have | read `errors`; take entries from the shipped built-ins and families, and properties from `/meta/schema` |
+| 400 | `model.unknown_family`, `model.bad_family`, `model.bad_params`, `model.bad_frame` | a model's family, its settings or the history it is given cannot be used | read `detail`; correct the candidate's settings in the manifest and register again |
+| 400 | `scenario.bad_request` | a scenario cannot be made as asked, or a comparison names what it does not have | read `errors`: each names the member and what is wrong with it |
+| 400 | `training.bad_spec` | a training set cannot be built as asked | read `detail`: the target and features are numeric properties, the step and horizon are positive |
+| 400 | `derived.bad_inputs_version` | `inputs_version` is not a version of the branch or of `main` | give the id of the version the rows were worked out from |
+| 403 | `derived.observed_refused` | derived rows were given as observed | observed facts are written by sync runs only; write what was worked out as `inferred`, `assumed` or `simulated` |
 | 401 | `api.unauthorized` | the token is missing or wrong | check that `{{ token_env }}` is set and sent as a bearer token; ask the user if it is not |
 | 404 | `api.not_found` | no such endpoint | check the path against `reference/api.md` |
 | 404 | `api.unknown_object` | no object with that uid at that version | it may not exist yet, or no longer, at the version you asked for; check `at` |
@@ -35,12 +42,40 @@ Branch on `code`, not on the text. Quote `trace_id` when you report a failure to
 | 404 | `sync.rejects_missing` | the file of rows a run set aside is no longer held | report it with the trace id; the run's counts are still in `/sync/runs` |
 | 404 | `job.not_found` | no job with that id | jobs are forgotten when the API restarts and after 200 newer ones; look for the run in `/sync/runs` instead |
 | 404 | `artifact.not_found` | no file is kept under that hash | the name is the SHA-256 of the content, 64 hexadecimal characters; keep the file first with `POST /artifacts` |
+| 404 | `function.not_found`, `model.not_found`, `question.not_found`, `scenario.not_found` | no function, model, question or scenario of that id | list them with `/functions`, `/models`, `/questions`, `/scenarios`; a model's uid is `twin_model:<spec>/<candidate>` |
+| 404 | `model.unknown_spec` | no model of that specification is registered | take `spec` from `/models`; register the manifest's models with `POST /lifecycle/register` |
+| 404 | `derived.unknown_source` | the `source` of derived rows is neither a function nor a model of the twin | give the uid of a function (`twin_function:…`) or a model (`twin_model:…`) |
 | 405 | `api.method_not_allowed` | wrong HTTP method | most endpoints are `GET`; the subgraph and starting a sync run are `POST` |
 | 409 | `twin.not_live` | a run was asked of a static twin | a static twin does not sync; tell the user |
 | 409 | `sync.busy` | a run with other parameters is queued or running | wait for the job in the answer's `job` (`/lifecycle/jobs/{id}`), then ask again if it is still needed |
 | 409 | `sync.key_reused` | the `Idempotency-Key` was used before for a different request | use a new key for a new request |
+| 409 | `job.key_reused` | the `Idempotency-Key` was used before for a different request to evaluate, measure or run a scenario | use a new key for a new request |
+| 409 | `twin.no_interval` | the manifest sets no sync interval, so the grid of the twin's models and scenarios is not known | models and scenarios need a twin with a sync interval; tell the user |
+| 409 | `register.code_missing` | the manifest names code of the twin's own and `POST /lifecycle/register` was given none | keep the packed code with `POST /artifacts` and pass its hash as `code` |
+| 409 | `function.exists`, `model.exists` | a function or model of that id is registered already | choose another id, or use the one that exists |
+| 409 | `function.from_manifest`, `model.from_manifest` | the manifest declares the function or model | it is changed in the manifest, then registered again; only what was registered while the twin ran is deleted here |
+| 409 | `function.disabled` | the function was disabled | list `/functions` for one that is `active` |
+| 409 | `model.none_active` | a forecast was asked and no model of its question is active | start `POST /models/evaluate`, wait for its job, then ask again; say so if no candidate is accepted |
+| 409 | `model.not_fitted` | the model has no fitted state | it becomes `active` with a state when an evaluation selects it; predict with the active one |
+| 409 | `model.not_interventional`, `scenario.not_interventional` | a change to a control was assumed for a model that does not hold under interventions | use a model whose `interventional` is true, or leave the intervention out |
+| 409 | `model.bad_state` | the fitted state does not fit the model or the libraries that would load it | evaluate the specification again, which fits it anew |
+| 409 | `scenario.running`, `scenario.already_run` | the scenario is being run, or was run | wait for its job; a scenario is run once, make another for another run |
+| 409 | `derived.live_refused` | assumed or simulated rows were sent for `main` | write them to a scenario's branch; `main` takes `inferred` rows only |
+| 409 | `derived.mapped_property` | derived rows name a property that a source fills | only a sync run writes it; write the result to a property of its own |
+| 410 | `scenario.deleted` | the scenario was deleted | its record stays in `/scenarios?include_deleted=true`; make the scenario again to use it |
 | 413 | `artifact.too_large` | the file is larger than an artifact may be (512 MiB) | keep less in one file |
+| 413 | `derived.too_large` | derived rows exceed 100,000 rows or 16 MiB in one request | send them in several requests |
+| 413 | `training.too_large` | a training set would hold too many cells | narrow the range, lengthen the step, or name fewer objects or features |
 | 422 | `store.violation` | data would break the schema's rules | does not arise from reading; report it with the trace id |
+| 422 | `function.bad_entry`, `function.bad_result` | code of the twin's own cannot be called as registered, or gave back what is not an answer | a fault in the twin's code; report it with the trace id |
+| 502 | `worker.unreachable` | the twin's worker did not answer, or answered what cannot be used | wait a few seconds and retry up to three times; then tell the user the worker is down |
+| 502 | `scenario.bad_prediction` | a model answered a scenario with predictions that cannot be written | a fault in the model; report it with the trace id |
+| 503 | `worker.unavailable` | the twin has no worker: it runs neither models nor code of its own | built-in functions still answer; tell the user |
+| 503 | `worker.busy` | the worker is working at its limit | wait the seconds in the `Retry-After` header, then ask again |
+| 503 | `function.unavailable` | the function needs a model and none can be run here | tell the user |
+| 504 | `function.timeout`, `scenario.timeout` | a function did not answer within its latency budget, or a scenario's models within its budget | ask for less (fewer objects, a shorter range or horizon), or give a scenario run a larger `budget_s` |
+| 500 | `function.failed`, `function.memory`, `function.unknown_entry` | code of the twin's own raised (`frames` names where), ran out of memory, or a function names an entry this runtime does not have | do not retry in a loop; report `detail`, `frames` and the trace id |
+| 500 | `model.failed` | a model family failed while fitting or predicting | do not retry in a loop; report the trace id |
 | 503 | `store.unavailable`, `store.closed`, `store.lock_timeout`, `store.not_installed` | the twin's store cannot answer now | wait a few seconds and retry up to three times; then tell the user the twin is down |
 | 503 | `job.closed` | the API is stopping and starts no job | wait until the twin is up again, then ask again |
 | 500 | `api.internal` | a fault in the twin | do not retry in a loop; report the trace id to the user |

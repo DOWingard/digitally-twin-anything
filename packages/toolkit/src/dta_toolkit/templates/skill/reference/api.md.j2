@@ -21,7 +21,7 @@ Responses that read data name the version they read: `"version": {"id", "seq", "
 
 | Endpoint | Returns |
 |---|---|
-| `GET /meta/health` | twin id and name, tier, head version, number of versions, fidelity state, manifest revision and hash; `clock` (`kind`, `available`, `now`: the twin's time); `sync` (`interval`, `staleness`, `freshness_s`, `fresh`, `questions`, `sources`, `last_run`, `job`), null for a static twin |
+| `GET /meta/health` | twin id and name, tier, head version, number of versions, fidelity state, manifest revision and hash; `clock` (`kind`, `available`, `now`: the twin's time); `sync` (`interval`, `staleness`, `freshness_s`, `fresh`, `questions`, `sources`, `last_run`, `job`), null for a static twin; `compute` (`worker`: whether the twin has one and whether it answers; `questions`: how many are validated, provisional and failing; `job`: the compute job in progress) |
 | `GET /meta/schema?at=` | object and link types with ancestors, link ends and properties (kind, unit, required, role, description); abstract classes with their concrete kinds; enums |
 | `GET /meta/schema/linkml?at=` | the same schema as LinkML text |
 | `GET /meta/manifest?at=` | the twin's manifest: contract, sources (without secrets), mappings |
@@ -34,6 +34,7 @@ Responses that read data name the version they read: `"version": {"id", "seq", "
 | `GET /objects?uid_like=&types=&include_meta=&count=` | `uid` and `type` of every object, of any type, whose uid matches an SQL pattern (`%` any run of characters, `_` one), in uid order; the twin's own record types are left out unless `types` names them or `include_meta=true` |
 | `GET /objects/{type}/{uid}?include=provenance` | one object |
 | `GET /object/{uid}` | one object, whatever its type |
+| `GET /search?q=&types=&include_meta=&count=` | `uid`, `type` and `name` of every object, of any type, whose uid or whose name matches an SQL pattern, in uid order; one request instead of one per type |
 | `GET /objects/{type}/{uid}/links?direction=out\|in\|both&edge_types=&edge_where=` | the object's edges and what is at their other end |
 | `GET /objects/{type}/{uid}/history?range=&properties=` | one row per version in which the object changed |
 
@@ -68,6 +69,7 @@ Responses that read data name the version they read: `"version": {"id", "seq", "
 | `GET /block/nodes/{type}?columns=` | every object of a type at a version |
 | `GET /block/edges/{edge_type}` | every edge of one type, with the link's properties |
 | `GET /block/slice/{type}?range=&properties=&uids=&mode=state\|changes&layout=long\|tensor` | the type's objects over a range of versions |
+| `POST /block/training-set` body `{target, uids, start, end, branch, step, features, ahead, horizon}` | a frame for learning: one row per object and grid time (`unique_id`, `ds`, `y`, a column per feature and, with `horizon`, `label` and `label_ds`), every value the one stored at or before its time; `meta` (schema metadata `dta:training` in Arrow and Parquet) says what the rows hold |
 
 As JSON these are paged like every other table; as Arrow or Parquet they come whole.
 
@@ -90,6 +92,61 @@ As JSON these are paged like every other table; as Arrow or Parquet they come wh
 | `GET /lifecycle/jobs?kind=&state=&lane=` | work the API does in the background, newest first: `id`, `kind`, `lane` (`sync` for sync runs, `compute` for other long work; the jobs of a lane run one at a time, in order), `state` (`queued`, `running`, `succeeded`, `failed`), `result`, `error`, `trace_id`, `duration_ms` |
 | `GET /lifecycle/jobs/{id}` | one job, as `{"data": {...}}` |
 | `GET /lifecycle/logs?level=&since=&context=&trace_id=&service=&limit=` | the twin's own structured log lines, newest first |
+| `POST /lifecycle/register` body `{"code": <sha256>\|null}` | brings the twin's functions, models and questions in line with its manifest in one version, and none when nothing differs: `functions`, `models` and `questions`, each with what was `created`, `changed` and left `unchanged`, and the `version`. `code` is the hash `POST /artifacts` gave for the twin's packed code |
+
+## Functions
+
+What the twin computes: shipped built-ins with the arguments their registration fixes, and code the twin brought, which runs in the twin's worker.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /functions` | every function: `id`, `kind` (`builtin`, `registered`), `entry`, the fixed `params`, `latency_budget_ms`, `origin` (`manifest`, `runtime`), `status` (`active`, `disabled`) |
+| `GET /functions/{id}` | one function, with `parameters`: what its entry takes and which of them are fixed |
+| `POST /functions/{id}/run?at=&branch=` body: the arguments by name (a built-in's may be given in the query string instead) | the answer: `value` (a JSON value, or the rows of a table, paged; Arrow and Parquet as elsewhere), `unit`, `interval`, `notes`, the `version` read, `function`, `model`, `provisional` and `reasons`. The function is the one registered now; `at` chooses the data it reads. A function that gives rows to write names the version it wrote in `wrote`; any other run writes nothing |
+| `POST /functions` body `{id, entry, params, description, latency_budget, env, artifact}` | registers a function while the twin runs: 201 with the function |
+| `DELETE /functions/{id}` | disables a function registered while the twin ran |
+
+## Questions
+
+| Endpoint | Returns |
+|---|---|
+| `GET /questions?status=` | every question with what it may claim: `status` (`validated`, `provisional`, `failing`), `reason`, `metric`, `measured_error`, `tolerance`, `unit`, `basis` (`backtest`, `noise_floor`, `latency`), its `function` and active `model` |
+| `GET /questions/{id}` | one question |
+| `POST /questions/{id}/answer?at=&branch=` body: arguments of its function | the answer of the question's function, as `POST /functions/{id}/run` gives it; `provisional` with `reasons` while the question is not validated, the note `question_failing` when it was measured outside its tolerance |
+| `POST /questions/measure` body `{"questions": [...]}` or `{}`, optional header `Idempotency-Key` | starts a job that measures the questions against their tolerances and records what each may claim; answers `{"job": {...}}`, 202 for a new job, 200 when it exists |
+
+## Models
+
+| Endpoint | Returns |
+|---|---|
+| `GET /models?spec=&status=&question=` | every candidate of every model specification: `uid` (`twin_model:<spec>/<candidate>`), `family`, `params`, `target`, `features`, `status` (`candidate`, `active`, `rejected`, `retired`), what it was fitted on |
+| `GET /models/{uid}` | one model, with `state`: the header of its fitted state (range and series fitted, validity, library versions) |
+| `GET /models/{uid}/backtests` | its evaluations, newest first: range, origins, horizon, error and the baseline's, every score, whether it was accepted |
+| `POST /models/evaluate` body `{"spec": ..., "budget_s": ...}` or `{}`, optional header `Idempotency-Key` | starts a job that backtests every candidate, makes the best accepted one `active` with a fitted state and records the question's status, in one version; answers `{"job": {...}}`, 202 or 200 |
+| `POST /models/{uid}/predict?at=&branch=` body `{horizon, levels, interventions}` | `unique_id`, `ds`, `mean` and `lo_<level>`, `hi_<level>` per level, for `horizon` steps after the version; `notes` (`outside_validity`, `no_intervals`) |
+| `POST /models` body `{spec, candidate, family \| artifact + entry, params, target, features, question, interventional}` | registers a candidate while the twin runs: 201 with the model |
+| `DELETE /models/{uid}` | retires a model registered while the twin ran |
+
+## Scenarios
+
+What the twin would be under assumed changes, each on a branch of its own.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /scenarios?include_deleted=` | every scenario: `id`, `name`, `branch`, `base_version`, `base_t`, `interventions`, `horizon`, `step`, `models`, `status` (`created`, `running`, `done`, `failed`, `deleted`) |
+| `GET /scenarios/{id}` | one scenario, with whether its branch `exists` and where the branch's `head` is |
+| `POST /scenarios?at=` body `{name, description, interventions: [{target, uid, value, start, end}], horizon, models}` | makes a scenario from a version of `main`: 201, or 200 with `created: false` when the same request at the same base was made before |
+| `POST /scenarios/{id}/run` body `{"budget_s": ...}` or `{}`, optional header `Idempotency-Key` | starts a job in which each model predicts the horizon and the branch gains one version per grid time; answers `{"job": {...}}`, 202 or 200 |
+| `GET /scenarios/{id}/compare?targets=&against=&uids=` | `target`, `uid`, `t`, `scenario`, `against`, `difference` on the scenario's grid; `against` is `main` or another scenario of the same base |
+| `DELETE /scenarios/{id}` | removes the scenario's branch and marks its record `deleted` |
+
+A scenario's branch is read like any other: pass `branch=<its branch>` to the endpoints above.
+
+## Derived data
+
+| Endpoint | Returns |
+|---|---|
+| `POST /derived` body `{branch, type, rows, kind, source, inputs_version, confidence, t_valid}` | writes rows that were worked out (`kind`: `inferred`, `assumed`, `simulated`) as one version, each value carrying its `source` (the uid of a function or model) and the version of its inputs: 201 with `{"version", "rows"}`. Observed facts, assumed or simulated facts on `main`, and properties a source fills are refused. At most 100,000 rows and 16 MiB |
 
 ## Artifacts
 
