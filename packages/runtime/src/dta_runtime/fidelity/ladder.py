@@ -74,6 +74,13 @@ class Position:
     after_remodel: bool = False
     requested_at: datetime | None = None
     failed_at: datetime | None = None
+    # Cycles begun before the latest retry. A retry starts again at cycle 1, but the
+    # keys of the corrections it asks for count on from here, so none is used twice.
+    offset: int = 0
+
+    @property
+    def key_cycle(self) -> int:
+        return self.offset + self.cycle
 
 
 def opened() -> Position:
@@ -84,7 +91,7 @@ def opened() -> Position:
 @dataclass(frozen=True)
 class Step:
     """What a check did to a breach incident: where it stands now, the correction to
-    run (rung, attempt, cycle), and the steps to log, in order."""
+    run (rung, attempt, cycle of its key), and the steps to log, in order."""
 
     position: Position
     request: tuple[int, int, int] | None = None
@@ -116,11 +123,11 @@ def _take(position: Position, settings: Correction, now: datetime, logged: list)
     while True:
         if current.rung == 1:
             if current.attempt < settings.recalibrate_attempts:
-                return Step(current, (1, current.attempt, current.cycle), logged)
+                return Step(current, (1, current.attempt, current.key_cycle), logged)
             current = replace(current, rung=2)
         if current.rung == 2:
             if settings.reselect:
-                return Step(current, (2, current.attempt, current.cycle), logged)
+                return Step(current, (2, current.attempt, current.key_cycle), logged)
             current = replace(current, rung=3)
         if settings.agent_remodel and not current.after_remodel:
             current = replace(current, status=REMODEL_REQUESTED, requested_at=now)
@@ -177,7 +184,16 @@ def next_step(
         assert current.requested_at is not None
         if remodelled:
             logged.append({"action": "remodelled"})
-            current = replace(current, status=OPEN, rung=2, after_remodel=True, requested_at=None)
+            # One more attempt: the key of this rung-2 step must differ from the one the
+            # cycle took before the re-model, or the job would not run again.
+            current = replace(
+                current,
+                status=OPEN,
+                rung=2,
+                attempt=current.attempt + 1,
+                after_remodel=True,
+                requested_at=None,
+            )
         elif now - current.requested_at >= settings.remodel_timeout:
             logged.append(
                 {
@@ -199,9 +215,9 @@ def answered(position: Position, *, accepted: bool, fitted_to: datetime | None) 
     return failed_rung(position)
 
 
-def retried() -> Position:
+def retried(position: Position) -> Position:
     """Back to cycle 1, rung 1, with nothing pending or awaited."""
-    return Position(status=OPEN, rung=1, attempt=0, cycle=1)
+    return Position(status=OPEN, rung=1, attempt=0, cycle=1, offset=position.key_cycle)
 
 
 # -- stale ---------------------------------------------------------------------------------
