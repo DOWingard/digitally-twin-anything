@@ -158,6 +158,34 @@ def test_an_abstract_class_names_the_property_of_its_concrete_types(world: World
     assert held[node("T1")][1]["k"] == "observed"
 
 
+def test_every_property_of_an_object_can_be_assumed_at_once(world: World):
+    """A row that names every property replaces the object in the store, which asks
+    more of its provenance than a row that names some."""
+    values = {
+        "start_node": node("J2"),
+        "end_node": node("T2"),
+        "status": "closed",
+        "valve_type": "psv",
+        "setting": 3.5,
+    }
+    made = create(
+        world,
+        world.request(
+            models=("level-balance",),
+            interventions=[
+                {"target": f"Valve.{name}", "uid": link("V2"), "value": value, "start": grid(0)}
+                for name, value in values.items()
+            ],
+        ),
+    )
+    held = world.store.get(link("V2"), branch=made["branch"])
+    assert held.values == values
+    for name in values:
+        found = held.provenance_of(name)
+        assert (found.kind, found.source, found.t_valid) == ("assumed", made["uid"], world.base.t)
+    assert world.store.get(link("V2")).values["valve_type"] == "prv"
+
+
 def test_a_branch_left_behind_without_a_record_is_replaced(world: World):
     request = world.request()
     name = f"scenario-{scenario_id(request, world.base, STEP)}"
