@@ -25,8 +25,32 @@ SCHEDULED_PICKUP_LIMIT_S = 150.0
 BUSY_RETRIES = 10
 BUSY_PAUSE_S = 3.0
 
-STEPS = ("scaffold", "store", "install", "load", "api", "contract", "sync", "ui", "skill")
+STEPS = (
+    "scaffold",
+    "image",
+    "store",
+    "install",
+    "load",
+    "api",
+    "contract",
+    "sync",
+    "code",
+    "functions",
+    "models",
+    "questions",
+    "ui",
+    "skill",
+)
+# What a twin with questions and no code or model of its own does in each build.
+COMPUTE_STEPS = {
+    "image": ("ran", "skipped"),
+    "code": ("ran", "skipped"),
+    "functions": ("ran", "ok"),
+    "models": ("ran", "skipped"),
+    "questions": ("ran", "ok"),
+}
 SYNC_CHECKS = ("sync.scheduler", "sync.runs", "sync.sources", "sync.freshness")
+COMPUTE_CHECKS = ("questions.answered", "questions.error", "models.accepted", "compute.worker")
 CHECKS = {
     "api.contract",
     "readiness.R1",
@@ -40,6 +64,7 @@ CHECKS = {
     "skill.current",
     "skill.endpoints",
     *SYNC_CHECKS,
+    *COMPUTE_CHECKS,
 }
 LIVE_LOADED = "the twin already holds data; its runs keep it in step"
 

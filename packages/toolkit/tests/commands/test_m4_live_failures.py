@@ -56,13 +56,14 @@ def test_a_stopped_scheduler_and_a_failing_source_fail_only_their_checks(make_tw
     assert detail["step"] == "sync"
     assert [(e["step"], e["action"], e["status"]) for e in detail["steps"]] == [
         ("scaffold", "ran", "ok"),
+        ("image", "ran", "skipped"),
         ("store", "ran", "ok"),
         ("install", "ran", "ok"),
         ("load", "reused", "ok"),
         ("api", "ran", "ok"),
         ("contract", "ran", "ok"),
     ]
-    assert detail["not_attempted"] == ["ui", "skill"]
+    assert detail["not_attempted"] == ["code", "functions", "models", "questions", "ui", "skill"]
     evidence = detail["evidence"]
     assert evidence["code"] == "sync.source_failed"
     assert [entry["source"] for entry in evidence["failing_sources"]] == ["plant"]

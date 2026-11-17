@@ -43,6 +43,7 @@ def test_live_flow_from_manifest_to_handover_and_on(make_twin, tmp_path: Path) -
         "api": ("ran", "ok"),
         "contract": ("ran", "ok"),
         "sync": ("ran", "ok"),
+        **live.COMPUTE_STEPS,
         "ui": ("ran", "skipped"),
         "skill": ("ran", "ok"),
     }
@@ -65,7 +66,12 @@ def test_live_flow_from_manifest_to_handover_and_on(make_twin, tmp_path: Path) -
     assert accepted["passed"] is True and accepted["failed"] == []
     assert {entry["id"] for entry in accepted["checks"]} == live.CHECKS
     ids = [entry["id"] for entry in accepted["checks"]]
-    assert ids[-6:] == ["skill.current", "skill.endpoints", *live.SYNC_CHECKS]
+    assert ids[-10:] == [
+        "skill.current",
+        "skill.endpoints",
+        *live.SYNC_CHECKS,
+        *live.COMPUTE_CHECKS,
+    ]
     scheduler = live.check(accepted, "sync.scheduler")["evidence"]
     assert scheduler["service"]["state"] == "running" and scheduler["scheduler_jobs"] >= 1
     assert all(

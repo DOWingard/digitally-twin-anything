@@ -44,6 +44,10 @@ CHECKS = {
     "sync.runs",
     "sync.sources",
     "sync.freshness",
+    "questions.answered",
+    "questions.error",
+    "models.accepted",
+    "compute.worker",
 }
 
 
@@ -116,12 +120,17 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
     steps = {entry["step"]: (entry["action"], entry["status"]) for entry in built["steps"]}
     assert steps == {
         "scaffold": ("ran", "ok"),
+        "image": ("ran", "skipped"),
         "store": ("ran", "ok"),
         "install": ("ran", "ok"),
         "load": ("ran", "ok"),
         "api": ("ran", "ok"),
         "contract": ("ran", "ok"),
         "sync": ("ran", "skipped"),
+        "code": ("ran", "skipped"),
+        "functions": ("ran", "ok"),
+        "models": ("ran", "skipped"),
+        "questions": ("ran", "ok"),
         "ui": ("ran", "skipped"),
         "skill": ("ran", "ok"),
     }
@@ -171,15 +180,20 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
     again = twin.ok("build")
     actions = {entry["step"]: entry["action"] for entry in again["steps"]}
     # Every step checks what is there now; only the load is not repeated, because
-    # install found the twin where the last load left it.
+    # install found the twin where the last build left it.
     assert actions == {
         "scaffold": "ran",
+        "image": "ran",
         "store": "ran",
         "install": "ran",
         "load": "reused",
         "api": "ran",
         "contract": "ran",
         "sync": "ran",
+        "code": "ran",
+        "functions": "ran",
+        "models": "ran",
+        "questions": "ran",
         "ui": "ran",
         "skill": "ran",
     }

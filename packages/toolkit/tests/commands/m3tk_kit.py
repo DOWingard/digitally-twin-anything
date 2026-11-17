@@ -174,6 +174,7 @@ def manifest(twin_id: str, *, ui: bool = False) -> dict[str, Any]:
                     "staleness": "P1D",
                     "targets": ["Sensor.level"],
                     "function": "f_latest",
+                    "example": {"property": "Sensor.level"},
                 }
             },
             "boundary": {"state": ["Sensor.level"], "observations": ["Sensor.level"]},

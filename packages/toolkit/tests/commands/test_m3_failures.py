@@ -39,10 +39,21 @@ def test_failing_build_step_stops_the_build_and_a_rerun_completes_it(make_twin) 
     assert detail["step"] == "load"
     assert [(e["step"], e["status"]) for e in detail["steps"]] == [
         ("scaffold", "ok"),
+        ("image", "skipped"),
         ("store", "ok"),
         ("install", "ok"),
     ]
-    assert detail["not_attempted"] == ["api", "contract", "sync", "ui", "skill"]
+    assert detail["not_attempted"] == [
+        "api",
+        "contract",
+        "sync",
+        "code",
+        "functions",
+        "models",
+        "questions",
+        "ui",
+        "skill",
+    ]
     assert detail["evidence"]["code"].startswith("sync.")
     record = json.loads((twin.root / ".dta" / "build.json").read_text(encoding="utf-8"))
     assert record["steps"]["load"]["status"] == "failed"
@@ -54,12 +65,17 @@ def test_failing_build_step_stops_the_build_and_a_rerun_completes_it(make_twin) 
     actions = {entry["step"]: (entry["action"], entry["status"]) for entry in resumed["steps"]}
     assert actions == {
         "scaffold": ("ran", "ok"),
+        "image": ("ran", "skipped"),
         "store": ("ran", "ok"),
         "install": ("ran", "ok"),
         "load": ("ran", "ok"),
         "api": ("ran", "ok"),
         "contract": ("ran", "ok"),
         "sync": ("ran", "skipped"),
+        "code": ("ran", "skipped"),
+        "functions": ("ran", "ok"),
+        "models": ("ran", "skipped"),
+        "questions": ("ran", "ok"),
         "ui": ("ran", "skipped"),
         "skill": ("ran", "ok"),
     }
