@@ -192,7 +192,7 @@ def test_a_static_twin_is_not_offered_what_only_a_live_twin_does():
     skill = render(manifest())
     body = skill.files[SKILL_FILE]
     assert "## A live twin" not in body and "POST /sync/runs" not in body
-    assert "What does change it: registrations" in body and "sync runs" not in body
+    assert "What else changes it: registrations" in body and "sync runs" not in body
     assert "a static twin's data was loaded once" in skill.files["reference/api.md"]
     assert "POST /sync/runs" not in skill.files["reference/api.md"]
     assert "Work with a live twin" not in skill.files["reference/recipes.md"]
