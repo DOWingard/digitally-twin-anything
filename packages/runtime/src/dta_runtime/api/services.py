@@ -19,6 +19,7 @@ from dta_core.schema import Ontology
 from dta_core.store import InvalidInput, Selector, Store, VersionRef
 
 from .. import fidelity
+from ..actions import Executor
 from ..artifacts import ArtifactStore
 from ..filters import repair_plus
 from ..graph import GraphCache
@@ -26,6 +27,7 @@ from ..notify import LOG, Notifier
 from ..settings import RuntimeSettings
 from ..sync.extract import Connect
 from ..twin import Twin
+from .acting import KeyedAnswers
 from .compute import Compute
 from .context import note_version
 from .fidelity_work import CHECK_BUDGET_S, CORRECTION_BUDGET_S
@@ -66,6 +68,10 @@ class Services:
     running_scenarios: set[str] = field(default_factory=set)
     # What the twin tells the outside; logs only, unless the API built one from the manifest.
     notifier: Notifier = field(default_factory=lambda: Notifier(twin_id="twin", kind=LOG))
+    # What makes the external calls of actions; None when the executors add-on is off.
+    executor: Executor | None = None
+    # What reconciliation answered, by Idempotency-Key.
+    reconciled: KeyedAnswers = field(default_factory=KeyedAnswers)
     # Who gives the entries of the schedule the scheduler follows.
     schedule: list[Provider] = field(default_factory=lambda: list(DEFAULT_PROVIDERS))
     check_budget_s: float = CHECK_BUDGET_S
@@ -94,6 +100,9 @@ class Services:
     def close(self) -> None:
         self.compute.close()
         self.notifier.close()
+        closing = getattr(self.executor, "close", None)
+        if closing is not None:
+            closing()
 
     def interval(self, version: VersionRef) -> timedelta:
         """The step of the twin's grid: the sync interval of the manifest in force at a

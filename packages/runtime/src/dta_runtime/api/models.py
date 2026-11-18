@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal
 
+from dta_core.schema import UID_MAX_LENGTH
 from pydantic import BaseModel, ConfigDict, Field
 
 Direction = Literal["out", "in", "both"]
@@ -607,10 +608,22 @@ class RegistryChanges(BaseModel):
     )
 
 
+class ActionRegistryChanges(BaseModel):
+    created: list[str] = Field(description="Uids of the records made; a new loop is disabled")
+    changed: list[str]
+    unchanged: list[str]
+    orphaned: list[str] = Field(
+        description="Declared by an earlier manifest and no longer: disabled, and a loop is "
+        "disabled as well"
+    )
+
+
 class Registered(BaseModel):
     functions: RegistryChanges
     models: RegistryChanges
     questions: RegistryChanges
+    actions: ActionRegistryChanges = Field(description="The action types (`TwinAction`)")
+    loops: ActionRegistryChanges = Field(description="The control loops (`TwinControlLoop`)")
     version: VersionOut = Field(description="The version that holds the registries now")
 
 
@@ -1169,6 +1182,220 @@ class FidelityDetail(BaseModel):
         examples=[{"open": 1, "failed": 0}],
     )
     suspect_signals: int
+
+
+# -- actions and control loops -------------------------------------------------------------
+
+ActionStatus = Literal["proposed", "rejected", "approved", "blocked", "executed", "failed"]
+ReconciliationStatus = Literal["pending", "ok", "mismatch"]
+Autonomy = Literal["advisory", "supervised", "autonomous"]
+
+_RECORD_UID = "twin_action_record:5b1f0c2e9d4a47b8a3c6e1f0d2b4a6c8"
+
+
+class ActionTypeOut(BaseModel):
+    """An action type: what it sets, within which bounds, at which autonomy, and how."""
+
+    id: str = Field(examples=["set_pump"])
+    uid: str = Field(examples=["twin_action:set_pump"])
+    description: str | None
+    control: str | None = Field(
+        description="The control it carries out; null for one that only advises"
+    )
+    target: str | None = Field(description="`Type.property` the control sets")
+    object_type: str | None = Field(description="Type of the objects it acts on")
+    binding: str | None = Field(description="`executor` (an external call) or `advisory`")
+    autonomy: Autonomy = Field(description="The autonomy of its control")
+    parameters: dict[str, Any] = Field(description="The parameters a proposal gives, by name")
+    bounds: dict[str, Any] | None = Field(
+        description="`minimum`, `maximum`, `allowed`, `max_step` of the control"
+    )
+    executor: dict[str, Any] | None = Field(
+        description="The HTTP call: method, templates of the address, headers and body, and "
+        "the names of the variables it needs; their values are never shown"
+    )
+    settle: str | None = Field(
+        description="ISO 8601 duration after which its effect must be observable"
+    )
+    tolerance: float = Field(description="How far the observed value may lie from the value set")
+    precondition: str | None
+    expected_effect: str | None
+    origin: str | None
+    status: str | None = Field(description="`active`, or `disabled` once no longer declared")
+    executable: bool = Field(
+        description="Whether the twin can execute it: bound to an executor, supervised or "
+        "autonomous, and an executor configured"
+    )
+
+
+class ActionTypeList(BaseModel):
+    data: list[ActionTypeOut] = Field(description="By id")
+    executor_configured: bool = Field(
+        description="Whether the executors add-on is on and the API makes external calls"
+    )
+    version: VersionOut
+
+
+class ActionTypeOne(BaseModel):
+    data: ActionTypeOut
+    executor_configured: bool
+    version: VersionOut
+
+
+class ActionProposal(BaseModel):
+    """An action proposed on one object."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "object": "link:PMP-10",
+                    "params": {"value": True},
+                    "reason": "the tank is low",
+                    "source": "operator@plant",
+                }
+            ]
+        },
+    )
+
+    object: str = Field(min_length=1, max_length=UID_MAX_LENGTH, description="Uid of the object")
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The parameters of the action type; `value` for one that sets a control",
+    )
+    reason: str | None = Field(default=None, max_length=2_000)
+    source: str = Field(
+        min_length=1, max_length=200, description="Who proposes: an agent's or a person's name"
+    )
+
+
+class ActionRecordOut(BaseModel):
+    """What became of one proposal."""
+
+    id: str
+    uid: str = Field(examples=[_RECORD_UID])
+    action: str | None = Field(description="Id of the action type")
+    object: str | None
+    params: dict[str, Any]
+    reason: str | None
+    source: str | None = Field(description="Who proposed it: a name, or a control loop's uid")
+    proposed_at: datetime | None = Field(description="The twin's clock when it was proposed")
+    at_version: str | None = Field(description="Id of the head it was judged at")
+    fidelity: str | None = Field(description="The twin's fidelity state it was judged in")
+    status: ActionStatus | None
+    reasons: list[dict[str, Any]] = Field(
+        description="Why it was rejected or blocked: `member` and `message` each"
+    )
+    approval: dict[str, Any] | None = Field(description="`decision`, `by`, `note`, `at`")
+    execution: dict[str, Any] | None = Field(
+        description="`at`, `effective_at`, `http_status`, `excerpt` of the answer, "
+        "`duration_ms`, `attempts`, `error`, `idempotency_key`"
+    )
+    effective_at: datetime | None = Field(description="When the change took effect")
+    reconciliation: ReconciliationStatus | None = Field(
+        description="Whether its effect was observed, for one that set a control"
+    )
+    observed: dict[str, Any] | None = Field(
+        description="What reconciliation compared: `value`, `expected`, `difference`, "
+        "`tolerance`, `t`, `source`, `kind`, `version`"
+    )
+    reconciled_at: datetime | None
+
+
+class ActionRecordOne(BaseModel):
+    data: ActionRecordOut
+    version: VersionOut
+
+
+class ActionRecordList(BaseModel):
+    data: list[ActionRecordOut] = Field(description="Newest proposal first")
+    next_cursor: str | None = Field(description="Pass as `cursor` for the next page")
+    version: VersionOut
+
+
+class ActionDecided(BaseModel):
+    data: ActionRecordOut
+    created: bool = Field(
+        description="False when the Idempotency-Key gave back the record made for it before"
+    )
+    version: VersionOut = Field(description="The head once the request was answered")
+
+
+class ActionStepped(BaseModel):
+    data: ActionRecordOut
+    version: VersionOut = Field(description="The head once the request was answered")
+
+
+class ReconciledOut(BaseModel):
+    """One executed action compared with what was observed after it."""
+
+    record: str = Field(examples=[_RECORD_UID])
+    action: str
+    control: str
+    object: str
+    target: str = Field(description="`Type.property` compared")
+    value: Any = Field(description="What the action set")
+    tolerance: float
+    outcome: Literal["ok", "mismatch"]
+    observed: Any = Field(description="The observed value in force")
+    observed_at: datetime | None = Field(description="Valid time of that value")
+    observed_source: str | None
+    effective_at: datetime
+    reconciled_at: datetime
+    incidents: list[str] = Field(
+        description="The reconcile incident a mismatch opened (or found open), or those an "
+        "`ok` closed"
+    )
+
+
+class ReconcileOut(BaseModel):
+    data: list[ReconciledOut] = Field(description="In the order the actions took effect")
+    opened: list[str] = Field(description="Uids of the incidents opened")
+    closed: list[str] = Field(description="Uids of the incidents closed")
+    events: list[dict[str, Any]] = Field(description="What was told the notifier, in order")
+    now: datetime = Field(description="The twin's clock the records were compared at")
+    version: VersionOut = Field(description="The head once it was written")
+
+
+class ControlLoopOut(BaseModel):
+    """A control loop and what its last run did."""
+
+    id: str = Field(examples=["pumping"])
+    uid: str = Field(examples=["twin_control_loop:pumping"])
+    description: str | None
+    controls: list[str] = Field(description="The controls it drives")
+    policy: str | None = Field(description="Id of its policy function")
+    interval: str | None = Field(description="ISO 8601 duration between two runs")
+    origin: str | None
+    status: str | None = Field(description="`active`, or `disabled` once no longer declared")
+    enabled: bool
+    last_run_at: datetime | None
+    last_run: dict[str, Any] | None = Field(
+        description="`key`, `at`, `status`, how many actions were `proposed`, `executed`, "
+        "`blocked`, `rejected`, `failed` or are `awaiting` a decision, the `records`, the "
+        "policy's `notes` and the `error` of a failed run"
+    )
+
+
+class ControlLoopList(BaseModel):
+    data: list[ControlLoopOut] = Field(description="By id")
+    version: VersionOut
+
+
+class ControlLoopOne(BaseModel):
+    data: ControlLoopOut
+    version: VersionOut
+
+
+class LoopSwitch(BaseModel):
+    """Who enables or disables a loop."""
+
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra={"examples": [{"by": "operator@plant"}]}
+    )
+
+    by: str = Field(min_length=1, max_length=200, description="Who takes the step")
 
 
 # Defined above the fidelity models it refers to.

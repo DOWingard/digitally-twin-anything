@@ -34,6 +34,7 @@ from dta_core.store import (
 )
 from pydantic import TypeAdapter
 
+from ..actions import registration as action_registration
 from ..protocol import FamilyRef, FeatureRef
 from .problems import ApiError
 
@@ -474,9 +475,9 @@ def needs_code(manifest: Manifest) -> bool:
 
 
 def register(services: Services, code: str | None) -> dict[str, Any]:
-    """Bring the registries in line with the manifest at the head of the live line: what
-    was created, changed and left, and the version that holds it. One version when
-    anything differs, none otherwise."""
+    """Bring the registries, the action types and the control loops in line with the
+    manifest at the head of the live line: what was created, changed and left, and the
+    version that holds it. One version when anything differs, none otherwise."""
     started = time.perf_counter()
     with _lock:
         head = services.store.head()
@@ -558,6 +559,13 @@ def register(services: Services, code: str | None) -> dict[str, Any]:
                 "questions", QUESTION_TYPE, uid, {"uid": uid, **changed} if changed else None, False
             )
         answer["questions"]["orphaned"] = sorted(set(stored[QUESTION_TYPE]) - set(questions))
+
+        # Action types and control loops go into the same version as the functions a
+        # loop's policy names.
+        acting = action_registration.rows(manifest, action_registration.known(services.twin, head))
+        for type_name, found_rows in acting.upserts.items():
+            upserts.setdefault(type_name, []).extend(found_rows)
+        answer.update(acting.answer)
 
         version = head
         written = sum(len(found) for found in upserts.values())

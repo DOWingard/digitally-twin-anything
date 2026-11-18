@@ -18,6 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 
+from ..actions import HttpExecutor
 from ..clock import Clock
 from ..graph import GraphCache
 from ..notify import BACKOFF_S, LOG, Notifier, notifier_for
@@ -32,8 +33,10 @@ from .middleware import ApiMiddleware
 from .models import Health
 from .problems import error_response, problem
 from .routes import (
+    actions,
     artifacts,
     block,
+    control,
     derived,
     fidelity,
     functions,
@@ -108,7 +111,8 @@ def create_app(
     sources of a sync run; by default the real connectors do.
 
     Notifications go where the manifest in force at start says; a webhook whose
-    variable is not set stops the start, naming it. `notify_backoff_s` are the
+    variable is not set stops the start, naming it. So does a variable an action's
+    executor names, when the executors add-on is on. `notify_backoff_s` are the
     waits between the tries of one delivery, `correction_budget_s` the time one
     correction of the fidelity ladder may take.
     """
@@ -138,32 +142,50 @@ def create_app(
             )
             raise
         try:
-            notifier = await anyio.to_thread.run_sync(
-                lambda: notifier_for(
-                    opened.manifest(at=opened.store.head()), os.environ, backoff_s=notify_backoff_s
-                )
+            manifest = await anyio.to_thread.run_sync(
+                lambda: opened.manifest(at=opened.store.head())
             )
         except StoreUnavailable as exc:
             # A twin handed in may have its store down: the API still starts and answers
             # 503 to what needs the store, as it always did. Its manifest cannot be read,
-            # so notifications are logged only until the API is started again.
+            # so notifications are logged only, and no action makes an external call, until
+            # the API is started again.
             log.error(
-                "the manifest cannot be read at start: notifications are only logged until "
-                "the API starts again",
+                "the manifest cannot be read at start: notifications are only logged and "
+                "actions are not executed until the API starts again",
                 exc=exc,
                 code=exc.code,
             )
-            notifier = Notifier(twin_id="twin", kind=LOG)
-        except DtaError as exc:
-            log.error(
-                "the API cannot start: its notifications cannot be set up",
-                exc=exc,
-                code=exc.code,
-                detail=exc.detail,
-            )
-            if twin is None:
-                opened.close()
-            raise
+            manifest = None
+        notifier = Notifier(twin_id="twin", kind=LOG)
+        executor: HttpExecutor | None = None
+        if manifest is not None:
+            try:
+                notifier = notifier_for(manifest, os.environ, backoff_s=notify_backoff_s)
+            except DtaError as exc:
+                log.error(
+                    "the API cannot start: its notifications cannot be set up",
+                    exc=exc,
+                    code=exc.code,
+                    detail=exc.detail,
+                )
+                if twin is None:
+                    opened.close()
+                raise
+            try:
+                # Built once: a variable an executor names and the environment lacks stops
+                # the start here, named, rather than failing the first action later.
+                executor = HttpExecutor.from_manifest(manifest, os.environ)
+            except DtaError as exc:
+                log.error(
+                    "the API cannot start: the executors of its actions cannot be built",
+                    exc=exc,
+                    code=exc.code,
+                    detail=exc.detail,
+                )
+                if twin is None:
+                    opened.close()
+                raise
         # Handlers talking to the store run in worker threads. With no more
         # workers than pooled connections, a burst of requests waits for a
         # worker instead of failing for want of a connection.
@@ -180,6 +202,7 @@ def create_app(
             clocks=Clocks(clock, os.environ),
             connect=connect,
             notifier=notifier,
+            executor=executor,
             correction_budget_s=correction_budget_s,
         )
         app.state.services = services
@@ -200,6 +223,7 @@ def create_app(
             clock_given=clock is not None,
             worker=services.compute.configured,
             notifications=notifier.kind,
+            executor=executor is not None,
             scenarios_interrupted=len(swept),
             elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
         )
@@ -253,6 +277,8 @@ def create_app(
         scenarios,
         derived,
         fidelity,
+        actions,
+        control,
     ):
         app.include_router(module.router)
 

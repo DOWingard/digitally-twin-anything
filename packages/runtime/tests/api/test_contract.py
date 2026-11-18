@@ -176,7 +176,30 @@ def test_the_document_describes_every_route(app_client: TestClient, auth: dict[s
         "/api/v1/fidelity/signals/{uid}/clear",
         "/api/v1/lifecycle/schedule",
         "/api/v1/lifecycle/notifications",
+        "/api/v1/actions",
+        "/api/v1/actions/{id}",
+        "/api/v1/actions/{id}/propose",
+        "/api/v1/actions/records",
+        "/api/v1/actions/records/{uid}",
+        "/api/v1/actions/records/{uid}/approve",
+        "/api/v1/actions/records/{uid}/reject",
+        "/api/v1/actions/reconcile",
+        "/api/v1/control/loops",
+        "/api/v1/control/loops/{id}",
+        "/api/v1/control/loops/{id}/enable",
+        "/api/v1/control/loops/{id}/disable",
+        "/api/v1/control/loops/{id}/run",
     }
+    proposed = document["paths"]["/api/v1/actions/{id}/propose"]["post"]
+    assert {"200", "201", "409", "422", "503"} <= set(proposed["responses"])
+    assert {"200", "202", "404", "409"} <= set(
+        document["paths"]["/api/v1/control/loops/{id}/run"]["post"]["responses"]
+    )
+    assert {"actions", "loops"} <= set(document["components"]["schemas"]["Registered"]["properties"])
+    for path, operations in document["paths"].items():
+        if path.startswith(("/api/v1/actions", "/api/v1/control")):
+            for operation in operations.values():
+                assert operation.get("description"), path
     checked = document["paths"]["/api/v1/fidelity/checks"]["post"]
     assert {"200", "202", "409", "503"} <= set(checked["responses"])
     assert {"200", "202", "400", "404", "409"} <= set(

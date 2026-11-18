@@ -41,17 +41,21 @@ JOBS_LIMIT_DEFAULT = 50
 
 @router.post(
     "/register",
-    summary="Bring the twin's functions, models and questions in line with its manifest",
-    description="The manifest declares what the twin computes; what it runs is what its "
-    "graph records. This writes, in one version (cause `registration`), a `TwinFunction` "
-    "for each function of the manifest, a `TwinModel` for each candidate of each model "
-    "specification and a `TwinQuestion` for each question, and nothing when nothing "
+    summary="Bring the twin's functions, models, questions, actions and control loops in "
+    "line with its manifest",
+    description="The manifest declares what the twin computes and how it acts; what it runs "
+    "is what its graph records. This writes, in one version (cause `registration`), a "
+    "`TwinFunction` for each function of the manifest, a `TwinModel` for each candidate of "
+    "each model specification, a `TwinQuestion` for each question, a `TwinAction` for each "
+    "action type and a `TwinControlLoop` for each control loop, and nothing when nothing "
     "differs: asking again changes nothing. A function the manifest no longer has is "
-    "`disabled`, a candidate it no longer has `retired`; records made while the twin ran "
-    "are left alone. A candidate whose family, code, settings, target or features changed "
-    "is a `candidate` again without its fitted state. A new question is `provisional` "
-    "until it is measured. `code` is the SHA-256 of the packed code the manifest's "
-    "functions and families of its own are found in, as `POST /artifacts` kept it.",
+    "`disabled`, a candidate it no longer has `retired`, an action type or loop it no longer "
+    "has `orphaned` (disabled; a loop is disabled as well); records made while the twin ran "
+    "are left alone. A new loop is disabled until `POST /control/loops/{id}/enable`. A "
+    "candidate whose family, code, settings, target or features changed is a `candidate` "
+    "again without its fitted state. A new question is `provisional` until it is measured. "
+    "`code` is the SHA-256 of the packed code the manifest's functions and families of its "
+    "own are found in, as `POST /artifacts` kept it.",
     response_model=Registered,
     responses=versioned(
         400,

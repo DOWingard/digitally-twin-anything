@@ -155,6 +155,19 @@ STATUS_BY_CODE: dict[str, int] = {
     "fidelity.not_found": 404,
     "fidelity.bad_request": 400,
     "fidelity.conflict": 409,
+    "action.not_found": 404,
+    "action.rejected": 422,
+    "action.key_reused": 409,
+    "action.record_not_found": 404,
+    "action.not_pending": 409,
+    "action.not_executable": 409,
+    "action.loop_not_found": 404,
+    "action.loop_orphaned": 409,
+    "action.loop_disabled": 409,
+    "action.policy_failed": 502,
+    "action.bad_policy_answer": 502,
+    "action.bad_state": 500,
+    "action.executor_invalid": 500,
 }
 
 # Server errors whose message is the caller's to read: it says what to do (wait, give the
@@ -172,8 +185,13 @@ PUBLIC_SERVER_CODES = frozenset(
         "scenario.timeout",
         "scenario.bad_prediction",
         "clock.unavailable",
+        # What the policy of a control loop did; its own text stays in the log.
+        "action.policy_failed",
+        "action.bad_policy_answer",
     }
 )
+# Members of an action's refusal that name the record it is about.
+_ACTION_MEMBERS = ("record",)
 
 # What a server error tells the client; the cause stays in the logs.
 _SERVER_DETAIL = {
@@ -233,6 +251,8 @@ def error_response(error: DtaError) -> Response:
     """The problem document for an error raised while serving a request."""
     status = status_of(error)
     extra = error.extra if isinstance(error, ApiError) else None
+    if error.code.startswith("action."):
+        extra = {name: error.detail[name] for name in _ACTION_MEMBERS if name in error.detail}
     headers = (error.headers or None) if isinstance(error, ApiError) else None
     if status >= 500 and error.code in PUBLIC_SERVER_CODES:
         log.warn("request failed", code=error.code, status=status, reason=error.message)
@@ -253,6 +273,9 @@ def error_response(error: DtaError) -> Response:
     elif isinstance(error.detail.get("problems"), list):
         # Every problem of a request that was refused whole, each naming its member.
         errors = [dict(found) for found in error.detail["problems"] if isinstance(found, dict)]
+    elif isinstance(error.detail.get("reasons"), list):
+        # Every reason a proposed action was rejected for, each naming its member.
+        errors = [dict(found) for found in error.detail["reasons"] if isinstance(found, dict)]
     return problem(status, error.code, error.message, errors=errors, headers=headers, extra=extra)
 
 
