@@ -170,11 +170,19 @@ class Notification(Base):
 
 
 class Addons(Base):
-    # Only `executors` changes what is built; the others record a wish for later.
+    # `llm_extraction` records a wish for later; the others change what is built.
     sdk_python: bool = opt(
-        Owner.user, "Wish for a typed Python client; recorded only, nothing is built", False
+        Owner.user,
+        "Build a typed Python client package of this twin into `sdk/python/` "
+        "(installable, reads its address and token from DTA_BASE_URL and DTA_API_TOKEN)",
+        False,
     )
-    mcp: bool = opt(Owner.user, "Wish for an MCP adapter; recorded only, nothing is built", False)
+    mcp: bool = opt(
+        Owner.user,
+        "Serve the API to agents as MCP tools: an `mcp` service on 127.0.0.1:DTA_MCP_PORT "
+        "that holds no token and passes on the caller's",
+        False,
+    )
     executors: bool = opt(Owner.user, "Let actions call external systems", False)
     llm_extraction: bool = opt(
         Owner.user,
@@ -183,7 +191,8 @@ class Addons(Base):
     )
     readonly_sql: bool = opt(
         Owner.user,
-        "Wish for read-only SQL over the history; recorded only, nothing is built",
+        "Publish the store on 127.0.0.1:DTA_SQL_PORT with a user `twin_reader` that may only "
+        "read this twin's database, its history included (password DTA_SQL_READER_PASSWORD)",
         False,
     )
 

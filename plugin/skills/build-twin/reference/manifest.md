@@ -76,11 +76,11 @@ What the twin must do and within which limits.
 | `contract.notification.kind` | one of `webhook`, `log` | yes | user |  | Where failures are raised |
 | `contract.notification.webhook_env` | text | yes, when `kind` is `webhook` | user |  | Name of the variable holding the webhook address |
 | `contract.addons` | section | no | user |  | Optional parts of the build |
-| `contract.addons.sdk_python` | true or false | no | user | `false` | Wish for a typed Python client; recorded only, nothing is built |
-| `contract.addons.mcp` | true or false | no | user | `false` | Wish for an MCP adapter; recorded only, nothing is built |
+| `contract.addons.sdk_python` | true or false | no | user | `false` | Build a typed Python client package of this twin into `sdk/python/` (installable, reads its address and token from DTA_BASE_URL and DTA_API_TOKEN) |
+| `contract.addons.mcp` | true or false | no | user | `false` | Serve the API to agents as MCP tools: an `mcp` service on 127.0.0.1:DTA_MCP_PORT that holds no token and passes on the caller's |
 | `contract.addons.executors` | true or false | no | user | `false` | Let actions call external systems |
 | `contract.addons.llm_extraction` | true or false | no | user | `false` | Wish for documents re-read by a language model; recorded only, nothing is built |
-| `contract.addons.readonly_sql` | true or false | no | user | `false` | Wish for read-only SQL over the history; recorded only, nothing is built |
+| `contract.addons.readonly_sql` | true or false | no | user | `false` | Publish the store on 127.0.0.1:DTA_SQL_PORT with a user `twin_reader` that may only read this twin's database, its history included (password DTA_SQL_READER_PASSWORD) |
 | `contract.hosting` | one of `local`, `cloud` | no | user | `local` | Where the twin is meant to run; recorded only, it runs on this machine |
 
 ## ontology
