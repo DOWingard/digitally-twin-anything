@@ -23,7 +23,7 @@ What the user gets at the end:
 ## How to read this skill
 
 - This file is the map. Each stage has a reference file under `reference/`; open it when you reach that stage and follow it step by step.
-- `dta` is on your PATH. Every `dta` command in this skill is written without global options. Run each one as `dta --json -w <workspace> <command>`, for example `dta --json -w <workspace> status`. With `--json`, the output is one JSON document: `{"ok": true, "result": {...}}` or `{"ok": false, "error": {"code": ..., "message": ..., "detail": {...}}}`.
+- `dta` is on your PATH. Every `dta` command in this skill is written without global options. Run each one as `dta --json -w <workspace> <command>`, for example `dta --json -w <workspace> status`. With `--json`, standard output is one JSON document: `{"ok": true, "result": {...}}` or `{"ok": false, "error": {"code": ..., "message": ..., "detail": {...}}}`. The JSON lines on standard error are the tool's log; read the document on standard output.
 - Exit codes: 0 the command did its work; 1 a check or gate ran and failed; 2 the command could not run. On 1 or 2, look up `error.code` in [troubleshooting](reference/troubleshooting.md).
 - Text in angle brackets is a value you substitute: `<workspace>` is the twin's workspace directory, `<question>` a question id, `<source>` a source id. Never type the brackets.
 - A field path such as `contract.questions.<question>.tolerance.value` names one field of `manifest.yaml`: each dot is one level of YAML nesting, and `<question>` is a key you chose.
