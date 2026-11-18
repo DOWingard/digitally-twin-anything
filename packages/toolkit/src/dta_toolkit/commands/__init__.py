@@ -14,6 +14,7 @@ from . import (
     lifecycle,
     manifest,
     ontology,
+    portability,
     profile,
     sdkgen,
     sign,
@@ -49,6 +50,8 @@ def register(app: typer.Typer) -> None:
     app.add_typer(source_app, name="source", help="Reach the twin's sources from its stack.")
 
     app.command("profile")(profile.profile)
+    app.command("export")(portability.export)
+    app.command("import")(portability.import_bundle)
 
     sync_app = typer.Typer(add_completion=False, no_args_is_help=True)
     sync_app.command("derive")(sync.derive)

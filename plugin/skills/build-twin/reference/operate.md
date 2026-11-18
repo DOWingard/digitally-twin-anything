@@ -63,3 +63,29 @@ If the cause lies in the contract (the system now needs a different tolerance or
 - Proposed actions waiting for a person: `dta actions records --status proposed`, one in detail with `dta actions record <uid>`. Show them to the user; approve or reject only on the user's word, with their name: `dta actions approve <uid> --by "<user's name>"` or `dta actions reject <uid> --by "<user's name>" --note "<why>"`.
 - Loops: `dta control list`. A loop is registered disabled; `dta control enable <loop> --by "<user's name>"` only when the user says to start it, `dta control disable <loop> --by "<user's name>"` when they say to stop it.
 - To propose an action on the user's request: `dta actions propose <action> --object <uid> --param value=<value> --reason "<why>" --source "<user's name>"`.
+
+
+## Move the twin to another machine
+
+A twin is moved as one file. The file holds the workspace (manifest, ontology, code, the discussion, the reports), every version of the twin's data and its fitted models. It holds no secret: `.env` stays behind.
+
+On the machine that has the twin, with the twin running:
+
+```sh
+dta export --out <folder>
+```
+
+- Exit 0: `result.bundle` is the file written, `result.head` the newest version it holds. Tell the user every entry of `result.warnings`: a source that is a folder on this machine is not in the file, and the user must bring that folder along themselves.
+- The twin keeps running during the export.
+
+On the other machine, where the plugin and the twin's runtime image are installed:
+
+```sh
+dta import <bundle> --into <workspace>
+```
+
+1. The first run unpacks the workspace and creates `.env` with a new store password and API token; `result.status` is `unpacked`. `result.to_fill` names what the user must write, as in [stage 2](stage-2-access.md) step 4: the ports, the base address and every source credential. Have the user fill them in.
+2. Run the same command again. It starts the store alone, restores every version, and checks that the newest version of every branch is the one exported. Exit 0 with `result.status` equal to `verified` means the twin's data arrived unchanged; `result.next` lists the commands that follow.
+3. The gates `access`, `build`, `acceptance` and `handover` are not carried: on the new machine run `dta source probe`, `dta build`, `dta accept` and `dta install-skill`, as stages 2, 6, 7 and 8 say. The user's signature is carried and stays valid while the contract is unchanged.
+
+Never pass `--replace-data` unless the user said, for this twin on this machine, that its existing store may be deleted.

@@ -21,8 +21,9 @@ can be built, accepted and handed over today, with functions, models selected
 by backtest, questions whose accuracy the twin measures, and what-if
 scenarios. A live twin checks its own fidelity, corrects itself or says that
 it failed, and can act on the real system through typed actions and control
-loops. The plugin's entry skill, export and import, and the generated client
-are not built yet.
+loops. A twin can be exported into one file and imported on another host
+with the same history. The plugin (`plugin/`) carries the skill by which an
+agent builds a twin, and a launcher that runs the toolkit from its image.
 
 ## Layout
 
@@ -250,6 +251,36 @@ dta fidelity retry ID --by NAME | resolve ID --by NAME | correct QUESTION --rung
 dta actions list | propose ACTION --object UID --param k=v --reason TEXT | records | approve UID --by NAME | reject UID --by NAME
 dta control list | enable LOOP --by NAME | disable LOOP --by NAME | run LOOP
 dta notifications
+```
+
+### Moving a twin, and the add-ons
+
+```sh
+dta export [--out FILE|FOLDER]     # one bundle: workspace, every version of the store, artifacts; no secrets
+dta import BUNDLE [--into DIR]     # unpack, fill .env, run again: the store is restored and its heads verified
+```
+
+- A bundle holds the manifest, the ontology, the twin's code, the record of the
+  discussion, the reports, a backup of the versioned store and the artifact
+  volume. `.env` is never in it. Export runs while the twin runs.
+- Import restores the store under the same commit ids: it compares the head of
+  every branch with what the bundle names and refuses the import when one
+  differs. Access, build, acceptance and handover are run again on the new
+  host; the signature is carried.
+- A source that is a folder on the exporting machine is named in the bundle's
+  warnings and is not carried.
+
+Three add-ons, each built only when the contract selects it and removed when
+it is deselected:
+
+| `contract.addons` | What is built |
+|---|---|
+| `sdk_python` | a Python package `twin_<id>` in `sdk/python/`: typed models from the ontology, a client generated from the twin's OpenAPI document, one accessor per type and one method per question; every call takes `at`; address and token from `DTA_BASE_URL` and `DTA_API_TOKEN` |
+| `mcp` | a service that offers every API operation as an MCP tool on `127.0.0.1:$DTA_MCP_PORT`; it holds no token and passes the caller's on |
+| `readonly_sql` | the store's SQL port on `127.0.0.1:$DTA_SQL_PORT` and a user that can only `SELECT`, for queries with `AS OF`, the commit log and diffs |
+
+```sh
+dta generate sdk [--force]
 ```
 
 ## What a built twin serves

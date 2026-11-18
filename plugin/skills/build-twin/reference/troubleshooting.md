@@ -194,6 +194,25 @@ What each add-on builds, and the variables it needs: [add-ons](addons.md).
 | sdk.client_failed | The client's generator failed. | As `sdk.api_unexpected`. | Yes. |
 | mcp.tools_mismatch | The MCP adapter's tools differ from the API's operations; it does not start (`dta logs mcp`). | Show the message to the user: the runtime image is inconsistent. | Yes. |
 
+## Export and import
+
+| Code | What it means | What to do | Ask the user? |
+|---|---|---|---|
+| export.store_not_running | The twin's store is not running, so there is nothing to back up. | `dta up`, then `dta export` again. | No. |
+| export.not_installed | The store runs but holds no twin yet. | Build the twin first (`dta build`). | No. |
+| export.api_missing | The API container, which holds the twin's artifacts, does not exist. | `dta up`, then `dta export` again. | No. |
+| export.store_busy | The twin kept committing during five backups in a row. | Run `dta export` again; if it repeats, tell the user. | If it repeats. |
+| export.target_invalid | `--out` names something that cannot be written. | Give a folder that exists or a file name in one. | No. |
+| import.bundle_not_found | The bundle file does not exist. | Check the path; the user may have to copy the file to this machine. | Yes. |
+| bundle.unreadable | The file is not a twin bundle or is damaged. | Ask the user for the file again. | Yes. |
+| bundle.unsafe_member | The bundle holds a path that would be written outside the workspace. | Do not import it; tell the user. | Yes. |
+| bundle.checksum_mismatch | A member of the bundle is not what the bundle's own list says: the file changed after export. | Ask the user to copy or export it again. | Yes. |
+| bundle.unknown_format | The bundle was written by a newer `dta`. | The user updates the plugin, or exports with this version. | Yes. |
+| import.target_exists | The target folder already holds a workspace or a bundle. | Choose an empty folder with `--into`. | No. |
+| import.store_volume_exists | A stack of this twin's name already has a store on this machine. | Never add `--replace-data` yourself: it deletes that store. Tell the user what exists and let them decide. | Yes. |
+| import.bundle_inconsistent | The bundle's parts do not belong together. | Ask the user to export again. | Yes. |
+| import.head_mismatch | The restored store's newest version is not the exported one. The twin was not imported. | Tell the user the branch and both ids from the message; do not build on it. | Yes. |
+
 ## Acceptance and handover
 
 | Code | Meaning | What to do | Ask the user? |
