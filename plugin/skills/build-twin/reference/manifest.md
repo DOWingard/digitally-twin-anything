@@ -164,6 +164,7 @@ Recurring sync.
 | `sync.derivation.min_staleness` | duration (ISO 8601, such as `PT15M`) | no | written by `dta sync derive --write` |  |  |
 | `sync.derivation.freshness_bound` | duration (ISO 8601, such as `PT15M`) | no | written by `dta sync derive --write` |  |  |
 | `sync.derivation.change_time` | duration (ISO 8601, such as `PT15M`) | no | written by `dta sync derive --write` |  |  |
+| `sync.derivation.horizon` | duration (ISO 8601, such as `PT15M`) | no | written by `dta sync derive --write` |  |  |
 | `sync.derivation.rule` | text | no | written by `dta sync derive --write` | `max(source_period, rate_period, min(freshness_bound, change_time / 2))` |  |
 | `sync.aggregation` | one of `last`, `mean`, `min`, `max` | no | agent | `last` | How signals faster than the interval are reduced before commit |
 | `sync.backfill_interval` | duration (ISO 8601, such as `PT15M`) | no | agent |  | Width of the versions in which existing history is loaded |

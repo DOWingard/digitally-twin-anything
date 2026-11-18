@@ -320,6 +320,9 @@ class SyncDerivation(Base):
     # over questions and the sources they rest on, of staleness less refresh period.
     freshness_bound: timedelta | None = None
     change_time: timedelta | None = None
+    # The greatest common divisor of the forecast horizons: the interval divides it, so
+    # that every horizon is a whole number of steps.
+    horizon: timedelta | None = None
     rule: str = "max(source_period, rate_period, min(freshness_bound, change_time / 2))"
 
 

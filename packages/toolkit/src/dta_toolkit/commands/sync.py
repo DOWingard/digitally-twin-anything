@@ -2,9 +2,9 @@
 
 `derive` applies the interval rule to what the manifest holds: the sources'
 refresh and rate limit periods, the questions' stalenesses and the change
-times profiling measured. With `--write` the interval it gives is recorded as
-derived, with the inputs it came from. An interval somebody confirmed is never
-replaced.
+times profiling measured, and fits the result to the forecast horizons, which
+it has to divide. With `--write` the interval it gives is recorded as derived,
+with the inputs it came from. An interval somebody confirmed is never replaced.
 
 `run` asks the running twin's API for one run and, unless told not to, waits
 for its job and prints the run's report. `status` prints what the API says of
@@ -55,7 +55,14 @@ INTERVAL_CONFIRMED = "sync.interval_confirmed"
 BATCH_OPEN = "sync.batch_open"
 
 _DURATION = TypeAdapter(timedelta)
-_INPUTS = ("source_period", "rate_period", "min_staleness", "freshness_bound", "change_time")
+_INPUTS = (
+    "source_period",
+    "rate_period",
+    "min_staleness",
+    "freshness_bound",
+    "change_time",
+    "horizon",
+)
 
 
 def _refuse_while_batch_open(workspace: Workspace) -> None:
@@ -92,6 +99,8 @@ def _result(manifest: Manifest, found: IntervalDerivation) -> dict[str, Any]:
         "problems": list(found.problems),
         "rule": found.inputs.rule,
         "inputs": {name: _iso(getattr(found.inputs, name)) for name in _INPUTS},
+        "before_fitting": _iso(found.unfitted),
+        "horizon_questions": list(found.questions),
         "manifest_interval": _iso(stated),
         "manifest_interval_confirmed": confirmed,
         "agree": stated is not None and stated == found.interval,
@@ -104,10 +113,16 @@ def _text(result: dict[str, Any], found: IntervalDerivation) -> str:
     for name in _INPUTS:
         value = getattr(found.inputs, name)
         lines.append(f"  {name:<16} {fmt_duration(value) if value is not None else 'not known'}")
+    if found.questions:
+        lines.append(f"  {'horizons of':<16} {', '.join(found.questions)}")
     if found.interval is None:
         lines.append("Interval: cannot be derived; nothing the rule needs is known")
     else:
         lines.append(f"Interval: {fmt_duration(found.interval)} (decided by {found.binding})")
+        if found.binding == "horizon" and found.unfitted is not None:
+            lines.append(
+                f"  fitted from {fmt_duration(found.unfitted)} so that it divides every horizon"
+            )
     lines += [f"  problem  {problem}" for problem in found.problems]
     stated = result["manifest_interval"]
     if stated is None:
@@ -140,7 +155,7 @@ def derive(
             ctx,
             UNDERIVABLE,
             "the interval cannot be derived: profile the sources, or state their refresh "
-            "periods and the questions' stalenesses",
+            "periods, the questions' stalenesses or the forecasts' horizons",
             result,
             _text(result, found),
         )

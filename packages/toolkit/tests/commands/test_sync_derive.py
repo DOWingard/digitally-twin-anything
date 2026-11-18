@@ -2,7 +2,8 @@
 
 The complete sample states its sources' periods (1 min and 5 min, a rate limit
 of 30 s) and its questions' stalenesses (10 min for the tank level, read from
-the 1 min source). The rule therefore allows at most 10 - 1 = 9 min.
+the 1 min source). The rule therefore allows at most 10 - 1 = 9 min, which
+divides the forecasts' horizon of 6 h.
 """
 
 from __future__ import annotations
@@ -44,7 +45,12 @@ def test_derive_reports_the_interval_its_inputs_and_what_decided_it(
         "min_staleness": "PT10M",
         "freshness_bound": "PT9M",
         "change_time": None,
+        "horizon": "PT6H",
     }
+    assert (result["before_fitting"], result["horizon_questions"]) == (
+        "PT9M",
+        ["q_forecast", "q_schedule"],
+    )
     assert (result["manifest_interval"], result["agree"], result["written"]) == (None, False, False)
     # Without --write nothing is changed.
     assert workspace.read_manifest() == before
@@ -86,7 +92,10 @@ def test_a_derived_interval_follows_the_rule_when_its_inputs_change(
     code, document = workspace.json("sync", "derive", "--write")
 
     assert code == 0 and document["result"]["written"] is True
-    assert workspace.read_manifest()["sync"]["interval"] == "PT7M"
+    # The rule's 7 min does not divide the 6 h horizon: 360 / 54 steps = 6 min 40 s.
+    assert document["result"]["binding"] == "horizon"
+    assert document["result"]["before_fitting"] == "PT7M"
+    assert workspace.read_manifest()["sync"]["interval"] == "PT6M40S"
 
 
 def test_a_confirmed_interval_is_reported_against_the_rule_and_never_replaced(
@@ -143,3 +152,18 @@ def test_text_output_names_every_input(workspace: Any, complete: dict[str, Any])
         pass
     else:
         raise AssertionError("text mode printed JSON")
+
+
+def test_text_output_says_when_the_horizons_decided(
+    workspace: Any, complete: dict[str, Any]
+) -> None:
+    complete["contract"]["questions"]["q_level"]["staleness"] = "PT8M"
+    _ready(workspace, complete)
+    result = workspace.run("sync", "derive")
+    assert result.exit_code == 0, result.output
+    for expected in (
+        "horizons of      q_forecast, q_schedule",
+        "Interval: 6 min 40 s (decided by horizon)",
+        "fitted from 7 min so that it divides every horizon",
+    ):
+        assert expected in result.output
