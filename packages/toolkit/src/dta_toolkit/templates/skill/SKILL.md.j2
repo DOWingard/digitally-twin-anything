@@ -176,20 +176,22 @@ What the controls serve: {{ objective.description }} ({{ objective.direction or 
 The twin executes none of these itself: every proposal is recorded and stays a recommendation for a person to carry out.
 
 {% endif %}
-The interlock decides what becomes of a proposal, from the control's autonomy and the twin's fidelity state at that moment. This is the rule; the twin enforces it:
+The interlock decides what becomes of a proposal, from the control's autonomy, the twin's fidelity state and the incidents it has not resolved at that moment. This is the rule; the twin enforces it:
 
-| Autonomy | `healthy` | `correcting` or `unknown` | `failed` |
-|---|---|---|---|
-| advisory | recorded as `proposed`; never executed by the twin | same | same |
-| supervised | `proposed`; executed when a person approves it | same | an approval gives `blocked` |
-| autonomous | executed at once | `blocked` | `blocked` |
+| Autonomy | `healthy` | `correcting`, only `breach` or `signal` incidents open | `correcting`, a `stale`{% if executes %} or `reconcile`{% endif %} incident open | `unknown` | `failed` |
+|---|---|---|---|---|---|
+| advisory | recorded as `proposed`; never executed by the twin | same | same | same | same |
+| supervised | `proposed`; executed when a person approves it | same | same | same | an approval gives `blocked` |
+| autonomous | executed at once | executed at once | `blocked` | `blocked` | `blocked` |
 
-Never work around a blocked action. Do not propose it again under another action or in smaller steps, do not ask for it through a loop, and do not reach the real system by any other route. A `blocked` record is final: tell the user that it was blocked and why (the record's `fidelity`, and the incidents that keep the twin from `healthy`), and propose it again only once the state allows it and the user still wants it.
+A `stale` incident means the data is too old to decide on{% if executes %}, a `reconcile` incident that an earlier command did not take effect{% endif %}, and `unknown` that no check has vouched for the twin yet. A breach or a suspect signal does not stop an autonomous action: the twin corrects those itself.
+
+Never work around a blocked action. Do not propose it again under another action or in smaller steps, do not ask for it through a loop, and do not reach the real system by any other route. A `blocked` record is final: tell the user that it was blocked and why (the record's `fidelity` and `reasons`: the state, or the kind and uid of each incident that blocks it), and propose it again only once that is resolved and the user still wants it.
 
 Proposing (recipe "Propose an action"):
 
 - `POST /actions/{id}/propose` with `{"object": "<uid>", "params": {"value": ...}, "reason": "<why, in one sentence>", "source": "<your name>"}` and a header `Idempotency-Key`. The twin checks the object, the parameters and the bounds; a refusal is `422` `action.rejected` with every reason in `errors`, and is recorded too.
-- Propose only what the user asked for, or what follows from a question the user asked, and tell the user what you proposed and its `status`.{% if executes and controls | selectattr("autonomy", "equalto", "autonomous") | list %} A proposal on an autonomous control is executed at once while the twin is `healthy`: there is no second look.{% endif %}
+- Propose only what the user asked for, or what follows from a question the user asked, and tell the user what you proposed and its `status`.{% if executes and controls | selectattr("autonomy", "equalto", "autonomous") | list %} A proposal on an autonomous control is executed at once while the twin is `healthy`, or `correcting` with no `stale` or `reconcile` incident open: there is no second look.{% endif %}
 - Approval is the human's. A `proposed` record of a supervised control waits for a person: give the user its uid and stop there. Never approve your own proposal (`POST /actions/records/{uid}/approve`) unless the user tells you to approve that record; then send `by` with the user's name, never your own.
 - An executed action changes the real system, not the twin's observed data: the change shows when a sync run reads it. After its settle time, `GET /actions/records/{uid}` gives `reconciliation`: `ok`, `mismatch` (the twin opens an incident) or `pending`.
 

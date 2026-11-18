@@ -379,8 +379,23 @@ def test_a_live_twin_with_everything_is_told_the_interlock_and_who_decides():
     for text in (*FIDELITY_TEXT, *ACTING_TEXT, "`reconcile`", "reference/remodel.md"):
         assert text in body, text
     interlock = body[body.index("| Autonomy | `healthy`") :]
-    assert "| autonomous | executed at once | `blocked` | `blocked` |" in interlock
-    assert "| supervised | `proposed`; executed when a person approves it" in interlock
+    assert interlock.startswith(
+        "| Autonomy | `healthy` | `correcting`, only `breach` or `signal` incidents open "
+        "| `correcting`, a `stale` or `reconcile` incident open | `unknown` | `failed` |"
+    )
+    assert (
+        "| autonomous | executed at once | executed at once | `blocked` | `blocked` | `blocked` |"
+        in interlock
+    )
+    assert (
+        "| supervised | `proposed`; executed when a person approves it | same | same | same "
+        "| an approval gives `blocked` |" in interlock
+    )
+    # The same rule in the API's reference, and the proposal recipe reads what it judges by.
+    api = skill.files["reference/api.md"]
+    assert "or `correcting` with no `stale` or `reconcile` incident unresolved" in api
+    assert "unless the twin's fidelity is `healthy`" not in api
+    assert 'standing["incidents"]' in skill.files["reference/recipes.md"]
     control = next(line for line in body.splitlines() if line.startswith("| `c_pump`"))
     assert "`Pump.running`" in control and "one of `true`, `false`" in control
     assert "autonomous" in control and "`set_pump`" in control

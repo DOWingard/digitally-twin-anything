@@ -444,7 +444,11 @@ print(found["total"])
 ## {{ n + 9 }}. Propose an action
 
 ```python
-fidelity = get("/fidelity").json()["state"]          # what the interlock will judge by
+standing = get("/fidelity").json()                   # what the interlock will judge by
+fidelity = standing["state"]
+blocking = [i["uid"] for i in standing["incidents"] if i["kind"] in ("stale", "reconcile")]
+print(fidelity, blocking)                            # autonomous: executed only if healthy or
+                                                     # correcting, and blocking is empty
 types = get("/actions").json()
 for a in types["data"]:
     print(a["id"], a["control"], a["autonomy"], a["bounds"], a["binding"], a["executable"])
@@ -464,7 +468,7 @@ else:
 ```
 
 - `status` `proposed`: advice only, or waiting for a person's approval. Give the user the record's uid and stop; approving is the user's (`POST /actions/records/{uid}/approve` with `by` the user, only when the user says so for that record).
-- `status` `blocked`: the interlock refused it in the twin's present state. Final: never work around it; tell the user why.
+- `status` `blocked`: the interlock refused it: the twin is `unknown` or `failed`, or a `stale` or `reconcile` incident is open; `reasons` names which. Final: never work around it; tell the user why.
 - `status` `executed`: the call was made; `execution` holds its HTTP status and when it takes effect. `reconciliation` becomes `ok` or `mismatch` once its settle time has passed and a sync run has read the result.
 - `status` `failed`: the call failed; `execution` says how. Do not propose it again in a loop; report it.
 - The same `Idempotency-Key` with the same proposal gives back the same record (200); a new proposal needs a new key.

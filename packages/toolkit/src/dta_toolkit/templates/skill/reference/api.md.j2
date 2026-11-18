@@ -118,7 +118,7 @@ Whether the twin still keeps what it promised, measured on its own clock at ever
 
 ## Actions
 
-What the twin may do to the real system, and what became of each proposal. An action type carries out a control (`autonomy`: `advisory` is a recommendation only, `supervised` waits for an approval, `autonomous` is executed at once) or only advises. The interlock: nothing is executed at once unless the twin's fidelity is `healthy`; an approval is blocked only while it is `failed`. Every proposal is recorded, whatever became of it.
+What the twin may do to the real system, and what became of each proposal. An action type carries out a control (`autonomy`: `advisory` is a recommendation only, `supervised` waits for an approval, `autonomous` is executed at once) or only advises. The interlock: an autonomous action is executed at once only while the twin's fidelity is `healthy`, or `correcting` with no `stale` or `reconcile` incident unresolved; it is `blocked` while the twin is `unknown` or `failed` or such an incident is open, and its `reasons` name the state or each incident's kind and uid. An approval is blocked only while the twin is `failed`. Every proposal is recorded, whatever became of it.
 
 | Endpoint | Returns |
 |---|---|
@@ -129,7 +129,7 @@ What the twin may do to the real system, and what became of each proposal. An ac
 | `GET /actions/records/{uid}` | one record: what was proposed and judged, the decision, the call and its answer, and whether its effect was observed (`reconciliation`: `pending`, `ok`, `mismatch`) |
 | `POST /actions/records/{uid}/approve` body `{"by", "note"}` | approves a proposed supervised action and executes it; `blocked` while the twin's fidelity is `failed` |
 | `POST /actions/records/{uid}/reject` body `{"by", "note"}` | turns a proposed action down |
-| `POST /actions/reconcile`, optional header `Idempotency-Key` | compares every executed action whose `settle` has passed with the observed value: `ok` within `tolerance`, otherwise `mismatch`, which opens an incident of kind `reconcile` (the twin is then `correcting`); an `ok` closes the open incident of an earlier action on the same control and object |
+| `POST /actions/reconcile`, optional header `Idempotency-Key` | compares every executed action whose `settle` has passed with the observed value: `ok` within `tolerance`, otherwise `mismatch`, which opens an incident of kind `reconcile` (the twin is then `correcting`, and autonomous actions are blocked until it is resolved); an `ok` closes the open incident of an earlier action on the same control and object |
 
 ## Control loops
 
