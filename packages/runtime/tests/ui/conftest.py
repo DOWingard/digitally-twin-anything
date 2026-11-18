@@ -24,6 +24,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parents[1] / "api"))
 # The live twin's sources: folders of CSV files that change between runs.
 sys.path.append(str(Path(__file__).parents[1] / "sync"))
+# The plants of the fidelity and action tests, which the fidelity and actions tabs show.
+sys.path.append(str(Path(__file__).parents[1] / "fidelity"))
+sys.path.append(str(Path(__file__).parents[1] / "actions"))
 
 import httpx  # noqa: E402
 from api_testkit import WaterHistory, build_water_history, database_name, with_database  # noqa: E402
@@ -49,9 +52,13 @@ from ui_compute import (  # noqa: E402
     serve_computed,
 )
 from ui_testkit import (  # noqa: E402
+    ACTIONS_TAB_LIMIT_S,
+    ACTIONS_TAB_S,
     COMPARE_LIMIT_S,
     COMPARE_S,
     DRIVER_AGENT,
+    FIDELITY_TAB_LIMIT_S,
+    FIDELITY_TAB_S,
     FIRST_RENDER_LIMIT_S,
     FIRST_RENDER_S,
     FOLLOW_LIMIT_S,
@@ -68,6 +75,16 @@ from ui_testkit import (  # noqa: E402
     UiServer,
     extend_history,
     free_port,
+)
+from ui_trust import (  # noqa: E402
+    ActingWorld,
+    BadgeWorld,
+    FidelityWorld,
+    Served,
+    build_acting,
+    build_badge,
+    build_crowded,
+    build_fidelity,
 )
 
 CHROME = Path("/usr/bin/google-chrome-stable")
@@ -101,6 +118,20 @@ def pytest_terminal_summary(terminalreporter: Any) -> None:
         if measured:
             terminalreporter.write_line(
                 f"UI {what} (limit {limit:.0f} s): "
+                + ", ".join(f"{seconds:.2f}" for seconds in measured)
+                + " s"
+            )
+    for what, limit, measured in (
+        (
+            "fidelity tab drawn, 3 x 300 scored origins and 50 incidents",
+            FIDELITY_TAB_LIMIT_S,
+            FIDELITY_TAB_S,
+        ),
+        ("actions tab drawn, first page of 1,000 records", ACTIONS_TAB_LIMIT_S, ACTIONS_TAB_S),
+    ):
+        if measured:
+            terminalreporter.write_line(
+                f"UI {what} (limit {limit:.1f} s): "
                 + ", ".join(f"{seconds:.2f}" for seconds in measured)
                 + " s"
             )
@@ -381,6 +412,112 @@ def make_live(
     yield make
     for stop in reversed(exits):
         stop()
+
+
+@pytest.fixture(scope="session")
+def new_database(
+    server_settings: StoreSettings, _databases: list[str]
+) -> Callable[[str], StoreSettings]:
+    """Settings of a database of its own for a world, dropped after the session."""
+
+    def make(purpose: str) -> StoreSettings:
+        name = database_name(server_settings, purpose)
+        _databases.append(name)
+        return with_database(server_settings, name)
+
+    return make
+
+
+# The worlds below are shared by the tests of one module and stopped after it: the range
+# of loopback ports these tests may use is too small to hold them all for the session.
+@pytest.fixture(scope="module")
+def fidelity_world(
+    new_database: Callable[[str], StoreSettings],
+    ui_logs: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[FidelityWorld]:
+    """A plant with a resolved signal incident, a suspect signal and a breach waiting for a
+    re-model, served with its interface; shared, read only."""
+    world = build_fidelity(new_database("uifid"), tmp_path_factory.mktemp("fidelity"), ui_logs)
+    try:
+        yield world
+    finally:
+        world.served.close()
+        world.plant.twin.close()
+
+
+@pytest.fixture
+def make_badge(
+    new_database: Callable[[str], StoreSettings], ui_logs: Path, tmp_path: Path
+) -> Iterator[Callable[[], BadgeWorld]]:
+    """A plant never checked, whose fidelity state the test moves."""
+    made: list[BadgeWorld] = []
+
+    def make() -> BadgeWorld:
+        world = build_badge(new_database("uibadge"), tmp_path / f"badge{len(made)}", ui_logs)
+        made.append(world)
+        return world
+
+    yield make
+    for world in made:
+        world.served.close()
+        world.plant.twin.close()
+
+
+@pytest.fixture(scope="module")
+def crowded(
+    new_database: Callable[[str], StoreSettings],
+    ui_logs: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Served]:
+    """Three questions of at least 300 scored origins each and 50 incidents; read only."""
+    served = build_crowded(new_database("uicrowd"), tmp_path_factory.mktemp("crowded"), ui_logs)
+    try:
+        yield served
+    finally:
+        served.close()
+        served.twin.close()
+
+
+@pytest.fixture
+def make_acting(
+    new_database: Callable[[str], StoreSettings],
+    water_text: str,
+    ui_logs: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[Callable[[], ActingWorld]]:
+    """The acting world, made for one test that may stop its API."""
+    made: list[ActingWorld] = []
+
+    def make() -> ActingWorld:
+        world = build_acting(
+            new_database("uiact"), water_text, tmp_path_factory.mktemp("acting"), ui_logs
+        )
+        made.append(world)
+        return world
+
+    yield make
+    for world in made:
+        world.served.close()
+        world.served.twin.close()
+
+
+@pytest.fixture(scope="module")
+def acting(
+    new_database: Callable[[str], StoreSettings],
+    water_text: str,
+    ui_logs: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[ActingWorld]:
+    """Records in every status, a mismatch, a loop run and a thousand more; read only."""
+    world = build_acting(
+        new_database("uiacts"), water_text, tmp_path_factory.mktemp("acts"), ui_logs
+    )
+    try:
+        yield world
+    finally:
+        world.served.close()
+        world.served.twin.close()
 
 
 @pytest.fixture

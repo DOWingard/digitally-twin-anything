@@ -26,7 +26,16 @@ from ui_page import (
 )
 
 UI_SOURCE = Path(ui.__file__).parent
-MODULES = ("questions.py", "answers.py", "branches.py", "scenarios.py")
+MODULES = (
+    "questions.py",
+    "answers.py",
+    "branches.py",
+    "scenarios.py",
+    "badge.py",
+    "features.py",
+    "fidelity.py",
+    "actions.py",
+)
 # Arguments and keys whose text the page shows.
 SHOWN_KEYWORDS = {"children", "label", "placeholder", "title", "detail", "name", "headerName"}
 SHOWN_KEYS = {"label", "headerName", "text"}

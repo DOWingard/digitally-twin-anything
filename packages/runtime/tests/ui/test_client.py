@@ -47,8 +47,12 @@ def test_a_refused_call_is_a_problem_and_is_logged_without_the_token(stack):
     assert data["code"] == "store.bad_filter"
     assert data["duration_ms"] >= 0
     assert data["api_trace_id"] == problem.trace_id
-    # The filter's value is the user's; only parameter names are logged.
-    assert "2.5" not in json.dumps(records[-1])
+    # The filter's value is the user's; only parameter names are logged. The record's
+    # timestamp and duration are numbers of their own that may hold the same digits.
+    assert "sequence:eq" not in json.dumps(records[-1])
+    assert "2.5" not in json.dumps(
+        {key: value for key, value in data.items() if key != "duration_ms"}
+    )
     assert stack.token not in stack.log_file.read_text(encoding="utf-8")
 
 

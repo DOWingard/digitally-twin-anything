@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -630,6 +631,141 @@ def figure_data(driver: WebDriver, element_id: str) -> list[dict[str, Any]]:
         element_id,
     )
     return list(found or [])
+
+
+def figure_layout(driver: WebDriver, element_id: str) -> dict[str, Any]:
+    """The layout of a drawn Plotly figure, as the browser holds it."""
+    found = driver.execute_script(
+        "const box = document.getElementById(arguments[0]);"
+        "const plot = box && box.querySelector('.js-plotly-plot');"
+        "return plot && plot.layout ? JSON.parse(JSON.stringify(plot.layout)) : null;",
+        element_id,
+    )
+    return dict(found or {})
+
+
+# -- fidelity and actions ----------------------------------------------------------
+
+
+def visible_tabs(driver: WebDriver) -> list[str]:
+    """The labels of the tabs the page shows, in order."""
+    return [
+        tab.text.strip()
+        for tab in driver.find_elements(By.CSS_SELECTOR, f"#{ids.TABS} .tab")
+        if tab.is_displayed()
+    ]
+
+
+def badge_text(driver: WebDriver) -> str:
+    """What the state badge says; empty while it is hidden."""
+    found = driver.find_elements(By.ID, ids.STATE_BADGE)
+    return found[0].text if found and found[0].is_displayed() else ""
+
+
+def badge_class(driver: WebDriver) -> str:
+    found = driver.find_elements(By.ID, ids.STATE_BADGE)
+    return str(found[0].get_attribute("class") or "") if found else ""
+
+
+def grid_data(driver: WebDriver, grid_id: Any) -> list[dict[str, Any]] | None:
+    """The rows a grid holds, in the order it shows them; None while it is not drawn.
+    `grid_id` is the grid's Dash id: text, or a dictionary for a pattern-matching id."""
+    return driver.execute_script(
+        "let api = null;"
+        "try { api = window.dash_ag_grid.getApi(arguments[0]); } catch (e) { return null; }"
+        "if (!api) return null;"
+        "const rows = [];"
+        "api.forEachNodeAfterFilterAndSort(node => { if (node.data) rows.push(node.data); });"
+        "if (!rows.length) api.forEachNode(node => { if (node.data) rows.push(node.data); });"
+        "return rows;",
+        grid_id,
+    )
+
+
+def wait_grid(
+    driver: WebDriver, grid_id: Any, ready: Callable[[list[dict[str, Any]]], bool], what: str
+) -> list[dict[str, Any]]:
+    """The rows of a grid once `ready` holds of them, which may be none."""
+
+    def check() -> list[list[dict[str, Any]]] | None:
+        rows = grid_data(driver, grid_id)
+        return [rows] if rows is not None and ready(rows) else None
+
+    return wait_for(driver, check, what)[0]
+
+
+def choose_filter(driver: WebDriver, element_id: str, text: str) -> None:
+    """Choose an option of a filter, scrolled to the middle of the page first so that its
+    list opens in view."""
+    driver.execute_script(
+        "document.getElementById(arguments[0]).scrollIntoView({block: 'center'});", element_id
+    )
+    choose_dropdown(driver, element_id, text)
+
+
+def click_row(driver: WebDriver, container_id: str, row_id: str, column: str) -> None:
+    """Click one cell of the row a grid names `row_id`."""
+    selector = f"#{container_id} .ag-row[row-id='{row_id}'] .ag-cell[col-id='{column}']"
+
+    def click() -> bool:
+        bring_into_view(driver, container_id)
+        found = driver.find_elements(By.CSS_SELECTOR, selector)
+        if not found or not found[0].is_displayed():
+            return False
+        found[0].click()
+        return True
+
+    wait_for(driver, click, f"row {row_id} of {container_id} to be clicked")
+
+
+def chart_id(question: str) -> str:
+    """The DOM id of a question's chart in the fidelity tab."""
+    return json.dumps(
+        {"question": question, "role": ids.FIDELITY_CHART}, separators=(",", ":"), sort_keys=True
+    )
+
+
+def trace(traces: list[dict[str, Any]], meta: str) -> dict[str, Any] | None:
+    """The trace of a figure marked `meta`."""
+    found = [found for found in traces if found.get("meta") == meta]
+    return found[0] if found else None
+
+
+def problem_text(driver: WebDriver, feedback_id: str) -> str:
+    """The problem a feedback area shows; empty when it shows none."""
+    found = driver.find_elements(By.CSS_SELECTOR, f"#{feedback_id} .problem")
+    return found[0].text if found else ""
+
+
+ACTING_WORDS = re.compile(
+    r"propos|approv|reject|enabl|disabl|\brun|retry|resolv|clear|execut|check|correct|send",
+    re.IGNORECASE,
+)
+
+
+def acting_controls(driver: WebDriver, container_class: str) -> list[str]:
+    """The labels of the controls within a part of the page that would act on the twin."""
+    found = driver.find_elements(
+        By.CSS_SELECTOR,
+        f".{container_class} button, .{container_class} [role=button], "
+        f".{container_class} input[type=submit]",
+    )
+    labels = [
+        control.text or control.get_attribute("aria-label") or control.get_attribute("title") or ""
+        for control in found
+    ]
+    return [label for label in labels if ACTING_WORDS.search(label)]
+
+
+def request_bodies(driver: WebDriver) -> list[str]:
+    """The URLs and bodies of every request the browser sent since the last read."""
+    sent = []
+    for entry in driver.get_log("performance"):
+        message = json.loads(entry["message"])["message"]
+        if message["method"] == "Network.requestWillBeSent":
+            request = message["params"]["request"]
+            sent.append(f"{request.get('url')}\n{request.get('postData') or ''}")
+    return sent
 
 
 # -- network ---------------------------------------------------------------------

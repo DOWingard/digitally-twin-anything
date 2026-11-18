@@ -7,11 +7,12 @@ head; not following, it stays and counts the versions written since.
 Choosing an older version by hand stops following, as scrolling up stops a
 log from tailing.
 
-One poll feeds two stores. The first holds what changes only with the head
-or the twin, so that nothing which depends on the version runs on a poll that
-brought no new head. The second holds what a live twin changes on every poll:
-its clock, how old its data is against what its contract allows, its last
-run and the sync job in progress. A version is read only once the slider has
+One poll feeds every store of the header. The first holds what changes only
+with the head or the twin, so that nothing which depends on the version runs on
+a poll that brought no new head. The second holds what a live twin changes on
+every poll: its clock, how old its data is against what its contract allows,
+its last run and the sync job in progress. Another holds the twin's fidelity
+state, which the state badge shows (`badge`). A version is read only once the slider has
 stayed still for a moment, so stepping through versions reads only the one
 the operator stops at.
 """
@@ -27,6 +28,7 @@ from dta_core.log import Log
 from . import ids
 from . import text as T
 from .backend import Backend
+from .badge import fidelity_of
 from .feedback import guarded
 from .parts import LIVE_BRANCH, branch_of
 from .text import duration_text, minute_text, plural, seconds_text, time_text
@@ -53,15 +55,20 @@ def layout() -> html.Header:
             dcc.Store(id=ids.BRANCHES),
             dcc.Store(id=ids.BRANCH),
             dcc.Store(id=ids.LIVE_KEPT),
+            dcc.Store(id=ids.FIDELITY_HEALTH),
+            dcc.Store(id=ids.FEATURES),
+            dcc.Store(id=ids.FAILED_SHOWN),
             dcc.Interval(id=ids.POLL, interval=POLL_MS),
             html.Div(
                 [
                     html.H1("Digital twin", id=ids.TWIN_NAME, className="twin-name"),
                     html.Span(id=ids.TWIN_TIER, className="badge"),
+                    html.Span(id=ids.STATE_BADGE, className="state-badge", hidden=True),
                     html.Span(id=ids.HEAD_LABEL, className="head-label"),
                 ],
                 className="header-row",
             ),
+            html.Div(id=ids.FAILED_LINE, className="failed-line", role="alert"),
             html.Div(id=ids.SCENARIO_NOTICE, className="scenario-notice", role="status"),
             html.Div(id=ids.LIVE_LINE, className="header-row live-line"),
             html.Div(
@@ -111,6 +118,9 @@ def layout() -> html.Header:
             html.Div(id=ids.HEALTH_FEEDBACK),
             html.Div(id=ids.VERSION_FEEDBACK),
             html.Div(id=ids.BRANCH_FEEDBACK),
+            html.Div(id=ids.FAILED_FEEDBACK),
+            html.Div(id=ids.FEATURES_FEEDBACK),
+            html.Div(id=ids.CHART_PRELOAD, style={"display": "none"}),
         ],
         id=ids.HEADER,
         className="header",
@@ -155,18 +165,21 @@ def register(app: Dash, backend: Backend) -> None:
         Output(ids.HEALTH, "data"),
         Output(ids.LIVE, "data"),
         Output(ids.SYNC_KEY, "data"),
+        Output(ids.FIDELITY_HEALTH, "data"),
         Output(ids.HEALTH_FEEDBACK, "children"),
         Input(ids.POLL, "n_intervals"),
         State(ids.HEALTH, "data"),
         State(ids.LIVE, "data"),
         State(ids.SYNC_KEY, "data"),
+        State(ids.FIDELITY_HEALTH, "data"),
     )
-    @guarded(3)
+    @guarded(4)
     def poll_health(
         _: int | None,
         known: dict[str, Any] | None,
         known_live: dict[str, Any] | None,
         known_key: dict[str, Any] | None,
+        known_fidelity: dict[str, Any] | None,
     ) -> Any:
         document = backend.client.get("/meta/health")
         health = {
@@ -181,11 +194,15 @@ def register(app: Dash, backend: Backend) -> None:
         key = sync_key(live["sync"])
         if key != known_key:
             log.info("the twin's sync state changed", **key)
+        trust = fidelity_of(document)
+        if trust["state"] != (known_fidelity or {}).get("state"):
+            log.info("the twin's fidelity state as the header shows it", state=trust["state"])
         # An unchanged answer is not sent on, so that nothing downstream reruns every poll.
         return (
             no_update if health == known else health,
             no_update if live == known_live else live,
             no_update if key == known_key else key,
+            no_update if trust == known_fidelity else trust,
         )
 
     @app.callback(Output(ids.LIVE_LINE, "children"), Input(ids.LIVE, "data"))

@@ -64,6 +64,8 @@ class Backend:
         # Answers to questions and comparisons of scenarios, by the key of their grid.
         self.answers: Held[Any] = Held("answer")
         self.comparisons: Held[Any] = Held("comparison")
+        # The manifest in force at a version of the live twin, by version id.
+        self._manifests: Held[dict[str, Any]] = Held("manifest")
         self._schemas: OrderedDict[str, Schema] = OrderedDict()
         self._openapi: dict[str, Any] | None = None
         self._lock = threading.Lock()
@@ -94,6 +96,23 @@ class Backend:
     def schema_at(self, version: dict[str, Any]) -> Schema:
         """The ontology in force at a selected version, on its branch."""
         return self.schema(str(version["id"]), branch_of(version))
+
+    def manifest(self, version_id: str) -> dict[str, Any]:
+        """The manifest in force at a version of the live twin, read once per version id
+        while it is held."""
+        found = self._manifests.get(version_id)
+        if found is not None:
+            return found
+        started = time.perf_counter()
+        document = self.client.get("/meta/manifest", params={"at": version_id})
+        manifest = dict(document.get("manifest") or {})
+        self._manifests.put(version_id, manifest)
+        log.debug(
+            "manifest read",
+            version=version_id,
+            elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
+        )
+        return manifest
 
     def enum(self, route: str, parameter: str) -> list[str]:
         """Allowed values of a query parameter of a GET route, from the API's OpenAPI document.

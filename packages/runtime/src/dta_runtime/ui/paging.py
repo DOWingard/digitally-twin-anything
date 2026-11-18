@@ -227,17 +227,38 @@ class PagedReader:
 
 
 def read_all(
-    client: ApiClient, route: str, params: Params, *, cap: int = 1_000, page: int = 200
+    client: ApiClient,
+    route: str,
+    params: Params,
+    *,
+    cap: int = 1_000,
+    page: int = 200,
+    path: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Every row of a short listing (the questions, the scenarios), page after page, up to
     `cap` rows."""
+    return read_capped(client, route, params, cap=cap, page=page, path=path)[0]
+
+
+def read_capped(
+    client: ApiClient,
+    route: str,
+    params: Params,
+    *,
+    cap: int,
+    page: int = API_PAGE_MAX,
+    path: Mapping[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """The rows of a listing, page after page, up to `cap` rows; and whether more were
+    left unread."""
     rows: list[dict[str, Any]] = []
     cursor: str | None = None
     while len(rows) < cap:
-        document = client.get(route, params={**params, "limit": page, "cursor": cursor})
+        hop = min(page, cap - len(rows))
+        document = client.get(route, path=path, params={**params, "limit": hop, "cursor": cursor})
         rows.extend(document.get("data") or [])
         cursor = document.get("next_cursor")
         if not cursor:
-            return rows
+            return rows, False
     log.warn("a listing was cut short at its cap", route=route, rows=len(rows), cap=cap)
-    return rows
+    return rows, True

@@ -37,6 +37,22 @@ BRANCH = "selected-branch"
 LIVE_KEPT = "live-kept"
 SCENARIO_NOTICE = "scenario-notice"
 BRANCH_FEEDBACK = "branch-feedback"
+# The fidelity part of the twin's health as the last poll gave it, and whether it is live.
+FIDELITY_HEALTH = "fidelity-health"
+# What the manifest at the head declares that decides which tabs a twin has.
+FEATURES = "twin-features"
+FEATURES_FEEDBACK = "features-feedback"
+STATE_BADGE = "state-badge"
+# Said under the header while the twin is failed, with the failed incidents' subjects.
+FAILED_LINE = "failed-line"
+FAILED_FEEDBACK = "failed-feedback"
+# The fidelity health the failed line was last read for.
+FAILED_SHOWN = "failed-shown"
+FIDELITY_TAB = "fidelity-tab"
+ACTIONS_TAB = "actions-tab"
+# Drawn hidden once a twin with fidelity is known, so that the chart library is loaded
+# before the fidelity tab is opened.
+CHART_PRELOAD = "chart-preload"
 
 # Graph tab
 GRAPH_OBJECT = "graph-object"
@@ -158,3 +174,49 @@ REJECTS_TOTAL = "rejects-total"
 REJECTS_FEEDBACK = "rejects-feedback"
 # Role of the pattern-matching id of the grid of rows set aside, re-created per run and filter.
 REJECTS_GRID = "rejects-grid"
+
+# Fidelity tab: the live twin at the selected version.
+# The version the tab was last read at: every part reads again when it changes.
+FIDELITY_SHOWN = "fidelity-shown"
+FIDELITY_SUMMARY = "fidelity-summary"
+FIDELITY_FEEDBACK = "fidelity-feedback"
+FIDELITY_RANGE = "fidelity-range"
+FIDELITY_CHARTS = "fidelity-charts"
+FIDELITY_CHARTS_FEEDBACK = "fidelity-charts-feedback"
+# Role of the pattern-matching id of a question's chart.
+FIDELITY_CHART = "fidelity-chart"
+INCIDENT_COUNTS = "incident-counts"
+INCIDENTS_STATUS = "incidents-status"
+INCIDENTS_GRID = "incidents-grid"
+INCIDENTS_FEEDBACK = "incidents-feedback"
+# The incident chosen in the grid, by uid.
+INCIDENT_CHOSEN = "incident-chosen"
+INCIDENT_DETAIL = "incident-detail"
+INCIDENT_FEEDBACK = "incident-feedback"
+SIGNALS_GRID = "signals-grid"
+SIGNALS_FEEDBACK = "signals-feedback"
+CHECKS_GRID = "checks-grid"
+CHECKS_FEEDBACK = "checks-feedback"
+NOTIFICATIONS_GRID = "notifications-grid"
+NOTIFICATIONS_STATUS = "notifications-status"
+NOTIFICATIONS_FEEDBACK = "notifications-feedback"
+
+# Actions tab: the live twin at the selected version.
+ACTIONS_SHOWN = "actions-shown"
+ACTIONS_NOTE = "actions-note"
+ACTION_TYPES_GRID = "action-types-grid"
+EXECUTOR_STATUS = "executor-status"
+ACTION_TYPES_FEEDBACK = "action-types-feedback"
+RECORDS_STATUS = "records-status"
+RECORDS_ACTION = "records-action"
+RECORDS = "records"
+RECORDS_FEEDBACK = "records-feedback"
+# Role of the pattern-matching id of the records grid, re-created per filter.
+RECORDS_GRID = "records-grid"
+# The record chosen in the grid, by uid.
+RECORD_CHOSEN = "record-chosen"
+RECORD_DETAIL = "record-detail"
+RECORD_FEEDBACK = "record-feedback"
+LOOPS_GRID = "loops-grid"
+LOOP_RUNS = "loop-runs"
+LOOPS_FEEDBACK = "loops-feedback"

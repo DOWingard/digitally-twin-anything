@@ -71,6 +71,13 @@ def value_text(value: Any) -> str:
     return str(value)
 
 
+def exact_text(value: Any) -> str:
+    """A value as it was sent or seen, to its last digit; a whole float shows no `.0`."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return value_text(value)
+
+
 def with_unit(text: str, unit: str | None) -> str:
     return f"{text} {unit}" if unit and text else text
 
@@ -452,3 +459,451 @@ def mean_name(uid: str) -> str:
 
 def series_cap_text(drawn: int, total: int) -> str:
     return f"The first {drawn} of {total} series are drawn; every row is in the grid below."
+
+
+# -- the state badge and the failed line ------------------------------------------------------
+
+BADGE_LABEL = "fidelity"
+# A state is told by a word and a sign, and coloured as well: never by colour alone.
+STATE_SIGNS = {"unknown": "?", "healthy": "✓", "correcting": "◐", "failed": "✗"}
+FAILED_WARNING = "The twin has failed: its answers and actions are not to be relied on."
+
+
+def state_text(state: str | None) -> str:
+    """`✓ healthy`."""
+    word = state or "unknown"
+    sign = STATE_SIGNS.get(word)
+    return f"{sign} {word}" if sign else word
+
+
+def badge_details(since: str | None, open_count: int, failed_count: int) -> str:
+    """` since 2026-01-05 06:00 UTC · 1 open incident, 1 failed`."""
+    text = f" since {minute_text(since)}" if since else ""
+    text += f" · {plural(open_count, 'open incident')}"
+    if failed_count:
+        text += f", {failed_count} failed"
+    return text
+
+
+def failed_subjects_text(incidents: list[dict[str, Any]]) -> str:
+    """` Failed: the stale incident of level_ahead; the breach incident of flow.`"""
+    if not incidents:
+        return ""
+    told = "; ".join(
+        f"the {found.get('kind') or ''} incident of {found.get('subject') or found.get('uid')}"
+        for found in incidents
+    )
+    return f" Failed: {told}."
+
+
+# -- the fidelity tab ---------------------------------------------------------------------------
+
+FIDELITY_TAB = "Fidelity"
+FIDELITY_HEADING = "Whether the twin keeps its promises"
+NO_FIDELITY = (
+    "This twin sets no fidelity interval and window: it is never checked, and its state stays "
+    "unknown."
+)
+LIVE_ONLY = (
+    "Fidelity and actions belong to the live twin: choose the live twin in the branch "
+    "selector to see them."
+)
+SUMMARY_LABELS = {
+    "state": "state",
+    "since": "since",
+    "check": "last check",
+    "incidents": "incidents by status",
+    "signals": "suspect signals",
+}
+NO_CHECK = "none yet"
+NO_INCIDENT = "none"
+CHARTS_HEADING = "The error of each predictive question"
+RANGE_LABEL = "range of the charts: data time before the selected version"
+# Days before the selected version's time that the charts read; 0 reads everything.
+RANGE_OPTIONS = {7: "last 7 days", 30: "last 30 days", 90: "last 90 days", 365: "last 365 days"}
+RANGE_ALL = "everything"
+NO_PREDICTIVE = "The contract has no predictive question: there is no error to chart."
+POINTS_NAME = "error per scored origin"
+WINDOW_LINE_NAME = "window error"
+CORRECTIONS_NAME = "corrections"
+X_AXIS_TITLE = "time scored (data time)"
+POINTS_HELP = "Filled: counted in the window of the latest check; hollow: not counted."
+INCIDENTS_HEADING = "Incidents, newest first"
+STATUS_FILTER_LABEL = "status"
+# What a filter with nothing chosen lets through.
+FILTER_ANY = "any"
+INCIDENT_COLUMNS = {
+    "kind": "kind",
+    "subject": "subject",
+    "status": "status",
+    "rung": "rung",
+    "attempt": "attempt",
+    "cycle": "cycle",
+    "opened_at": "opened",
+    "resolved_at": "resolved",
+}
+# Told by a word and a sign; an unresolved incident is coloured as well.
+INCIDENT_SIGNS = {"open": "●", "remodel_requested": "…", "failed": "✗", "resolved": "✓"}
+CHOOSE_INCIDENT = "Choose an incident in the grid to see its steps."
+STEP_COLUMNS = ("when", "step", "what was tried", "outcome", "error before", "error after")
+SIGNALS_HEADING = "Signals found suspect"
+SIGNAL_COLUMNS = {
+    "object": "object",
+    "property": "property",
+    "status": "status",
+    "reason": "reason",
+    "since": "since",
+    "reading": "raw reading kept",
+    "inferred": "inferred value in force",
+    "clear_checks": "checks sound so far",
+}
+CHECKS_HEADING = "The last 50 checks"
+CHECK_COLUMNS = {"at": "time", "state": "state", "duration": "duration"}
+NOTIFICATIONS_HEADING = "Notifications"
+NOTIFICATION_COLUMNS = {
+    "type": "type",
+    "subject": "subject",
+    "time": "time",
+    "status": "status",
+    "tries": "tries",
+}
+
+
+def milliseconds_text(value: Any) -> str:
+    """`127 ms` under a second, `seconds_text` from a second on."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return ""
+    if value < 1000:
+        return f"{round(value)} ms"
+    return seconds_text(value / 1000.0)
+
+
+def fidelity_status(version: dict[str, Any]) -> str:
+    return f"as of {version_text(version)} of the live twin"
+
+
+def check_text(check: dict[str, Any] | None) -> str:
+    """`twin_fidelity_check:20260105T060000Z at 2026-01-05 06:00:00 UTC`."""
+    if not check:
+        return NO_CHECK
+    return f"{check.get('uid')} at {time_text(check.get('at'))}"
+
+
+def counts_text(counts: dict[str, int]) -> str:
+    """`2 open, 1 resolved`: incidents by status, in the order of INCIDENT_SIGNS."""
+    told = [f"{counts[status]} {status}" for status in INCIDENT_SIGNS if counts.get(status)]
+    return ", ".join(told) or NO_INCIDENT
+
+
+def signals_text(signals: list[dict[str, Any]]) -> str:
+    """`2: Gauge.level of gauge:G1 (stuck); …`."""
+    if not signals:
+        return NO_INCIDENT
+    told = "; ".join(
+        f"{found.get('property')} of {found.get('object')} ({found.get('reason')})"
+        for found in signals
+    )
+    return f"{len(signals)}: {told}"
+
+
+def incident_status_text(status: str | None) -> str:
+    if not status:
+        return ""
+    sign = INCIDENT_SIGNS.get(status)
+    return f"{sign} {status}" if sign else status
+
+
+def range_text(days: int) -> str:
+    return RANGE_OPTIONS.get(days, RANGE_ALL)
+
+
+def tolerance_name(value: Any, unit: str | None) -> str:
+    """`ε = 0.5 m`."""
+    return "ε = " + with_unit(number_text(value), unit)
+
+
+def window_name(window: str | None) -> str:
+    return f"window W = {duration_text(window)}"
+
+
+def axis_title(metric: str | None, unit: str | None) -> str:
+    """`error, mae [m]`: the question's metric and unit."""
+    text = f"error, {metric}" if metric else "error"
+    return f"{text} [{unit}]" if unit else text
+
+
+def chart_title(question: str, text: str | None, points: int) -> str:
+    title = question_title(question, text)
+    return f"{title} · {plural(points, 'scored origin')}"
+
+
+def no_errors_text(question: str) -> str:
+    return f"No origin of {question} was scored in this range."
+
+
+def chart_cut_text(question: str, drawn: int) -> str:
+    return f"Only the first {drawn} scored origins of {question} are drawn: choose a shorter range."
+
+
+def checks_cut_text(drawn: int) -> str:
+    return f"The window error is drawn over the newest {drawn} checks only."
+
+
+def incident_title(incident: dict[str, Any]) -> str:
+    """`breach incident of level_ahead: remodel_requested, opened 2026-01-05 07:00:00 UTC`."""
+    status = incident_status_text(incident.get("status"))
+    opened = time_text(incident.get("opened_at"))
+    text = (
+        f"{incident.get('kind')} incident of {incident.get('subject')}: {status}, opened {opened}"
+    )
+    if incident.get("resolved_at"):
+        text += f", resolved {time_text(incident['resolved_at'])}"
+    return text
+
+
+def remodel_text(spec: str | None, until: str | None, models: list[str] | None) -> str:
+    """What an incident waiting for a re-model waits for, and until when."""
+    what = f"the model specification {spec}" if spec else "the question's model specification"
+    known = f" Its models when it asked: {', '.join(models)}." if models else ""
+    deadline = f" until {time_text(until)}" if until else ""
+    return (
+        f"Waits for the managing agent to re-model {what}{deadline}: a model of it registered "
+        f"or changed brings the reselection back; nothing by then fails the incident.{known}"
+    )
+
+
+def step_tried(step: dict[str, Any]) -> str:
+    """What a step of an incident tried: the rung of a correction asked for or reported."""
+    action = step.get("action")
+    if action == "request":
+        return f"{step.get('rung')}, attempt {step.get('attempt')}, cycle {step.get('cycle')}"
+    if action == "result":
+        return str(step.get("rung") or "")
+    if action == "remodel_requested":
+        return "asked the managing agent to re-model"
+    if action in ("retry", "resolve", "closed", "cleared") and step.get("by"):
+        note = f": {step['note']}" if step.get("note") else ""
+        return f"by {step['by']}{note}"
+    return ""
+
+
+def step_outcome(step: dict[str, Any]) -> str:
+    """What became of a step of an incident, in words."""
+    action = step.get("action")
+    if action == "result":
+        if step.get("accepted"):
+            fitted_to = step.get("fitted_to")
+            fitted = f", fitted to {time_text(fitted_to)}" if fitted_to else ""
+            return f"accepted: {step.get('model')}{fitted}"
+        return "not accepted"
+    if action == "request":
+        return "asked for"
+    if action in ("held", "recovered", "resolved", "not_held"):
+        counted = f" over {plural(int(step['n']), 'origin')}" if step.get("n") is not None else ""
+        words = {
+            "held": "held",
+            "recovered": "recovered",
+            "resolved": "resolved",
+            "not_held": "not held",
+        }
+        return words[str(action)] + counted
+    if action == "remodel_requested":
+        timeout = step.get("timeout_s")
+        return f"waits at most {seconds_text(float(timeout))}" if timeout is not None else "waits"
+    if action == "failed":
+        return f"failed: {step.get('reason') or 'no reason given'}"
+    if action == "cycle":
+        return f"cycle {step.get('cycle')} begins"
+    if action == "stale":
+        return f"stale at {plural(int(step.get('count') or 0), 'check')} in a row"
+    if action == "fresh":
+        return "fresh again"
+    if action == "flagged":
+        return f"flagged {step.get('reason') or ''}".strip()
+    if action == "cleared":
+        return f"cleared by {step.get('by') or 'a check'}"
+    return str(action or "")
+
+
+# -- the actions tab ------------------------------------------------------------------------------
+
+ACTIONS_TAB = "Actions"
+ACTIONS_HEADING = "What the twin does to the real system"
+TYPES_HEADING = "Action types"
+TYPE_COLUMNS = {
+    "id": "id",
+    "control": "control",
+    "target": "target",
+    "autonomy": "autonomy",
+    "binding": "binding",
+    "bounds": "bounds",
+    "settle": "settle",
+    "status": "status",
+}
+EXECUTOR_ON = "An executor is configured: the twin makes the calls of the actions it may execute."
+EXECUTOR_OFF = "No executor is configured: the twin makes no external call."
+RECORDS_HEADING = "Records of the proposals, newest first"
+ACTION_FILTER_LABEL = "action"
+RECORD_COLUMNS = {
+    "proposed_at": "proposed at",
+    "action": "action",
+    "object": "object",
+    "params": "parameters",
+    "source": "source",
+    "fidelity": "fidelity at the proposal",
+    "status": "status",
+    "reconciliation": "reconciliation",
+    "effective_at": "effective at",
+}
+# Told by a word and a sign; a refused or failed record is coloured as well.
+RECORD_SIGNS = {
+    "proposed": "○",
+    "approved": "…",
+    "executed": "✓",
+    "rejected": "✗",
+    "blocked": "⊘",
+    "failed": "✗",
+}
+CHOOSE_RECORD = "Choose a record in the grid to see everything about it."
+RECORD_PARTS = {
+    "proposal": "Proposal",
+    "reasons": "Why it was refused",
+    "approval": "Decision",
+    "execution": "Execution",
+    "observed": "Observed against expected",
+}
+NO_REASONS = "No reason was recorded: it was not refused."
+NO_APPROVAL = "No decision was recorded."
+NO_EXECUTION = "No call was made."
+NO_OBSERVED = "Not reconciled yet."
+LOOPS_HEADING = "Control loops"
+LOOP_COLUMNS = {
+    "id": "id",
+    "policy": "policy",
+    "interval": "interval",
+    "enabled": "enabled",
+    "last_run_at": "last run at",
+}
+LAST_RUNS_HEADING = "The last run of each loop"
+LAST_RUN_COLUMNS = (
+    "loop",
+    "at",
+    "status",
+    "proposed",
+    "executed",
+    "blocked",
+    "rejected",
+    "failed",
+    "awaiting",
+    "notes",
+    "error",
+)
+NO_LAST_RUN = "No loop has run yet."
+NO_LOOPS = "The manifest declares no control loop."
+ENABLED_WORDS = {True: "yes", False: "no"}
+
+
+def record_status_text(status: str | None) -> str:
+    if not status:
+        return ""
+    sign = RECORD_SIGNS.get(status)
+    return f"{sign} {status}" if sign else status
+
+
+def bounds_text(bounds: dict[str, Any] | None) -> str:
+    """`1 to 200, steps of at most 50` or `one of true, false`."""
+    if not bounds:
+        return ""
+    parts = []
+    if bounds.get("allowed") is not None:
+        parts.append("one of " + ", ".join(value_text(value) for value in bounds["allowed"]))
+    low, high = bounds.get("minimum"), bounds.get("maximum")
+    if low is not None and high is not None:
+        parts.append(f"{number_text(low)} to {number_text(high)}")
+    elif low is not None:
+        parts.append(f"at least {number_text(low)}")
+    elif high is not None:
+        parts.append(f"at most {number_text(high)}")
+    if bounds.get("max_step") is not None:
+        parts.append(f"steps of at most {number_text(bounds['max_step'])}")
+    return ", ".join(parts)
+
+
+def params_text(params: dict[str, Any] | None) -> str:
+    """`value = 20`, each parameter of a proposal."""
+    return ", ".join(f"{name} = {exact_text(value)}" for name, value in (params or {}).items())
+
+
+def reason_text(found: dict[str, Any]) -> str:
+    """`value: 500 is above the maximum 200`."""
+    member = found.get("member")
+    message = found.get("message") or ""
+    return f"{member}: {message}" if member else message
+
+
+def proposal_lines(record: dict[str, Any]) -> list[str]:
+    return [
+        f"{record.get('action')} on {record.get('object')}: {params_text(record.get('params'))}",
+        f"proposed by {record.get('source')} at {time_text(record.get('proposed_at'))}, "
+        f"the twin {record.get('fidelity') or 'unknown'}",
+        f"status {record_status_text(record.get('status'))}"
+        + (f", reconciliation {record['reconciliation']}" if record.get("reconciliation") else ""),
+        f"reason given: {record.get('reason')}" if record.get("reason") else "no reason given",
+        f"uid {record.get('uid')}, judged at the version {record.get('at_version')}",
+    ]
+
+
+def approval_text(approval: dict[str, Any]) -> str:
+    """`approved by operator@plant at 2026-01-05 00:30:00 UTC: looks right`."""
+    note = f": {approval['note']}" if approval.get("note") else ""
+    when = time_text(approval.get("at"))
+    return f"{approval.get('decision')} by {approval.get('by')} at {when}{note}"
+
+
+def execution_lines(execution: dict[str, Any]) -> list[str]:
+    """The external call as the API tells it; it never holds a secret."""
+    lines = [
+        f"sent at {time_text(execution.get('at'))}",
+        f"HTTP status {value_text(execution.get('http_status')) or 'none'}",
+        f"tries {value_text(execution.get('attempts'))}",
+    ]
+    if execution.get("duration_ms") is not None:
+        lines.append(f"took {number_text(execution['duration_ms'])} ms")
+    if execution.get("effective_at"):
+        lines.append(f"effective at {time_text(execution['effective_at'])}")
+    if execution.get("error"):
+        lines.append(f"error: {execution['error']}")
+    if execution.get("excerpt"):
+        lines.append(f"answer: {value_text(execution['excerpt'])}")
+    if execution.get("idempotency_key"):
+        lines.append(f"Idempotency-Key {execution['idempotency_key']}")
+    return lines
+
+
+def observed_lines(observed: dict[str, Any], reconciled_at: str | None) -> list[str]:
+    """`observed 11 against expected 20 (difference 9, tolerance 0.5)`, where and when."""
+    value, expected = exact_text(observed.get("value")), exact_text(observed.get("expected"))
+    difference = exact_text(observed.get("difference"))
+    tolerance = exact_text(observed.get("tolerance"))
+    lines = [
+        f"observed {value} against expected {expected} "
+        f"(difference {difference}, tolerance {tolerance})"
+    ]
+    if observed.get("t"):
+        lines.append(f"observed value valid from {time_text(observed['t'])}")
+    if observed.get("source") or observed.get("kind"):
+        lines.append(f"from {observed.get('source') or '?'} ({observed.get('kind') or '?'})")
+    if reconciled_at:
+        lines.append(f"reconciled at {time_text(reconciled_at)}")
+    return lines
+
+
+def executor_text(configured: bool) -> str:
+    return EXECUTOR_ON if configured else EXECUTOR_OFF
+
+
+def notifications_status(kind: str | None, count: int) -> str:
+    return (
+        f"{plural(count, 'notification')}, newest first: the last 200 since the API started, "
+        f"sent as {kind or 'unknown'}"
+    )
