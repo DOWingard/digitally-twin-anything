@@ -43,6 +43,8 @@ BAD_PARAM = "actions.bad_param"
 # The keys of a refusal's problem document worth keeping beside its code and message.
 _PROBLEM_EXTRAS = ("errors", "record", "incident", "signal", "loop")
 DEFAULT_SOURCE = "dta"
+# Columns whose ids a reader passes on to the next command: never cut short.
+_IDS = ("uid", "subject", "record", "check")
 
 ById = Annotated[str, typer.Option("--by", help="Who takes the step, as it is recorded.")]
 Note = Annotated[str | None, typer.Option("--note", help="Why, as it is recorded.")]
@@ -188,9 +190,9 @@ def _status_text(found: Mapping[str, Any]) -> str:
     if found.get("questions"):
         lines += ["", "Questions", table(found["questions"], _QUESTION_COLUMNS)]
     if found.get("incidents"):
-        lines += ["", "Incidents not resolved", table(found["incidents"])]
+        lines += ["", "Incidents not resolved", table(found["incidents"], whole=_IDS)]
     if found.get("suspect_signals"):
-        lines += ["", "Suspect signals", table(found["suspect_signals"])]
+        lines += ["", "Suspect signals", table(found["suspect_signals"], whole=_IDS)]
     return "\n".join(lines)
 
 
@@ -222,7 +224,7 @@ def fidelity_checks(
         }
         for check in found.get("data") or []
     ]
-    _say(ctx, {"checks": found.get("data") or []}, table(rows), secrets)
+    _say(ctx, {"checks": found.get("data") or []}, table(rows, whole=_IDS), secrets)
 
 
 @command
@@ -262,7 +264,7 @@ def fidelity_incidents(
     params = {key: value for key, value in (("status", status), ("kind", kind)) if value}
     with _api(ctx) as (_manifest, api, secrets):
         found = computeops.read_all(api, f"{FIDELITY}/incidents", params)
-    _say(ctx, {"incidents": found}, table(found, _INCIDENT_COLUMNS), secrets)
+    _say(ctx, {"incidents": found}, table(found, _INCIDENT_COLUMNS, _IDS), secrets)
 
 
 @command
@@ -378,7 +380,7 @@ def fidelity_signals(
             params={"status": status} if status else None,
         )
     rows = found.get("data") or []
-    _say(ctx, {"signals": rows}, table(rows, _SIGNAL_COLUMNS), secrets)
+    _say(ctx, {"signals": rows}, table(rows, _SIGNAL_COLUMNS, _IDS), secrets)
 
 
 @command
@@ -411,7 +413,7 @@ def fidelity_errors(
     with _api(ctx) as (_manifest, api, secrets):
         rows = computeops.read_all(api, path, {"format": "json"})
     columns = ["origin", "scored_at", "error", "n", "model", "in_window", "check"]
-    _say(ctx, {"question": question, "errors": rows}, table(rows, columns), secrets)
+    _say(ctx, {"question": question, "errors": rows}, table(rows, columns, _IDS), secrets)
 
 
 # -- dta actions -------------------------------------------------------------------------
@@ -518,7 +520,7 @@ def actions_records(
     params = {key: value for key, value in (("status", status), ("action", action)) if value}
     with _api(ctx) as (_manifest, api, secrets):
         found = computeops.read_all(api, f"{ACTIONS}/records", params)
-    _say(ctx, {"records": found}, table(found, _RECORD_COLUMNS), secrets)
+    _say(ctx, {"records": found}, table(found, _RECORD_COLUMNS, _IDS), secrets)
 
 
 @command
@@ -584,7 +586,7 @@ def actions_reconcile(ctx: typer.Context) -> None:
         }
         for entry in found.get("data") or []
     ]
-    lines = [table(rows)]
+    lines = [table(rows, whole=_IDS)]
     if found.get("opened"):
         lines.append(f"Incidents opened: {', '.join(found['opened'])}")
     if found.get("closed"):
@@ -674,7 +676,7 @@ def control_run(
         counts,
     ]
     if run.get("records"):
-        lines.append(table(run["records"], ["uid", "action", "object", "status"]))
+        lines.append(table(run["records"], ["uid", "action", "object", "status"], _IDS))
     for note in run.get("notes") or []:
         lines.append(f"note: {note}")
     _say(ctx, {"job": job, "created": created, "run": run}, "\n".join(lines), secrets)
