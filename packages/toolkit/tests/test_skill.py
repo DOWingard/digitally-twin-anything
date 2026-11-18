@@ -371,6 +371,9 @@ def test_a_live_twin_without_actions_is_told_of_its_fidelity_only():
     for measure in ("Window error and breach", "## Warning", "## Staleness", "**Stuck.**"):
         assert measure in fidelity, measure
     assert "**Biased.**" in fidelity and "p₀ⁿ < 10⁻⁴" in fidelity
+    # A series is biased only when every forecast question on its property agrees.
+    assert "every other forecast question on the same property tested it" in fidelity
+    assert "`signals.uncorroborated`" in fidelity
 
 
 def test_a_live_twin_with_everything_is_told_the_interlock_and_who_decides():
