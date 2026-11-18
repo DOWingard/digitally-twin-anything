@@ -35,19 +35,32 @@ candidates:
     family: ets
 ```
 
-When none of these three meets the tolerance in the backtest, add `ridge_lags` as a fourth candidate and build again from `models`; give it `features` only as the row above allows. The families are ordered from the simplest; among equally good candidates the simpler one is selected. `season_length`, where a family takes it, defaults to the number of sync intervals in a day.
+When none of these three meets the tolerance in the backtest, add `ridge_lags` as a fourth candidate and build again from `models`; give it `features` only as the row above allows. The families are ordered from the simplest; among equally good candidates the simpler one is selected.
+
+`season_length`, where a family takes it, is a number of time steps (below): the length of the cycle the series repeats. Its default is one day, `round(P1D / sync.interval)` steps: 96 for `PT15M`, 24 for `PT1H`. A family with a season needs two whole seasons of history before its first forecast origin (two days with the default).
+
+## The time step
+
+Every model works on a grid of `sync.interval`, in a static twin as in a live one: the history is read as one value per interval, and a forecast predicts one value per interval. So:
+
+- a static twin with a forecast question needs `sync.interval` too (`grid.no_interval`), derived like a live twin's: `dta sync derive --write` ([live twins](live.md), "The sync interval"), never by hand;
+- each forecast question's `horizon` is a whole multiple of `sync.interval` (`grid.horizon`); the derivation fits the interval to the horizons, so derive after the horizons are written;
+- `backtest.step` is a whole multiple of `sync.interval` (`grid.backtest_step`).
 
 ## Size the backtest from the history
 
-The profile gives the history span of the target's dataset: `history_end` minus `history_start` of `sources.<source>.profile.datasets.<dataset>`. The backtest needs `initial_window + min_folds * step` of it; the check `feasible.history` refuses a model whose question has less, unless the question is provisional.
+The profile gives the history span `H` of the target's dataset: `history_end` minus `history_start` of `sources.<source>.profile.datasets.<dataset>`. The backtest fits on everything before its first forecast origin (`initial_window`), then forecasts the horizon from an origin every `step` until the end of the history: each origin is one fold. The check `feasible.history` refuses a model whose history is shorter than `initial_window + min_folds * step`, unless the question is provisional.
 
-Defaults, for a horizon `h` and a history span `H`:
+The rule, for a horizon `h` and a history span `H`:
 
-- `step`: the horizon `h`, rounded up to a whole hour or day.
-- `initial_window`: what is left for it, `H - min_folds * step`, but at most `P30D`; for daily seasons it should hold at least two days.
-- `min_folds`: 3.
+1. `step`: `h` (a whole multiple of `sync.interval`, as the derivation makes it). Origins then fall at every horizon, at every hour of the day for a 1 h horizon.
+2. The span scored, `T`: `H / 3`, rounded down to whole days, at least `P1D` (so the origins cover every hour of a day) and at most `P7D` (every day of a week); and at least `3 * step`.
+3. `initial_window`: `H - T`.
+4. `min_folds`: 3.
 
-If `H` is shorter than `h` times four, the history is too short: tell the user the question can only be provisional until more history exists, and with their agreement set `contract.questions.<question>.provisional: true`. A provisional question is built and answered, and every answer says it is provisional.
+The folds are `(T - h) / step + 1`. Examples, with `PT15M` steps of the grid and `h = PT1H`: `H = P21D` gives `T = P7D`, `initial_window: P14D`, `step: PT1H` and 168 folds; `H = P14D` gives `T = P4D`, `initial_window: P10D` and 96 folds. A backtest refits each candidate only as often as its time budget allows, so many folds cost forecasts, not fits.
+
+If `initial_window` comes out shorter than two days (two seasons with the default season) or than `h` times four, the history is too short: tell the user the question can only be provisional until more history exists, and with their agreement set `contract.questions.<question>.provisional: true`. A provisional question is built and answered, and every answer says it is provisional.
 
 ## Acceptance
 
