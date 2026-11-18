@@ -31,7 +31,7 @@ pytestmark = needs_stack
 FIRST_BUILD_LIMIT_S = 300.0
 SECOND_BUILD_LIMIT_S = 60.0
 ACCEPT_LIMIT_S = 300.0
-STATIC_SKIPPED = {"sync", "ui"}
+STATIC_SKIPPED = {"sync", "ui", "mcp", "sdk"}
 
 
 @pytest.fixture(scope="module")
@@ -118,7 +118,7 @@ def test_a_whole_build_runs_every_step_and_the_twin_is_accepted(twin: M5Twin) ->
     assert steps(result) == {
         name: ("ran", "skipped" if name in STATIC_SKIPPED else "ok") for name in steps(result)
     }
-    assert len(result["steps"]) == 14
+    assert len(result["steps"]) == 16
     assert took <= FIRST_BUILD_LIMIT_S
 
     # The worker image: built for the requirements, and the one the worker runs.

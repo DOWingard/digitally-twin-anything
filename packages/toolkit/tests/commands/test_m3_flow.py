@@ -204,7 +204,9 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
         "models": "ran",
         "questions": "ran",
         "ui": "ran",
+        "mcp": "ran",
         "skill": "ran",
+        "sdk": "ran",
     }
     assert twin.gates() == expect(handover="passed")
 
