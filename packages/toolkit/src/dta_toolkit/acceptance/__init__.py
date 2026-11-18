@@ -17,12 +17,18 @@ from dta_core.log import Log
 from dta_core.manifest import Manifest
 from dta_core.schema import Ontology
 
+from .acting import (
+    actions_registered,
+    fidelity_schedule,
+    fidelity_state,
+    notifications_configured,
+)
 from .client import ApiUnavailable, TwinApi, probe_health, service_url
 from .compute import compute_worker, models_accepted, questions_answered, questions_error
 from .contract import DEFAULT_EXAMPLES, DEFAULT_SEED, api_contract
 from .data import data_constraints, data_coverage
 from .endpoints import SKILL_API_FILE, skill_endpoints
-from .live import sync_freshness, sync_runs, sync_scheduler, sync_sources
+from .live import is_live, sync_freshness, sync_runs, sync_scheduler, sync_sources
 from .readiness import (
     Context,
     readiness_r1,
@@ -177,7 +183,12 @@ def run_checks(
             ("data.coverage", lambda: data_coverage(ctx)),
             ("ui.reachable", lambda: ui_reachable(manifest, values)),
             ("skill.current", lambda: skill_current(rendered_skill_hash, manifest_hash)),
-            ("skill.endpoints", lambda: skill_endpoints(api, skill.api_reference, skill.where)),
+            (
+                "skill.endpoints",
+                lambda: skill_endpoints(
+                    api, skill.api_reference, skill.where, live=is_live(manifest)
+                ),
+            ),
             ("sync.scheduler", lambda: sync_scheduler(ctx, services)),
             ("sync.runs", lambda: sync_runs(ctx)),
             ("sync.sources", lambda: sync_sources(ctx)),
@@ -186,6 +197,10 @@ def run_checks(
             ("questions.error", lambda: questions_error(ctx)),
             ("models.accepted", lambda: models_accepted(ctx)),
             ("compute.worker", lambda: compute_worker(ctx, services)),
+            ("fidelity.state", lambda: fidelity_state(ctx)),
+            ("fidelity.schedule", lambda: fidelity_schedule(ctx)),
+            ("actions.registered", lambda: actions_registered(ctx)),
+            ("notifications.configured", lambda: notifications_configured(ctx)),
         ]
         checks = [_guarded(ident, run) for ident, run in plan]
     return AcceptanceRun(checks=checks)
@@ -215,6 +230,8 @@ def render_markdown(document: dict[str, Any]) -> str:
         lines += ["", f"## {check['id']}: {'passed' if check['passed'] else 'failed'}", ""]
         if not check["passed"] and check.get("remedy"):
             lines += [f"What to change: {check['remedy']}", ""]
+        if check["passed"] and (check.get("evidence") or {}).get("warning"):
+            lines += [f"Warning: {check['evidence']['warning']}", ""]
         lines.append("Evidence:")
         lines.append("")
         lines.append("```json")

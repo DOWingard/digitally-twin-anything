@@ -48,6 +48,10 @@ CHECKS = {
     "questions.error",
     "models.accepted",
     "compute.worker",
+    "fidelity.state",
+    "fidelity.schedule",
+    "actions.registered",
+    "notifications.configured",
 }
 
 
