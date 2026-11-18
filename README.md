@@ -19,8 +19,10 @@ Status: under construction. A static twin (loaded once from recorded data) and
 a live twin (kept in step with its sources, one version per sync interval)
 can be built, accepted and handed over today, with functions, models selected
 by backtest, questions whose accuracy the twin measures, and what-if
-scenarios. Fidelity monitoring with self-correction, control of the target
-and the plugin's entry skill are not built yet.
+scenarios. A live twin checks its own fidelity, corrects itself or says that
+it failed, and can act on the real system through typed actions and control
+loops. The plugin's entry skill, export and import, and the generated client
+are not built yet.
 
 ## Layout
 
@@ -198,6 +200,58 @@ dta questions answer ID [--arg name=value] [--at VERSION]
 dta scenarios list
 ```
 
+### Fidelity, actions and control
+
+A live twin measures itself on its own clock. At every `fidelity.interval` it
+scores what its models predicted for each predictive question against what was
+then observed, and is in one state: `unknown` (no check yet), `healthy`,
+`correcting` or `failed`.
+
+- **Breach.** A question's error at an origin o is its metric over (o, o + h].
+  Its window error E is the mean over the origins scored in the last
+  `fidelity.window`; with at least 3 of them and E above the question's
+  tolerance ε an incident opens.
+- **Correction, rung by rung, without a human.** Recalibrate the active model
+  on recent data; reselect among the candidates the manifest declares; ask the
+  managing agent to re-model (a notification), and fail when nobody did within
+  `correction.remodel_timeout`. A correction is accepted only if it passes the
+  specification's acceptance on the recent history, and an incident resolves
+  only on new evidence within ε.
+- **Stale data, stuck and biased signals.** A question whose data is older
+  than its staleness opens an incident. An observed signal that used to change
+  and stopped while its source kept delivering is called stuck; one whose
+  residual shifts by at least ε against every model of its property is called
+  biased. A suspect signal's readings are kept on its record and not written
+  to the object; the value in force is the twin's own estimate, marked as
+  inferred, until the signal is sound again.
+- **Actions.** The manifest declares what may be done to the real system: an
+  action type with typed parameters, the control it carries out with its
+  bounds and autonomy (`advisory`, `supervised`, `autonomous`), and an HTTP
+  call with its variables named, never stored. Every proposal is judged and
+  recorded; an executed one is compared with what was observed after its
+  settle time, and a mismatch is an incident.
+- **Interlock.** An autonomous action is executed while the twin is healthy,
+  or correcting with no stale-data or mismatch incident open; a supervised one
+  on a recorded approval, unless the twin failed. A failed twin executes
+  nothing.
+- **Control loops** run a policy function of the twin on an interval and
+  propose what it returns. A loop is registered disabled; enabling it is a
+  decision recorded with a name.
+- **Notifications** go out as CloudEvents to the address in the variable the
+  contract names (or to the log): state changes, incidents, re-model requests,
+  failed sync runs, pending approvals, blocked actions, mismatches.
+
+A twin that is blocked or failed leaves the real system in the state of its
+last executed command: handing a control back is done on the real system.
+
+```sh
+dta fidelity status | checks | incidents | incident ID | errors QUESTION | signals
+dta fidelity retry ID --by NAME | resolve ID --by NAME | correct QUESTION --rung RUNG | clear UID --by NAME
+dta actions list | propose ACTION --object UID --param k=v --reason TEXT | records | approve UID --by NAME | reject UID --by NAME
+dta control list | enable LOOP --by NAME | disable LOOP --by NAME | run LOOP
+dta notifications
+```
+
 ## What a built twin serves
 
 One HTTP API under `/api/v1`, bound to the loopback address, with one bearer
@@ -217,7 +271,10 @@ token. `GET /api/v1/openapi.json` describes every endpoint.
 | `/scenarios` | what-ifs: a branch from a version with assumed changes, filled with what the models predict; comparison with the live twin or another scenario |
 | `/derived` | writing values that were worked out, marked as such |
 | `/search` | objects of any type by uid or name |
-| `/lifecycle` | background jobs and the twin's own structured logs |
+| `/fidelity` | a live twin: its state, checks, each question's error per origin, incidents with every step taken, suspect signals; retrying and resolving an incident, a correction by hand |
+| `/actions` | action types; proposing, approving and rejecting; the record of every proposal; reconciling executed actions with what was observed |
+| `/control` | control loops: enabling, disabling, a run now |
+| `/lifecycle` | background jobs, the twin's own structured logs, what its scheduler asks for and when, the notifications it sent |
 
 - Every read takes `at`: `head`, a version id, `#<n>` or a time. A response
   names the version it read, and a cursor keeps reading that version.
@@ -248,7 +305,11 @@ time, the age of its data and its last run; the history tab lists sources,
 runs and rows set aside, and can start a run. The UI is published on the
 loopback address and answers only requests addressed to it as `127.0.0.1` or
 `localhost`; a request that would change something is accepted only from its
-own pages.
+own pages. A live twin's header carries its fidelity state in a word, and a
+line while it is failed; the fidelity tab draws each question's error against
+its tolerance with the corrections made, and lists incidents with their
+steps, suspect signals, checks and notifications; the actions tab lists
+action types, every proposal's record and the loops. Both tabs only show.
 
 The operator skill is generated from the manifest: how to reach the twin, the
 questions it was built to answer with their tolerances and exact definitions,
