@@ -128,9 +128,13 @@ async def job(
     "with `method`, `path` and `body`, and `key` as its Idempotency-Key, `{boundary}` "
     "replaced by the boundary in ISO 8601. Entries of kind `sync` come first; the others "
     "are asked for once the sync run of the newest sync boundary has ended, whatever it "
-    "came to. A live twin has its sync run and, when its manifest sets a fidelity interval, "
-    "its fidelity check; a static twin has none. Built from the manifest at the head: the "
-    "scheduler reads it again when the manifest's hash changes.",
+    "came to. A live twin has its sync run; when its manifest sets a fidelity interval, its "
+    "fidelity check; when the API makes external calls and an action is bound to an "
+    "executor, the reconciliation of executed actions (`reconcile`, at the sync interval); "
+    "each enabled control loop (`loop:<id>`, at its interval); and each function whose "
+    "trigger is `interval` (`function:<id>`, at its interval). A static twin has none. Built "
+    "from the twin's records at the head: the scheduler reads it again when the manifest's "
+    "hash changes, and at least every 60 passes.",
     response_model=ScheduleOut,
     responses=versioned(400),
 )

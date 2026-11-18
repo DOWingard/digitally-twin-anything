@@ -17,7 +17,10 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from dta_core.log import Log
+from pydantic import TypeAdapter
 
+from .. import actions
+from ..actions.records import ACTIVE, EXECUTOR
 from ..fidelity.records import TYPES as FIDELITY_TYPES
 from . import registry
 from .docs import API_PREFIX
@@ -30,7 +33,9 @@ log = Log("api.schedule")
 
 SYNC_ENTRY = "sync"
 FIDELITY_ENTRY = "fidelity"
+RECONCILE_ENTRY = "reconcile"
 BOUNDARY = "{boundary}"
+_DURATION = TypeAdapter(timedelta)
 
 
 @dataclass(frozen=True)
@@ -105,7 +110,101 @@ def fidelity_entries(services: Services, state: HeadState) -> list[ScheduleEntry
     ]
 
 
-DEFAULT_PROVIDERS: tuple[Provider, ...] = (sync_entries, fidelity_entries)
+def _duration(text: Any, what: str) -> timedelta | None:
+    """A stored ISO 8601 duration; None, logged, when it cannot be read or is not positive."""
+    if not text:
+        return None
+    try:
+        found = _DURATION.validate_python(text)
+    except ValueError:
+        log.error("a stored interval cannot be read; it is not scheduled", what=what)
+        return None
+    if found <= timedelta(0):
+        log.error("a stored interval is not positive; it is not scheduled", what=what)
+        return None
+    return found
+
+
+def reconcile_entries(services: Services, state: HeadState) -> list[ScheduleEntry]:
+    """Reconciliation of executed actions, once per sync interval, when the API makes
+    external calls and the twin has an action bound to an executor."""
+    if not state.live or state.interval is None or services.executor is None:
+        return []
+    bound = [
+        found
+        for found in actions.types(services.twin, at=state.version)
+        if found["binding"] == EXECUTOR and found["status"] == ACTIVE
+    ]
+    if not bound:
+        return []
+    return [
+        ScheduleEntry(
+            id=RECONCILE_ENTRY,
+            kind="reconcile",
+            interval=state.interval,
+            path=f"{API_PREFIX}/actions/reconcile",
+            key=f"reconcile:{BOUNDARY}",
+        )
+    ]
+
+
+def loop_entries(services: Services, state: HeadState) -> list[ScheduleEntry]:
+    """Every enabled control loop, once per its interval."""
+    if not state.live:
+        return []
+    found: list[ScheduleEntry] = []
+    for loop in actions.loops(services.twin, at=state.version):
+        if not loop["enabled"] or loop["status"] != ACTIVE:
+            continue
+        interval = _duration(loop["interval"], loop["uid"])
+        if interval is None:
+            continue
+        found.append(
+            ScheduleEntry(
+                id=f"loop:{loop['id']}",
+                kind="loop",
+                interval=interval,
+                path=f"{API_PREFIX}/control/loops/{loop['id']}/run",
+                key=f"loop:{loop['id']}:{BOUNDARY}",
+            )
+        )
+    return found
+
+
+def function_entries(services: Services, state: HeadState) -> list[ScheduleEntry]:
+    """Every active function whose trigger is `interval`, once per its interval."""
+    if not state.live:
+        return []
+    found: list[ScheduleEntry] = []
+    for record in registry.rows(
+        services, registry.FUNCTION_TYPE, state.version, [("trigger", "=", "interval")]
+    ):
+        if record.get("status") == "disabled":
+            continue
+        interval = _duration(record.get("interval"), record["uid"])
+        if interval is None:
+            log.warn("a function triggered on an interval states none", function=record["uid"])
+            continue
+        function_id = registry.bare(record["uid"])
+        found.append(
+            ScheduleEntry(
+                id=f"function:{function_id}",
+                kind="function",
+                interval=interval,
+                path=f"{API_PREFIX}/functions/{function_id}/run",
+                key=f"function:{function_id}:{BOUNDARY}",
+            )
+        )
+    return found
+
+
+DEFAULT_PROVIDERS: tuple[Provider, ...] = (
+    sync_entries,
+    fidelity_entries,
+    reconcile_entries,
+    loop_entries,
+    function_entries,
+)
 
 
 def entries(services: Services, state: HeadState) -> list[ScheduleEntry]:
