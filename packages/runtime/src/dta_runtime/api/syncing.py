@@ -187,6 +187,7 @@ def sync_work(services: Services, params: SyncParams) -> Work:
             )
             raise
         document = report.as_dict()
+        document["functions_started"] = _on_commit(services, report)
         if report.status in (FAILED, PARTIAL):
             failing = {
                 name: found.get("error")
@@ -214,6 +215,19 @@ def sync_work(services: Services, params: SyncParams) -> Work:
         return Outcome(result=document)
 
     return work
+
+
+def _on_commit(services: Services, report: Any) -> list[dict[str, Any]]:
+    """The jobs of the functions run because the run wrote a version; never a reason for
+    the run to fail."""
+    # Imported here: the triggers run functions, which needs most of the API.
+    from .triggers import after_sync
+
+    try:
+        return after_sync(services, report)
+    except Exception as exc:
+        log.error("the functions run on a commit could not be started", exc=exc, run=report.run)
+        return []
 
 
 def _tell_failed(

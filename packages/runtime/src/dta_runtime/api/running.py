@@ -32,6 +32,8 @@ log = Log("api.functions")
 
 PROVISIONAL = "provisional"
 FAILING = "failing"
+# What started a run, as its record keeps it.
+ON_REQUEST = "on_request"
 QUESTION_FAILING = "question_failing"
 
 
@@ -145,7 +147,7 @@ def _forecaster(
     return forecast
 
 
-def _run_uid(function_uid: str, version: VersionRef, trace_id: str, args: str) -> str:
+def run_uid(function_uid: str, version: VersionRef, trace_id: str, args: str) -> str:
     """Names a run by the version it read and what it was asked: nothing of the wall clock."""
     digest = hashlib.sha256(f"{function_uid}:{version.id}:{trace_id}:{args}".encode()).hexdigest()
     return f"{registry.RUN_SCOPE}:{version.t:%Y%m%dT%H%M%S}Z-{digest[:8]}"
@@ -158,6 +160,7 @@ def _registered(
     args: Mapping[str, Any],
     ran: Ran,
     write: bool,
+    trigger: str,
 ) -> Answer:
     function_id = ran.function
     artifact = registry.bare(record.get("artifact"))
@@ -188,9 +191,9 @@ def _registered(
             return Answer(value=None)
         text = registry.as_json(dict(args))
         run_row = {
-            "uid": _run_uid(record["uid"], version, request.trace_id, text),
+            "uid": run_uid(record["uid"], version, request.trace_id, text),
             "function": record["uid"],
-            "trigger": "on_request",
+            "trigger": trigger,
             "status": "succeeded",
             "started_at": version.t,
             "at_version": version.id,
@@ -229,6 +232,7 @@ def run(
     *,
     known: VersionRef | None = None,
     write: bool = True,
+    trigger: str = ON_REQUEST,
 ) -> Ran:
     """One run of the function a record describes, with the arguments of one call, at
     the pinned version. Refuses a disabled function; raises what the function package,
@@ -236,7 +240,7 @@ def run(
 
     What the twin runs is what its registries say now, whatever version of its data a
     run reads: `known` is the version the registries are read at, the pinned one when
-    absent."""
+    absent. `trigger` is what started the run, as the record of a run that wrote keeps it."""
     started = time.perf_counter()
     known = known or version
     function_id = str(registry.bare(record["uid"]))
@@ -267,7 +271,7 @@ def run(
                 function=function_id,
             )
     else:
-        ran.answer = _registered(services, record, version, params, ran, write)
+        ran.answer = _registered(services, record, version, params, ran, write, trigger)
     ran.duration_ms = round((time.perf_counter() - started) * 1000.0, 1)
     value = ran.answer.value
     log.info(

@@ -195,6 +195,7 @@ def test_the_document_describes_every_route(app_client: TestClient, auth: dict[s
     assert {"200", "202", "404", "409"} <= set(
         document["paths"]["/api/v1/control/loops/{id}/run"]["post"]["responses"]
     )
+    assert "202" in document["paths"]["/api/v1/functions/{id}/run"]["post"]["responses"]
     assert {"actions", "loops"} <= set(document["components"]["schemas"]["Registered"]["properties"])
     for path, operations in document["paths"].items():
         if path.startswith(("/api/v1/actions", "/api/v1/control")):

@@ -10,18 +10,20 @@ from dta_core.store import LIVE_BRANCH
 from fastapi import APIRouter, Path, Request
 from starlette.responses import Response
 
-from .. import registry, running
+from .. import registry, running, triggers
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, VERSION_HEADERS, errors, versioned
 from ..formats import json_response
 from ..listing import (
+    JOBS_PATH,
     LIST_LIMIT_DEFAULT,
+    ComputeKey,
     ListLimit,
     answer_response,
     call_arguments,
     records_page,
 )
-from ..models import AnswerOut, FunctionList, FunctionOne, FunctionRegistration
+from ..models import AnswerOut, FunctionList, FunctionOne, FunctionRegistration, JobAccepted
 from ..paging import start
 from ..params import At, Branch, Cursor, FormatParam, Limit
 from ..problems import ApiError
@@ -55,8 +57,9 @@ RUN_NOTES = {
     "the wrong shape (`function.param_unknown`, `function.param_fixed`, "
     "`function.param_missing`, `function.bad_param`, `function.bad_unit`)",
     404: "No such function (`function.not_found`), version, branch, type or property",
-    409: "The function is disabled (`function.disabled`), or a forecast has no active model "
-    "(`model.none_active`)",
+    409: "The function is disabled (`function.disabled`), a forecast has no active model "
+    "(`model.none_active`), or the Idempotency-Key was used for another request "
+    "(`job.key_reused`)",
     422: "Code of the twin's own that cannot be called or gave back something that is not "
     "an answer (`function.bad_entry`, `function.bad_result`), or rows the ontology refuses",
     500: "The function raised (`function.failed`, with the `frames` of its own code), ran "
@@ -253,10 +256,25 @@ def run_and_answer(
     "`function`, the `model` and whether it is `provisional`. A table is the rows of "
     "`value`, a page at a time, or Arrow or Parquet with `format` or `Accept`. A function "
     "that gives rows to write has them written as one version, with a record of the run, "
-    "and names that version in `wrote`; any other run writes nothing.",
-    response_model=AnswerOut,
+    "and names that version in `wrote`; any other run writes nothing. With an "
+    "Idempotency-Key the run is a job of the compute lane (kind `function`), answered at "
+    "once with the job (202, or 200 with the job the key made before); `at` is resolved when "
+    "the job runs, and its result is the answer, a table as its rows. A keyed run of a "
+    "function whose trigger is `interval` is that trigger's run, as the scheduler asks for "
+    "it (key `function:<id>:<boundary>`), and always leaves a `TwinFunctionRun`, failed or "
+    "not.",
+    response_model=None,
     responses={
-        200: {"headers": dict(VERSION_HEADERS)},
+        200: {
+            "description": "The answer; with an Idempotency-Key used before, the job it made",
+            "model": AnswerOut | JobAccepted,
+            "headers": dict(VERSION_HEADERS),
+        },
+        202: {
+            "description": "With an Idempotency-Key: the job made for the run",
+            "model": JobAccepted,
+            "headers": {"Location": {"description": "Address of the job"}},
+        },
         **errors(400, 404, 409, 422, 502, 504, notes=RUN_NOTES),
     },
     openapi_extra=ARGUMENTS_BODY,
@@ -270,10 +288,26 @@ async def run_function(
     limit: Limit = None,
     cursor: Cursor = None,
     fmt: FormatParam = None,
+    idempotency_key: ComputeKey = None,
 ) -> Response:
     body = await call_arguments(request, query=False)
     both = await call_arguments(request, query=True)
     given = {name: value for name, value in both.items() if name not in body}
+
+    if idempotency_key is not None:
+        key = idempotency_key
+
+        def queue() -> Response:
+            document, created = triggers.start_run(
+                services, id, body, given, at=at, branch=branch, key=key
+            )
+            return json_response(
+                {"job": document},
+                headers={"Location": f"{JOBS_PATH}/{document['id']}"},
+                status=202 if created else 200,
+            )
+
+        return await anyio.to_thread.run_sync(queue)
 
     def work() -> Response:
         return run_and_answer(
