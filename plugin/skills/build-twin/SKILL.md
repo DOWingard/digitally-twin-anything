@@ -27,7 +27,7 @@ What the user gets at the end:
 - Exit codes: 0 the command did its work; 1 a check or gate ran and failed; 2 the command could not run. On 1 or 2, look up `error.code` in [troubleshooting](reference/troubleshooting.md).
 - Text in angle brackets is a value you substitute: `<workspace>` is the twin's workspace directory, `<question>` a question id, `<source>` a source id. Never type the brackets.
 - A field path such as `contract.questions.<question>.tolerance.value` names one field of `manifest.yaml`: each dot is one level of YAML nesting, and `<question>` is a key you chose.
-- You write `manifest.yaml`, the ontology file, the twin's code directory and `discussion.md` with your file tools. Everything else in the workspace is written by `dta`.
+- You write `manifest.yaml`, the ontology file, the twin's code directory and `discussion.md` with your file tools. Everything else in the workspace is written by `dta`. Commands that write to `manifest.yaml` rewrite the whole file, so read it again before you edit it after one.
 - [manifest.md](reference/manifest.md) lists every manifest field, who owns it and when it is required. It is generated from the tool and always current.
 
 ## Ground rules
@@ -60,7 +60,7 @@ Answer: <the user's answer, in their words>
 Written: <the value you wrote, or "nothing" and why>
 ```
 
-When one answer fills several fields, list every field path on the `Field:` line, separated by commas. While a delegation batch is open, do not write to `discussion.md` (the tool refuses foreign changes then); keep the entries and append them after the batch is merged or aborted.
+When one answer fills several fields, list every field path on the `Field:` line, separated by commas. For what the user said without being asked, write `Asked: not asked; the user said it` and `Proposed: nothing`. While a delegation batch is open, do not write to `discussion.md` (the tool refuses foreign changes then); keep the entries and append them after the batch is merged or aborted.
 
 ## The stages
 
@@ -103,7 +103,7 @@ At stage 8 ([stage-8-handover.md](reference/stage-8-handover.md)) you run `dta i
 
 1. Where the twin is: the API address (`http://127.0.0.1:` and the port the user set in `DTA_API_PORT`), the variable holding the token, and the UI port if the UI is served.
 2. The tier: static (loaded once) or live (and how often it syncs, from `sync.interval`).
-3. Each question: its id, its text, its measured error against its tolerance, and its status, from `dta questions list`.
+3. Each question: its id, its text, its measured error against its tolerance (or that it was not measured), and its status and basis, from `dta questions list`.
 4. What is provisional: every question whose status is not `validated`, every model not accepted, every gate not passed, with the reason.
 5. What was not verified: anything the acceptance report lists as skipped or not measured, and anything you assumed without the user's word.
 6. Where the operator skill is installed and that it is read by the user's agent from now on.

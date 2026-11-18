@@ -111,7 +111,11 @@ The last column says whether the user must be asked. "No" means fix it yourself 
 | control.binding | A supervised or autonomous control's action is not `binding: executor`. | Give the action an executor ([live twins](live.md)), or ask whether the control should be advisory. | Yes, if it becomes advisory. |
 | action.executor_addon | An action has `binding: executor` but `contract.addons.executors` is not `true`. | Ask the user whether the twin may call the real system. | Yes. |
 | tier.static_control | A static twin has a control that is not advisory. | Ask: advisory, or a live twin? | Yes. |
-| tier.static_extras | A static twin declares live settings that are ignored (warning). | Remove the sections named. | No. |
+| tier.static_extras | A static twin declares settings it never uses (warning): `fidelity`, `control_loops`, or `sync.minimum_interval` and `sync.maximum_interval` when nothing forecasts. | Remove exactly what the message names; keep `sync.interval`, which a static twin with forecasts needs. | No. |
+| sync.mapping_invalid | The build's `load` step would refuse a view or mapping as written; the message says how to write it. Also raised by the build itself, at step `load`. | Do what the message says ([sources](sources.md), "Views" and "Mappings"): name datasets as `"<source>"."<dataset>"`; use `snapshot` only for the one mapping of a class, without `valid_time`; give one of `column` and `expression`. | No. |
+| grid.no_interval | A twin with a forecast question or a model has no `sync.interval`, in a static twin too; models step on it. | `dta sync derive --write` ([live twins](live.md), "The sync interval"). | No. |
+| grid.horizon | A forecast question's horizon is not a whole multiple of `sync.interval`. | `dta sync derive --write` again, which fits the interval to the horizons; if it fails with `sync.infeasible`, see that row. | No. |
+| grid.backtest_step | A model's `backtest.step` is not a whole multiple of `sync.interval`. | Set the step to the question's horizon, or the multiple the message proposes ([models](models.md), "Size the backtest from the history"). | No. |
 | secret.inline | A location, executor address or header holds a literal credential. | Replace it with a `${NAME}` placeholder, declare the name, and ask the user to put the value in `.env`. | Yes, to fill `.env`. |
 | function.interval | A function with `trigger: interval` has no `interval`. | Add it. | No. |
 | status.stale | A `field_status` entry names a field that no longer has a value (warning). | Remove that line from `field_status`. | No. |
@@ -133,8 +137,8 @@ The last column says whether the user must be asked. "No" means fix it yourself 
 | confirm.not_required | The path is not a required field: a container such as `contract.controls.<control>.bounds`, or an optional field. | Confirm its leaves, or leave it out. | No. |
 | confirm.nothing | Nothing was named to confirm. | Name the paths. | No. |
 | sync.interval_confirmed | `sync.interval` was written by hand, so the rule is not applied. | Delete `interval` under `sync`, then `dta sync derive --write`. | No. |
-| sync.underivable | No input of the rule is known: no source has a refresh period and no question a staleness. | Run `dta profile`; if the profile measures no refresh period (data without timestamps), ask the user how often the source delivers and write `sources.<source>.refresh_period`. | If the profile cannot measure it. |
-| sync.infeasible | No interval meets every staleness given how the sources deliver. | Show the user which question and source conflict; ask for a longer staleness. | Yes. |
+| sync.underivable | No input of the rule is known: no source has a refresh period, no question a staleness and no forecast a horizon. | Run `dta profile`; if the profile measures no refresh period (data without timestamps), ask the user how often the source delivers and write `sources.<source>.refresh_period`. | If the profile cannot measure it. |
+| sync.infeasible | No interval meets every staleness and horizon given how the sources deliver, or the interval lies outside `sync.minimum_interval` or `sync.maximum_interval`. | Show the user which question and source conflict; ask for a longer staleness, or a horizon that is a whole multiple of the delivery period the message names. Outside a limit you wrote: remove the limit. | Yes, for a staleness or horizon. |
 | sync.batch_open | A delegation batch is open. | Merge or abort it first. | No. |
 | sign.gaps | Required fields are still open. | [Stage 5](stage-5-gaps.md), step 1. | Yes. |
 | sign.errors | Error findings remain. | `dta manifest validate`; fix them. | Per finding. |
@@ -150,6 +154,9 @@ The last column says whether the user must be asked. "No" means fix it yourself 
 | build.not_ready | A gate before the build has not passed; `error.detail.gates` and `error.detail.next`. | Do what `next` says. | Per gate. |
 | build.failed | A step failed; `error.detail.step`, `error.detail.evidence`. | The table below, by step. | Per step. |
 | build.bad_step | `--from` names no step. | Use one of the steps listed in the message. | No. |
+| twin.no_interval | The twin has no `sync.interval`, so its models have no grid (409 from the API, at step `models`). `dta manifest validate` reports it first as `grid.no_interval`. | `dta sync derive --write`, `dta manifest validate`, then `dta build --from models`. | No. |
+| model.bad_params | A model's settings do not fit its grid or family: a backtest step that is not a whole multiple of `sync.interval`, a parameter a family does not take, or a `season_length` it cannot use. The `models` step skips that model. | Read the message; fix `models.<question>` ([models](models.md)); `dta manifest validate`; `dta build --from models`. | No. |
+| model.none_active | A forecast was asked for, but its question has no accepted model (409; often in acceptance, under `questions.answered`). | `dta models list`: if the model was skipped, fix it as its error code says; if no candidate was accepted, [stage 7](stage-7-acceptance.md), "A question outside its tolerance". | If no candidate was accepted. |
 
 | Step | Usual cause | What to do | Ask the user? |
 |---|---|---|---|
