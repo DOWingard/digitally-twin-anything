@@ -25,6 +25,7 @@ EXPECTED_CODES = {
     "control.bounds",
     "control.binding",
     "action.executor_addon",
+    "action.reserved_header",
     "tier.static_control",
     "tier.static_extras",
     "secret.inline",
@@ -106,3 +107,28 @@ def test_property_refs_placeholders_and_durations():
     assert fmt_duration(timedelta(days=1, hours=6)) == "1 d 6 h"
     assert fmt_duration(timedelta(seconds=90.5)) == "1 min 30.5 s"
     assert fmt_duration(timedelta(0)) == "0 s"
+
+
+def test_a_template_may_not_set_the_header_the_twin_sends_itself():
+    document = {
+        "twin": {"id": "t", "name": "T"},
+        "contract": {"tier": "live", "addons": {"executors": True}},
+        "env": {"KEY": {"description": "the control key"}},
+        "actions": {
+            "switch": {
+                "object_type": "Pump",
+                "binding": "executor",
+                "executor": {
+                    "kind": "http",
+                    "url": "http://plant/controls/{id}",
+                    "env": ["KEY"],
+                    "headers": {"X-API-Key": "${KEY}", "idempotency-key": "{request}"},
+                },
+                "parameters": {"request": {"type": "string"}},
+            }
+        },
+    }
+    found = [f for f in run_checks(parse_manifest(document)) if f.code == "action.reserved_header"]
+    assert [(f.severity, f.path) for f in found] == [
+        (Severity.error, "actions.switch.executor.headers.idempotency-key")
+    ]

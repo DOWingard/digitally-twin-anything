@@ -14,7 +14,12 @@ from ...functions import BUILTINS, Builtin, ParamKind, shape_problem
 from ...log import Log
 from ...schema import UID_FIELD, Kind, Ontology, Role
 from ..models import Manifest
-from .filters import clause_problem, edge_clause_problem, value_problem
+from .filters import (
+    clause_problem,
+    edge_clause_problem,
+    precondition_clauses,
+    value_problem,
+)
 from .findings import Finding, Severity
 from .view import ManifestView, is_property_ref, split_ref
 
@@ -29,6 +34,7 @@ UNMAPPED_OBSERVATION = "ontology.unmapped_observation"
 ROLE = "ontology.role"
 UNIT = "ontology.unit"
 FUNCTION_PARAM = "ontology.function_param"
+ACTION_PRECONDITION = "ontology.action_precondition"
 
 CODES = (
     SIGNATURE,
@@ -40,6 +46,7 @@ CODES = (
     ROLE,
     UNIT,
     FUNCTION_PARAM,
+    ACTION_PRECONDITION,
 )
 _NUMERIC = (Kind.integer, Kind.float)
 
@@ -51,6 +58,42 @@ def _concrete(ontology: Ontology, type_name: str) -> tuple[str, ...] | None:
     if ontology.has_type(type_name):
         return (type_name,)
     return None
+
+
+def _precondition_problems(
+    ontology: Ontology, text: str | None, type_name: str | None
+) -> Iterator[tuple[str, str]]:
+    """What the twin could not evaluate of an action's precondition: it is judged at every
+    proposal against the object acted on, so each clause must be readable for every
+    concrete type the action's object type stands for."""
+    if not text:
+        return
+    if not type_name:
+        yield ACTION_PRECONDITION, "a precondition needs the action's object_type or control"
+        return
+    members = _concrete(ontology, type_name)
+    if members is None:
+        return  # reported as an unknown type
+    clauses = precondition_clauses(text)
+    if not clauses:
+        yield ACTION_PRECONDITION, "the precondition holds no clause"
+    for clause in clauses:
+        problem = clause_problem(clause)
+        if problem is not None:
+            yield ACTION_PRECONDITION, f"'{clause}': {problem}"
+            continue
+        prop = clause.split(":", 1)[0].strip()
+        if prop == UID_FIELD:
+            continue
+        lacking = [member for member in members if not ontology.type(member).has_field(prop)]
+        if lacking:
+            yield UNKNOWN_PROPERTY, f"'{clause}': {', '.join(lacking)} has no property {prop}"
+            continue
+        for member in members:
+            problem = value_problem(clause, ontology.type(member).field(prop))
+            if problem is not None:
+                yield ACTION_PRECONDITION, f"'{clause}': {problem}"
+                break
 
 
 def _references(view: ManifestView) -> Iterator[tuple[str, str]]:
@@ -240,6 +283,13 @@ def ontology_findings(manifest: Manifest, ontology: Ontology, signature: str) ->
                 f"actions.{aid}.object_type",
                 f"the ontology has no type {action.object_type}",
             )
+        acted_on = action.object_type
+        controls = manifest.contract.controls if manifest.contract else {}
+        if not acted_on and action.control in controls:
+            # A controlled action acts on the type of its control's target.
+            acted_on = (controls[action.control].target or "").partition(".")[0] or None
+        for code, message in _precondition_problems(ontology, action.precondition, acted_on):
+            report(code, f"actions.{aid}.precondition", message)
 
     mapped: dict[str, set[str]] = {}
     first_mapping: dict[str, str] = {}

@@ -343,3 +343,35 @@ def test_gates_count_findings_against_the_ontology():
     assert "ontology.unknown_type" in {finding.code for finding in with_extra.findings}
     paths = [(finding.path, finding.code) for finding in with_extra.findings]
     assert paths == sorted(paths)
+
+
+def _action(precondition: str, **more: Any) -> Any:
+    def change(document: dict[str, Any]) -> None:
+        document["actions"] = {
+            "note": {"object_type": "Tank", "binding": "advisory", "precondition": precondition}
+            | more
+        }
+
+    return change
+
+
+def test_a_precondition_the_twin_can_evaluate_has_no_findings():
+    assert findings(_action("uid:eq:node:T1")) == []
+    assert findings(_action("level:lt:3.5 and name:like:T%")) == []
+    assert findings(_action("elevation:gt:0", object_type="Node")) == []
+
+
+@pytest.mark.parametrize(
+    ("precondition", "more", "code"),
+    [
+        ("level < 3", {}, "ontology.action_precondition"),
+        ("level:below:3", {}, "ontology.action_precondition"),
+        ("level:lt:low", {}, "ontology.action_precondition"),
+        ("depth:lt:3", {}, "ontology.unknown_property"),
+        # Node stands for tanks, junctions and reservoirs; only tanks have a level.
+        ("level:lt:3", {"object_type": "Node"}, "ontology.unknown_property"),
+        ("level:lt:3", {"object_type": None}, "ontology.action_precondition"),
+    ],
+)
+def test_a_precondition_the_twin_could_not_evaluate_is_an_error(precondition, more, code):
+    assert findings(_action(precondition, **more)) == [(code, "error", "actions.note.precondition")]

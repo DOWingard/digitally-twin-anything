@@ -122,6 +122,23 @@ def secret_inline(view: ManifestView) -> Iterator[Issue]:
                 )
 
 
+@check("action.reserved_header")
+def reserved_header(view: ManifestView) -> Iterator[Issue]:
+    # The executor sends this header itself, with the id of the action's record, so that a
+    # repeated send cannot act twice; a template's own value would be replaced unseen.
+    for aid, action in sorted(view.actions.items()):
+        executor = action.executor
+        if executor is None:
+            continue
+        for header in sorted(executor.headers):
+            if header.strip().lower() == "idempotency-key":
+                yield Issue(
+                    f"actions.{aid}.executor.headers.{header}",
+                    "the twin sends Idempotency-Key itself, with the id of the action's "
+                    "record; remove this header",
+                )
+
+
 @check("function.interval")
 def function_interval(view: ManifestView) -> Iterator[Issue]:
     for fid, function in sorted(view.functions.items()):

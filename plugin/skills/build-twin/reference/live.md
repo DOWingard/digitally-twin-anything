@@ -94,7 +94,7 @@ In the URL, a filled-in value is percent-encoded. A body value that is exactly `
 
 What the executor does by itself, so do not declare it:
 
-- It sends the header `Idempotency-Key` with the id of the action's record, unique per proposed action; a template's own `Idempotency-Key` header is replaced by it. Do not add a parameter for a request id.
+- It sends the header `Idempotency-Key` with the id of the action's record, unique per proposed action; `dta manifest validate` refuses a template that sets `Idempotency-Key` itself (`action.reserved_header`). Do not add a parameter for a request id.
 - It sends the body as JSON, waits at most 30 s, follows no redirect, and tries again twice only when no connection could be made. A call that got any answer, an error included, is never sent again.
 - An answer with status 2xx is `executed`; if its JSON body holds `effective_at` (a time with an offset), that is when the change took effect, otherwise the time it was sent.
 
@@ -103,8 +103,8 @@ What the executor does by itself, so do not declare it:
 An action acts on whichever object a proposal names, of the class in `actions.<action>.object_type` (or a subclass); a proposal on an object of another class is rejected. To act on one object only:
 
 - Put `{id}` or `{uid}` in the URL, never a fixed object id: a fixed `/controls/PMP-10` would switch PMP-10 whichever pump a proposal names.
-- Name the object in the control's `description` and in the policy that proposes actions, and keep the control `supervised`, so that a person approves each call.
-- `actions.<action>.precondition` is recorded but not evaluated: it guards nothing.
+- Name the object in the control's `description` (the user signs it) and in the policy that proposes actions.
+- Write `actions.<action>.precondition`: filter clauses on the object acted on, in the form `<property>:<op>:<value>` of [functions](functions.md) "Filters", joined by ` and `. For one object: `uid:eq:<uid of the object>`. The twin judges it at every proposal against the object as the head holds it; a proposal on an object that does not meet every clause is recorded as rejected with the reason `precondition` and nothing is sent. `dta manifest validate` refuses a precondition it could not evaluate (`ontology.action_precondition`).
 
 If the user wants the twin to control only one object of a class with many, say so in the description of the control the user signs, and record it in `discussion.md`.
 

@@ -438,7 +438,11 @@ class ActionType(Base):
     )
     executor: Executor | None = req(Owner.agent, "The external call", when="executor")
     parameters: dict[str, Parameter] = opt(Owner.agent, "Arguments of the action", dict)
-    precondition: str | None = opt(Owner.agent, "Condition on the graph that must hold")
+    precondition: str | None = opt(
+        Owner.agent,
+        "Filter clauses <property>:<op>:<value> on the object acted on, joined by ' and '; "
+        "a proposal on an object that does not meet all of them is rejected",
+    )
     expected_effect: str | None = opt(Owner.agent, "What should be observed afterwards")
     settle: timedelta | None = opt(
         Owner.agent,

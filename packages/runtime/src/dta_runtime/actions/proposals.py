@@ -20,8 +20,10 @@ from datetime import datetime
 from typing import Any
 
 from dta_core.log import Log
-from dta_core.store import VersionRef
+from dta_core.manifest.checks.filters import precondition_clauses
+from dta_core.store import InvalidInput, StoredObject, UnknownProperty, VersionRef
 
+from ..filters import parse_where
 from ..twin import Twin
 from . import catalog, gate
 from .checks import judge, same
@@ -61,6 +63,44 @@ from .records import (
 )
 
 log = Log("runtime.actions")
+
+
+def _unmet_precondition(
+    twin: Twin, document: Mapping[str, Any], stored: StoredObject, head: VersionRef
+) -> list[dict[str, str]]:
+    """The reason a proposal on `stored` fails the action's precondition at `head`; none
+    when the action has no precondition or the object meets it. A precondition that cannot
+    be read refuses the proposal: a guard that cannot be checked does not hold."""
+    text = document.get("precondition")
+    if not text:
+        return []
+    clauses = precondition_clauses(str(text))
+    try:
+        fields = {field.name: field for field in twin.ontology.type(stored.type).fields}
+        triples = parse_where(clauses, fields, stored.type)
+        met = twin.store.table(
+            stored.type, columns=["uid"], filter=[("uid", "=", stored.uid), *triples], at=head
+        ).num_rows
+    except (InvalidInput, UnknownProperty, KeyError) as exc:
+        log.error(
+            "an action's precondition cannot be evaluated: the proposal is refused",
+            action=document.get("id"),
+            object=stored.uid,
+            precondition=str(text),
+            exc=exc,
+        )
+        return [reason("precondition", f"{text!r} cannot be evaluated: {exc}")]
+    if met:
+        return []
+    log.info(
+        "proposal refused: the object does not meet the action's precondition",
+        action=document.get("id"),
+        object=stored.uid,
+        precondition=str(text),
+        version=head.id,
+    )
+    return [reason("precondition", f"{stored.uid} does not meet {text!r} at this version")]
+
 
 Rows = Mapping[str, list[dict[str, Any]]]
 
@@ -444,6 +484,8 @@ def propose_with(
         judged = judge(
             twin.ontology, document, object_uid=str(object_uid), stored=stored, params=params
         )
+        if stored is not None and not judged.reasons:
+            judged.reasons.extend(_unmet_precondition(twin, document, stored, head))
         if document["status"] != ACTIVE:
             judged.reasons.insert(
                 0,

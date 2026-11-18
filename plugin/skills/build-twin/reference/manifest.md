@@ -234,7 +234,7 @@ Typed actions on the real system.
 | `actions.<action>.parameters.<parameter>.minimum` | number | no | agent |  | Lowest accepted value |
 | `actions.<action>.parameters.<parameter>.maximum` | number | no | agent |  | Highest accepted value |
 | `actions.<action>.parameters.<parameter>.allowed` | list of text or number or true or false | no | agent |  | Accepted values |
-| `actions.<action>.precondition` | text | no | agent |  | Condition on the graph that must hold |
+| `actions.<action>.precondition` | text | no | agent |  | Filter clauses <property>:<op>:<value> on the object acted on, joined by ' and '; a proposal on an object that does not meet all of them is rejected |
 | `actions.<action>.expected_effect` | text | no | agent |  | What should be observed afterwards |
 | `actions.<action>.settle` | duration (ISO 8601, such as `PT15M`) | no | agent |  | Time after which the effect must be observable; twice the sync interval if absent |
 | `actions.<action>.tolerance` | number, at least 0 | no | agent | `0.0` | How far the observed value may be from the one set |

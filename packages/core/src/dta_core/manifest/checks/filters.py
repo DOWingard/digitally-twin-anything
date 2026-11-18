@@ -25,6 +25,15 @@ _FALSE = ("false", "0")
 _OFFSET_AFTER_SPACE = re.compile(r"^(\d{4}-\d{2}-\d{2}T[0-9:.]+) (\d{2}(:?\d{2})?)$")
 
 
+# An action's precondition is filter clauses on the object acted on, all of which must hold.
+PRECONDITION_AND = " and "
+
+
+def precondition_clauses(text: str) -> list[str]:
+    """The clauses of an action's precondition, in the order written."""
+    return [part.strip() for part in text.split(PRECONDITION_AND) if part.strip()]
+
+
 def split_clause(clause: str) -> tuple[str, str, str | None] | None:
     """(property, operator, value text) of a clause; None when it has fewer than two parts."""
     parts = clause.split(":", 2)

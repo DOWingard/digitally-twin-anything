@@ -3,7 +3,9 @@ reason, and raised as `action.rejected`."""
 
 from __future__ import annotations
 
+import copy
 import json
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -230,3 +232,77 @@ def test_incidents_that_are_not_the_twin_s_are_refused_before_anything_is_writte
         )
     assert caught.value.code == "action.bad_state"
     assert world.store.head() == head
+
+
+def _guarded(make_world: Callable[[], World], **preconditions: str) -> World:
+    """A world of its own whose action types carry the given preconditions."""
+    world = make_world()
+    document = copy.deepcopy(world.document)
+    for action, text in preconditions.items():
+        document["actions"][action]["precondition"] = text
+    register(world.twin, manifest_of(document))
+    return world
+
+
+def test_a_precondition_is_judged_against_the_object_at_every_proposal(
+    make_world: Callable[[], World],
+):
+    # VLV-1's setting in force is 5.0; the other valve has none.
+    world = _guarded(
+        make_world,
+        set_valve="setting:lt:10 and valve_type:eq:tcv",
+        note_valve=f"uid:eq:{VALVE}",
+    )
+    made = actions.propose(
+        world.twin,
+        "set_valve",
+        object=VALVE,
+        params={"value": 20.0},
+        reason=None,
+        source="tester",
+        state="healthy",
+        incidents=[],
+        now=NOW,
+        executor=None,
+    )
+    assert made["status"] == "proposed" and made["reasons"] == []
+
+    # A note is for one valve only: the same proposal on another is refused and recorded.
+    params = {"text": "look at it", "priority": 1}
+    error = refused(world, "note_valve", BARE_VALVE, params)
+    assert kept(world, error)["object"] == BARE_VALVE
+    assert members(error) == ["precondition"]
+    assert BARE_VALVE in error.detail["reasons"][0]["message"]
+    with_note = actions.propose(
+        world.twin,
+        "note_valve",
+        object=VALVE,
+        params=params,
+        reason=None,
+        source="tester",
+        state="healthy",
+        incidents=[],
+        now=NOW,
+        executor=None,
+    )
+    assert with_note["reasons"] == []
+
+
+def test_a_precondition_the_object_does_not_meet_refuses_the_proposal(
+    make_world: Callable[[], World],
+):
+    world = _guarded(make_world, set_valve="setting:gt:10", note_valve="setting:notnull")
+    error = refused(world, "set_valve", VALVE, {"value": 20.0})
+    kept(world, error)
+    assert members(error) == ["precondition"]
+    # A property with nothing in force meets no comparison.
+    note = {"text": "look at it", "priority": 1}
+    assert members(refused(world, "note_valve", BARE_VALVE, note)) == ["precondition"]
+
+
+def test_a_precondition_is_not_judged_when_the_proposal_is_wrong_anyway(
+    make_world: Callable[[], World],
+):
+    world = _guarded(make_world, set_valve="setting:gt:10")
+    # 2000 is above the control's maximum and a larger step than it allows.
+    assert set(members(refused(world, "set_valve", VALVE, {"value": 2000.0}))) == {"params.value"}
