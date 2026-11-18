@@ -28,7 +28,7 @@ dta-toolkit = { workspace = true }
 dta-runtime = { workspace = true }
 
 [tool.pytest.ini_options]
-testpaths = ["packages"]
+testpaths = ["packages", "plugin/tests"]
 addopts = "-q --import-mode=importlib"
 
 [tool.ruff]

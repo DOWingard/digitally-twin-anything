@@ -102,6 +102,15 @@ def test_the_compose_file_holds_three_services_and_no_literal_secret():
                 assert value.startswith("${") and ":?" in value, name
 
 
+def test_the_store_health_check_gives_its_password_by_the_environment():
+    # An argument of a process is readable in the host's process list every time it runs.
+    document = yaml.safe_load(render_compose(plan_stack(manifest())))
+    check = document["services"]["store"]["healthcheck"]["test"]
+    assert check[0] == "CMD-SHELL"
+    assert "--password" not in check[1] and " -p" not in check[1]
+    assert check[1].startswith('DOLT_CLI_PASSWORD="$$DOLT_ROOT_PASSWORD" dolt ')
+
+
 def test_a_live_twin_has_a_scheduler_that_holds_the_token_and_nothing_else():
     static = yaml.safe_load(render_compose(plan_stack(manifest())))
     assert "scheduler" not in static["services"]

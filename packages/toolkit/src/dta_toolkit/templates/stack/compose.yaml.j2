@@ -29,7 +29,8 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - dolt --host 127.0.0.1 --port 3306 --user root --password "$$DOLT_ROOT_PASSWORD" --no-tls sql -q "select 1"
+        # The password goes by the environment: an argument would show in the host's process list.
+        - DOLT_CLI_PASSWORD="$$DOLT_ROOT_PASSWORD" dolt --host 127.0.0.1 --port 3306 --user root --no-tls sql -q "select 1"
       interval: 5s
       timeout: 5s
       retries: 30
