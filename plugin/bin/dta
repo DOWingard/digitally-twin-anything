@@ -1,0 +1,307 @@
+#!/bin/sh
+# dta: runs the twin toolkit's container image on the workspace in the working
+# directory, so that the toolkit needs no Python environment on this machine.
+#
+# The toolkit hands paths inside the workspace (compose files, their bind
+# mounts, build contexts) to the host's docker daemon, which resolves them on
+# the host; the workspace is therefore mounted at its own absolute path. The
+# container uses the host's docker socket and network (the toolkit reaches a
+# twin's API on the loopback address) and runs as the calling user, so that
+# whatever it writes belongs to the caller. Nothing is pulled or pushed.
+#
+# Environment:
+#   DTA_TOOLKIT_IMAGE  the image to run; dta-toolkit:<the version in VERSION>
+#                      when unset
+#   DTA_HOME           the directory to mount instead of the working directory;
+#                      it must contain the working directory
+#   DTA_MOUNTS         more absolute directories, separated by colons, mounted
+#                      at their own paths
+#   DTA_*              every exported variable so named reaches the toolkit,
+#                      passed by name; nothing else of the environment does
+#
+# Exit status: 64 wrong use, 69 docker or the image not available; dta's own
+# status otherwise.
+
+set -u
+unset CDPATH
+
+EX_USAGE=64
+EX_UNAVAILABLE=69
+NL='
+'
+DEFAULT_IFS=" 	$NL"
+
+refuse() {
+	status=$1
+	shift
+	IFS=' '
+	printf 'dta: %s\n' "$*" >&2
+	exit "$status"
+}
+
+# Sets `resolved` to the physical absolute path of $1, which need not exist
+# yet: its longest existing ancestor with symbolic links resolved, the rest
+# appended as written. A relative path is taken from the working directory.
+physical() {
+	pending=$1
+	case $pending in
+	/*) ;;
+	*) pending=$cwd/$pending ;;
+	esac
+	tail=
+	while [ ! -d "$pending" ]; do
+		tail=/${pending##*/}$tail
+		pending=${pending%/*}
+		[ -n "$pending" ] || pending=/
+	done
+	resolved=$(cd -P -- "$pending" && pwd -P) || return 1
+	resolved=${resolved%/}$tail
+}
+
+# Fails unless the path in `resolved` lies in the mounted directory `root`.
+require_inside() {
+	case $resolved/ in
+	"$root"/*) ;;
+	*) refuse "$EX_USAGE" "$1 ($resolved) is not inside the mounted directory $root;" \
+		"work from inside it, or set DTA_HOME to a directory that contains both" ;;
+	esac
+}
+
+# Adds $1 to the newline-separated list of directories mounted at their own path.
+add_mount() {
+	case $NL$mounts$NL in
+	*"$NL$1$NL"*) ;;
+	*) mounts=$mounts$NL$1 ;;
+	esac
+}
+
+# Sets `field` to $1 as one field of docker's --mount value, which docker
+# reads as CSV: in double quotes, a double quote doubled.
+csv_field() {
+	rest=$1
+	field=
+	while :; do
+		case $rest in
+		*\"*)
+			field=$field${rest%%\"*}\"\"
+			rest=${rest#*\"}
+			;;
+		*)
+			field=\"$field$rest\"
+			return
+			;;
+		esac
+	done
+}
+
+# Sets `bind` to the --mount value that binds the host's $1 at $2, whatever
+# characters (a comma, say) the paths hold.
+bind_value() {
+	csv_field "source=$1"
+	bind=type=bind,$field
+	csv_field "target=$2"
+	bind=$bind,$field
+}
+
+# -- what the toolkit is asked to do --------------------------------------------
+
+# Only the options the launcher must act on are looked at: the workspace the
+# toolkit is pointed at, and where `install-skill` puts the operator skill.
+subcommand=
+workspace_arg=
+target=
+scope=
+help=
+pending_option=
+for arg do
+	if [ -n "$pending_option" ]; then
+		case $pending_option in
+		workspace) workspace_arg=$arg ;;
+		target) target=$arg ;;
+		scope) scope=$arg ;;
+		esac
+		pending_option=
+		continue
+	fi
+	[ "$arg" != --help ] || help=1
+	if [ -z "$subcommand" ]; then
+		case $arg in
+		--workspace | -w) pending_option=workspace ;;
+		--workspace=*) workspace_arg=${arg#--workspace=} ;;
+		-w?*) workspace_arg=${arg#-w} ;;
+		-*) ;;
+		*) subcommand=$arg ;;
+		esac
+	else
+		case $arg in
+		--target) pending_option=target ;;
+		--target=*) target=${arg#--target=} ;;
+		--scope) pending_option=scope ;;
+		--scope=*) scope=${arg#--scope=} ;;
+		esac
+	fi
+done
+
+# -- what is mounted --------------------------------------------------------------
+
+cwd=$(pwd -P) || refuse "$EX_USAGE" "the working directory cannot be read"
+if [ -n "${DTA_HOME:-}" ]; then
+	root=$(cd -P -- "$DTA_HOME" 2>/dev/null && pwd -P) ||
+		refuse "$EX_USAGE" "DTA_HOME ($DTA_HOME) is not a directory"
+else
+	root=$cwd
+fi
+[ "$root" != / ] ||
+	refuse "$EX_USAGE" "/ cannot be mounted as the workspace; work from a directory below it"
+resolved=$cwd
+require_inside "the working directory"
+
+# The toolkit takes its workspace from --workspace, else from DTA_WORKSPACE; a
+# workspace outside the mounts would be written inside the container and lost.
+if [ -n "$workspace_arg" ]; then
+	physical "$workspace_arg" || refuse "$EX_USAGE" "the workspace $workspace_arg cannot be resolved"
+	require_inside "the workspace"
+elif [ -n "${DTA_WORKSPACE:-}" ]; then
+	physical "$DTA_WORKSPACE" || refuse "$EX_USAGE" "DTA_WORKSPACE ($DTA_WORKSPACE) cannot be resolved"
+	require_inside "DTA_WORKSPACE"
+fi
+
+mounts=
+IFS=:
+set -f
+for entry in ${DTA_MOUNTS:-}; do
+	[ -n "$entry" ] || continue
+	case $entry in
+	/*) ;;
+	*) refuse "$EX_USAGE" "DTA_MOUNTS: $entry is not an absolute path" ;;
+	esac
+	[ -d "$entry" ] || refuse "$EX_USAGE" "DTA_MOUNTS: $entry does not exist or is not a directory"
+	add_mount "$entry"
+done
+set +f
+IFS=$DEFAULT_IFS
+
+# The operator skill is installed on the host: into --target, or by default
+# into the caller's personal skills, which the toolkit finds under HOME. The
+# directory is created once docker is known to be there.
+skills=
+if [ "$subcommand" = install-skill ] && [ -z "$help" ]; then
+	if [ -n "$target" ]; then
+		case $target in
+		"~") target=${HOME:-} ;;
+		"~/"*) target=${HOME:-}/${target#"~/"} ;;
+		esac
+		physical "$target" || refuse "$EX_USAGE" "install-skill: --target $target cannot be resolved"
+		skills=$resolved
+	elif [ "$scope" != project ]; then
+		case ${HOME:-} in
+		/?*) ;;
+		*) refuse "$EX_USAGE" "install-skill: HOME is not set to an absolute path" ;;
+		esac
+		skills=$HOME/.claude/skills
+	fi
+fi
+
+# -- docker and the image ---------------------------------------------------------
+
+command -v docker >/dev/null 2>&1 ||
+	refuse "$EX_UNAVAILABLE" "docker is not installed or not on the PATH"
+
+if [ -n "${DTA_TOOLKIT_IMAGE:-}" ]; then
+	image=$DTA_TOOLKIT_IMAGE
+else
+	self=$0
+	while [ -L "$self" ]; do
+		link=$(readlink -- "$self") || break
+		case $link in
+		/*) self=$link ;;
+		*) self=${self%/*}/$link ;;
+		esac
+	done
+	case $self in
+	*/*) version_file=${self%/*}/VERSION ;;
+	*) version_file=VERSION ;;
+	esac
+	version=
+	[ -r "$version_file" ] && read -r version <"$version_file"
+	[ -n "$version" ] ||
+		refuse "$EX_UNAVAILABLE" "the launcher's VERSION file is missing; set DTA_TOOLKIT_IMAGE"
+	image=dta-toolkit:$version
+fi
+
+# The socket the docker command uses here is the one mounted into the container.
+endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null) ||
+	refuse "$EX_UNAVAILABLE" "docker cannot name the daemon it talks to (docker context inspect failed)"
+case $endpoint in
+unix://?*) socket=${endpoint#unix://} ;;
+*) refuse "$EX_USAGE" "docker talks to $endpoint, not to a unix socket; the toolkit's" \
+	"container can only be given a local socket (DOCKER_HOST=unix:///path/to/docker.sock)" ;;
+esac
+[ -S "$socket" ] || refuse "$EX_UNAVAILABLE" "the docker daemon is not reachable: no socket at $socket"
+socket_group=$(ls -lnLd -- "$socket" 2>/dev/null | {
+	read -r _mode _links _owner group _rest && printf '%s' "$group"
+})
+
+if ! failure=$(docker image inspect --format '{{.Id}}' "$image" 2>&1 >/dev/null); then
+	case $failure in
+	*"No such image"* | *"No such object"*)
+		refuse "$EX_UNAVAILABLE" "the image $image is not present; build it with the" \
+			"repository's docker/toolkit.Dockerfile or pull it, or set DTA_TOOLKIT_IMAGE" ;;
+	*)
+		refuse "$EX_UNAVAILABLE" "the docker daemon is not reachable: ${failure%%"$NL"*}" ;;
+	esac
+fi
+
+if [ -n "$skills" ]; then
+	mkdir -p -- "$skills" 2>/dev/null ||
+		refuse "$EX_USAGE" "install-skill: the directory $skills cannot be created"
+	add_mount "$skills"
+fi
+
+# -- the container ----------------------------------------------------------------
+
+arguments=$#
+bind_value "$socket" /var/run/docker.sock
+set -- "$@" docker run --rm --pull never --init \
+	--network host \
+	--user "$(id -u):$(id -g)" \
+	--read-only --tmpfs /tmp \
+	--cap-drop ALL --security-opt no-new-privileges \
+	--log-driver none \
+	--mount "$bind"
+[ -z "$socket_group" ] || set -- "$@" --group-add "$socket_group"
+
+bind_value "$root" "$root"
+set -- "$@" --mount "$bind" --workdir "$cwd"
+IFS=$NL
+set -f
+for directory in $mounts; do
+	bind_value "$directory" "$directory"
+	set -- "$@" --mount "$bind"
+done
+
+# By name only: docker reads each value from this process's environment, so
+# none of them appears on a command line.
+for name in $(env | sed -n 's/^\(DTA_[A-Za-z0-9_]*\)=.*/\1/p'); do
+	set -- "$@" --env "$name"
+done
+set +f
+IFS=$DEFAULT_IFS
+[ -z "$skills" ] || set -- "$@" --env HOME
+
+# stdin is attached unless it is closed; a terminal only when there is one.
+if (exec 3<&0) 2>/dev/null; then
+	set -- "$@" --interactive
+fi
+if [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
+	set -- "$@" --tty
+fi
+set -- "$@" "$image"
+
+# The caller's arguments are still first: move them behind the image.
+while [ "$arguments" -gt 0 ]; do
+	set -- "$@" "$1"
+	shift
+	arguments=$((arguments - 1))
+done
+exec "$@"
