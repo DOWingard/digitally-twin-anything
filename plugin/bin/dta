@@ -210,6 +210,8 @@ fi
 skills=
 if [ "$subcommand" = install-skill ] && [ -z "$help" ]; then
 	if [ -n "$target" ]; then
+		# A quoted ~ reaches the toolkit as written, which expands it with HOME.
+		# shellcheck disable=SC2088
 		case $target in
 		"~") target=${HOME:-} ;;
 		"~/"*) target=${HOME:-}/${target#"~/"} ;;
@@ -264,6 +266,8 @@ unix://?*) socket=${endpoint#unix://} ;;
 esac
 [ -S "$socket" ] ||
 	refuse "$EX_UNAVAILABLE" "the docker daemon is not reachable: no socket at $socket"
+# POSIX has no other way to read a file's group id; the path is the socket's own.
+# shellcheck disable=SC2012
 socket_group=$(ls -lnLd -- "$socket" 2>/dev/null | {
 	read -r _mode _links _owner group _rest && printf '%s' "$group"
 })
@@ -286,11 +290,14 @@ fi
 
 # -- the container ----------------------------------------------------------------
 
+uid=$(id -u) || refuse "$EX_UNAVAILABLE" "the caller's uid cannot be read"
+gid=$(id -g) || refuse "$EX_UNAVAILABLE" "the caller's gid cannot be read"
+
 arguments=$#
 bind_value "$socket" /var/run/docker.sock
 set -- "$@" docker run --rm --pull never --init \
 	--network host \
-	--user "$(id -u):$(id -g)" \
+	--user "$uid:$gid" \
 	--read-only --tmpfs /tmp \
 	--cap-drop ALL --security-opt no-new-privileges \
 	--log-driver none \
