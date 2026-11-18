@@ -84,6 +84,8 @@ class HttpDataset:
     records: str | None = None
     paging: Paging = field(default_factory=Paging)
     since: Since | None = None
+    # When declared, the columns kept, with their types: a field of the rows that is not
+    # named here is not read at all. When not, every field is kept with an inferred type.
     columns: dict[str, pa.DataType] | None = None
 
 

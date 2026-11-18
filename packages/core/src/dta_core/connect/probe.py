@@ -29,6 +29,8 @@ class DatasetProbe:
     columns: tuple[ProbeColumn, ...] = ()
     error_code: str | None = None
     error: str | None = None
+    # Fields the rows held that the dataset's declared columns leave out, so never read.
+    dropped_columns: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +38,7 @@ class DatasetProbe:
             "ok": self.ok,
             "has_rows": self.has_rows,
             "columns": [{"name": c.name, "type": c.type} for c in self.columns],
+            "dropped_columns": list(self.dropped_columns),
             "error_code": self.error_code,
             "error": self.error,
         }
@@ -102,12 +105,16 @@ def _probe_dataset(connector: Connector, name: str) -> DatasetProbe:
         return DatasetProbe(name, ok=False, error_code=exc.code, error=exc.message)
     schema = tables[0].schema
     rows = sum(table.num_rows for table in tables)
+    # Only a connector that keeps a declared list of columns can leave fields out.
+    dropped_of = getattr(connector, "dropped_columns", None)
+    dropped = tuple(dropped_of(name)) if callable(dropped_of) else ()
     log.debug(
         "dataset probed",
         source=connector.source_id,
         dataset=name,
         rows=rows,
         columns=len(schema),
+        dropped=list(dropped),
         elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
     )
     return DatasetProbe(
@@ -115,4 +122,5 @@ def _probe_dataset(connector: Connector, name: str) -> DatasetProbe:
         ok=True,
         has_rows=rows > 0,
         columns=tuple(ProbeColumn(f.name, str(f.type)) for f in schema),
+        dropped_columns=dropped,
     )

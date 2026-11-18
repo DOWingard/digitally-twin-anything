@@ -63,6 +63,8 @@ class PageTables:
         self._schema: pa.Schema | None = None
         self._known: list[str] | None = None
         self.produced = False
+        # Fields the rows held that the declared columns leave out, in the order first seen.
+        self.dropped: list[str] = []
         if spec.columns is not None:
             missing = [name for name in self._asked if name not in spec.columns]
             if missing:
@@ -113,6 +115,12 @@ class PageTables:
 
     def _declared(self, rows: list[dict[str, Any]], schema: pa.Schema) -> pa.Table:
         declared = self._spec.columns or {}
+        seen = set(self.dropped)
+        for row in rows:
+            for key in row:
+                if key not in declared and key not in seen:
+                    seen.add(key)
+                    self.dropped.append(key)
         arrays = [
             declared_column([row.get(name) for row in rows], declared[name], name)
             for name in schema.names
