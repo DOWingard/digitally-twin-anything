@@ -35,6 +35,8 @@ _FILES = (
     "reference/recipes.md",
     "reference/errors.md",
 )
+FIDELITY_FILE = "reference/fidelity.md"
+REMODEL_FILE = "reference/remodel.md"
 # The listing an agent sees is cut at 1,536 characters; stay well inside it.
 _DESCRIPTION_MAX = 900
 _PURPOSE_MAX = 300
@@ -115,6 +117,142 @@ def _state(found: dict[str, Any] | None) -> dict[str, str] | None:
     }
 
 
+def _bounds(control: Any) -> str:
+    """A control's bounds as one line: `0 ≤ value ≤ 10, step ≤ 2`."""
+    bounds = control.bounds
+    if bounds is None:
+        return "-"
+    parts = []
+    low, high = bounds.minimum, bounds.maximum
+    if low is not None and high is not None:
+        parts.append(f"{low:g} ≤ value ≤ {high:g}")
+    elif low is not None:
+        parts.append(f"value ≥ {low:g}")
+    elif high is not None:
+        parts.append(f"value ≤ {high:g}")
+    if bounds.allowed:
+        parts.append("one of " + ", ".join(f"`{json.dumps(value)}`" for value in bounds.allowed))
+    if bounds.max_step is not None:
+        parts.append(f"a change of at most {bounds.max_step:g} at a time")
+    return "; ".join(parts) or "-"
+
+
+def _cell(text: str | None, limit: int = 200) -> str:
+    return _one_line(text, limit).replace("|", "\\|") or "-"
+
+
+def _acting(manifest: Manifest) -> dict[str, Any]:
+    """What a live twin checks about itself and may do: empty for a static twin, whose
+    skill offers none of it."""
+    contract = manifest.contract
+    none: dict[str, Any] = {
+        "fidelity": None,
+        "remodel": False,
+        "controls": [],
+        "actions": [],
+        "loops": [],
+        "objective": None,
+        "executes": False,
+        "notification": None,
+    }
+    if contract is None or contract.tier is None or contract.tier.value != "live":
+        return none
+    found = dict(none)
+    fidelity = manifest.fidelity
+    questions = contract.questions or {}
+    if fidelity is not None and fidelity.interval is not None and fidelity.window is not None:
+        correction = fidelity.correction
+        scored = [
+            {
+                "id": qid,
+                "horizon": _duration(question.horizon),
+                "tolerance": _tolerance(question),
+                "model": question.model,
+            }
+            for qid, question in sorted(questions.items())
+            if question.kind is not None
+            and question.kind.value == "predictive"
+            and question.horizon is not None
+            and question.model
+        ]
+        found["fidelity"] = {
+            "interval": _duration(fidelity.interval),
+            "window": _duration(fidelity.window),
+            "recalibrate_attempts": correction.recalibrate_attempts,
+            "reselect": correction.reselect,
+            "agent_remodel": correction.agent_remodel,
+            "retry_budget": correction.retry_budget,
+            "remodel_timeout": _duration(correction.remodel_timeout),
+            "scored": scored,
+            "stale": any(question.staleness is not None for question in questions.values()),
+        }
+        found["remodel"] = bool(scored) and correction.agent_remodel
+    addon = bool(contract.addons.executors)
+    actions = manifest.actions or {}
+    controls = contract.controls or {}
+    found["controls"] = [
+        {
+            "id": cid,
+            "description": _cell(control.description),
+            "target": control.target or "-",
+            "bounds": _bounds(control),
+            "autonomy": control.autonomy.value if control.autonomy is not None else "-",
+            "action": control.action,
+        }
+        for cid, control in sorted(controls.items())
+    ]
+    found["actions"] = [
+        {
+            "id": aid,
+            "description": _cell(action.description),
+            "control": action.control,
+            "object_type": action.object_type or "-",
+            "binding": action.binding or "-",
+            "parameters": ", ".join(
+                f"`{name}`" + (f" ({parameter.type})" if parameter.type else "")
+                for name, parameter in sorted((action.parameters or {}).items())
+            )
+            or "-",
+            # Only an executed action that sets a control is checked for its effect.
+            "settle": (
+                (_duration(action.settle) or "twice the sync interval")
+                if action.binding == "executor" and action.control
+                else "-"
+            ),
+        }
+        for aid, action in sorted(actions.items())
+    ]
+    found["executes"] = addon and any(
+        action.binding == "executor"
+        and action.control in controls
+        and controls[action.control].autonomy is not None
+        and controls[action.control].autonomy.value != "advisory"
+        for action in actions.values()
+    )
+    found["loops"] = [
+        {
+            "id": lid,
+            "description": _cell(loop.description),
+            "controls": ", ".join(f"`{cid}`" for cid in loop.controls or []) or "-",
+            "policy": loop.policy or "-",
+            "interval": _duration(loop.interval) or "-",
+        }
+        for lid, loop in sorted((manifest.control_loops or {}).items())
+    ]
+    objective = contract.objective
+    if objective is not None and objective.description:
+        found["objective"] = {
+            "description": _one_line(objective.description, 300).rstrip(". "),
+            "direction": objective.direction,
+            "kpi": objective.kpi,
+        }
+    notification = contract.notification
+    found["notification"] = (
+        notification.kind if notification is not None and notification.kind else "log"
+    )
+    return found
+
+
 def _context(
     manifest: Manifest, manifest_hash: str, states: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
@@ -165,6 +303,7 @@ def _context(
             {"id": source_id, "description": _one_line(source.description, 200)}
             for source_id, source in sorted((manifest.sources or {}).items())
         ],
+        **_acting(manifest),
     }
 
 
@@ -184,6 +323,13 @@ def _description(context: dict[str, Any]) -> str:
             "The twin is live: use it also to check how current its data is, to see what "
             "its sync runs did, and to make it read its sources now."
         )
+    if context["fidelity"]:
+        parts.append(
+            "It checks itself against the real system: read its fidelity state and incidents "
+            "before trusting an answer."
+        )
+    if context["actions"]:
+        parts.append("It can propose actions on the real system within agreed bounds.")
     if asked:
         parts.append(f"It answers: {asked}.")
     return _one_line(" ".join(parts), _DESCRIPTION_MAX)
@@ -206,7 +352,12 @@ def render_skill(
     )
     root = resources.files("dta_toolkit").joinpath(_TEMPLATES)
     files: dict[str, str] = {}
-    for relative in _FILES:
+    wanted = list(_FILES)
+    if context["fidelity"]:
+        wanted.append(FIDELITY_FILE)
+    if context["remodel"]:
+        wanted.append(REMODEL_FILE)
+    for relative in wanted:
         template = root.joinpath(f"{relative}.j2").read_text(encoding="utf-8")
         files[relative] = environment.from_string(template).render(**context)
     # The front matter is written by a YAML writer, so no text of the manifest can break it.

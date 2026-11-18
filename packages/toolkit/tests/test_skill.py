@@ -22,6 +22,10 @@ SECRET_LOCATION = "postgresql://${ERP_USER}:${ERP_PASSWORD}@erp.internal:5432/er
 
 
 def manifest(**sections: Any) -> Manifest:
+    return parse_manifest(_document(**sections), origin="test")
+
+
+def _document(**sections: Any) -> dict[str, Any]:
     document: dict[str, Any] = {
         "twin": {"id": "pump_station", "name": "Pump station"},
         "contract": {
@@ -49,7 +53,7 @@ def manifest(**sections: Any) -> Manifest:
         },
     }
     document.update(sections)
-    return parse_manifest(document, origin="test")
+    return document
 
 
 def render(document: Manifest):
@@ -216,6 +220,9 @@ _GROUPS = (
     "scenarios",
     "derived",
     "search",
+    "fidelity",
+    "actions",
+    "control",
 )
 
 
@@ -229,7 +236,71 @@ def _endpoint_path(span: str) -> str | None:
     return "/" + "/".join("{}" if part.startswith(("{", "<")) else part for part in parts)
 
 
-@pytest.mark.parametrize("document", [manifest, live_manifest], ids=["static", "live"])
+def acting_manifest(*, acts: bool = True) -> Manifest:
+    """A live twin with what it can check and, with `acts`, do: a forecast question, a
+    control carried out by an executor, an advisory action, a loop, an objective, a
+    webhook."""
+    document = _document(
+        sync={"interval": "PT15M"},
+        fidelity={"interval": "PT1H", "window": "P7D"},
+        models={"level": {"target": "Tank.level"}},
+    )
+    contract = document["contract"]
+    contract["tier"] = "live"
+    contract["questions"]["q_ahead"] = {
+        "text": "Level in an hour?",
+        "kind": "predictive",
+        "priority": 3,
+        "tolerance": {"metric": "mae", "value": 0.2, "unit": "m"},
+        "staleness": "PT30M",
+        "targets": ["Tank.level"],
+        "horizon": "PT1H",
+        "model": "level",
+    }
+    contract["notification"] = {"kind": "webhook", "webhook_env": "ALERT_URL"}
+    if acts:
+        contract["addons"] = {"executors": True}
+        contract["controls"] = {
+            "c_pump": {
+                "description": "Run the pump",
+                "target": "Pump.running",
+                "bounds": {"allowed": [True, False]},
+                "autonomy": "autonomous",
+                "action": "set_pump",
+            }
+        }
+        contract["objective"] = {
+            "description": "Least energy cost",
+            "direction": "minimize",
+            "kpi": "f_cost",
+        }
+        document["actions"] = {
+            "set_pump": {
+                "description": "Switch the pump",
+                "control": "c_pump",
+                "object_type": "Pump",
+                "binding": "executor",
+                "executor": {"kind": "http", "url": "https://plant/pumps/{id}", "env": []},
+                "parameters": {"value": {"type": "boolean"}},
+                "settle": "PT30M",
+            },
+            "advise_valve": {"binding": "advisory", "description": "Open | close a valve"},
+        }
+        document["control_loops"] = {
+            "l_pump": {"controls": ["c_pump"], "policy": "f_policy", "interval": "PT1H"}
+        }
+    return parse_manifest(document, origin="test")
+
+
+def live_without_actions() -> Manifest:
+    return acting_manifest(acts=False)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [manifest, live_manifest, live_without_actions, acting_manifest],
+    ids=["static", "live", "live-without-actions", "live-with-everything"],
+)
 def test_every_endpoint_the_skill_mentions_is_in_its_own_reference(document: Any):
     skill = render(document())
     listed = {
@@ -238,9 +309,135 @@ def test_every_endpoint_the_skill_mentions_is_in_its_own_reference(document: Any
         if line.startswith(("| `GET /", "| `POST /"))
     }
     assert len(listed) > 20
-    for name in (SKILL_FILE, "reference/recipes.md", "reference/errors.md"):
+    for name in sorted(set(skill.files) - {MARKER_FILE, "reference/api.md"}):
         mentioned = {_endpoint_path(span) for span in _SPAN.findall(skill.files[name])} - {None}
         assert mentioned and mentioned <= listed, (name, sorted(mentioned - listed))
+
+
+# What only a live twin that checks itself, or acts, is told.
+FIDELITY_TEXT = (
+    "## Whether to trust an answer now",
+    "## Incidents: what the twin does by itself",
+    "reference/fidelity.md",
+)
+ACTING_TEXT = (
+    "## Acting on the real system",
+    "Never work around a blocked action",
+    "Approval is the human's",
+    "## Control loops",
+    "Enabling a loop is the user's decision",
+)
+
+
+def test_a_static_twin_is_told_nothing_of_fidelity_actions_or_loops():
+    skill = render(manifest(actions={"advise": {"binding": "advisory"}}))
+    assert set(skill.files) == {
+        SKILL_FILE,
+        MARKER_FILE,
+        "reference/api.md",
+        "reference/recipes.md",
+        "reference/errors.md",
+    }
+    body = skill.files[SKILL_FILE]
+    for text in (*FIDELITY_TEXT, *ACTING_TEXT, "`healthy`", "`ok`: within tolerance"):
+        assert text not in body, text
+    everything = "\n".join(skill.files[name] for name in (SKILL_FILE, "reference/recipes.md"))
+    for path in ("/fidelity", "/actions", "/control/loops"):
+        assert path not in everything, path
+    api = skill.files["reference/api.md"]
+    assert "## Fidelity" not in api and "## Actions" not in api and "## Control loops" not in api
+    assert "- actions:" not in api
+    assert "Propose an action" not in skill.files["reference/recipes.md"]
+    # What every twin's skill lists: the schedule, the notifications, the registration.
+    for route in ("`GET /lifecycle/schedule`", "`GET /lifecycle/notifications`"):
+        assert route in api
+
+
+def test_a_live_twin_without_actions_is_told_of_its_fidelity_only():
+    skill = render(live_without_actions())
+    assert "reference/fidelity.md" in skill.files and "reference/remodel.md" in skill.files
+    body = skill.files[SKILL_FILE]
+    for text in FIDELITY_TEXT:
+        assert text in body, text
+    for text in ACTING_TEXT:
+        assert text not in body, text
+    assert (
+        "`reconcile`" not in body and "Propose an action" not in skill.files["reference/recipes.md"]
+    )
+    assert "`failed`" in body and "report the answer as unreliable" in body
+    fidelity = skill.files["reference/fidelity.md"]
+    assert "Δ = 1 hour" in fidelity and "W = 7 days" in fidelity
+    assert "| `q_ahead` | 1 hour | mae ≤ 0.2 m | `level` |" in fidelity
+    for measure in ("Window error and breach", "## Warning", "## Staleness", "**Stuck.**"):
+        assert measure in fidelity, measure
+    assert "**Biased.**" in fidelity and "p₀ⁿ < 10⁻⁴" in fidelity
+
+
+def test_a_live_twin_with_everything_is_told_the_interlock_and_who_decides():
+    skill = render(acting_manifest())
+    body = skill.files[SKILL_FILE]
+    for text in (*FIDELITY_TEXT, *ACTING_TEXT, "`reconcile`", "reference/remodel.md"):
+        assert text in body, text
+    interlock = body[body.index("| Autonomy | `healthy`") :]
+    assert "| autonomous | executed at once | `blocked` | `blocked` |" in interlock
+    assert "| supervised | `proposed`; executed when a person approves it" in interlock
+    control = next(line for line in body.splitlines() if line.startswith("| `c_pump`"))
+    assert "`Pump.running`" in control and "one of `true`, `false`" in control
+    assert "autonomous" in control and "`set_pump`" in control
+    advise = next(line for line in body.splitlines() if line.startswith("| `advise_valve`"))
+    assert "Open \\| close a valve" in advise
+    assert "| `l_pump` |" in body and "every loop starts disabled" in body.lower()
+    assert "Least energy cost (minimize, measured by the function `f_cost`)" in body
+    assert "by a webhook" in body
+    assert "The twin executes none of these itself" not in body
+    recipes = skill.files["reference/recipes.md"]
+    assert "## 18. Propose an action" in recipes
+    remodel = skill.files["reference/remodel.md"]
+    for step in (
+        "dta manifest validate",
+        "dta build",
+        "needs no new signature",
+        "`requested_at` + 1 day",
+        "Do not change the question, its tolerance or its horizon",
+        "GET /fidelity/questions/{id}/errors",
+        "/backtests",
+    ):
+        assert step in remodel, step
+    description = front_matter(body)["description"]
+    assert "fidelity state" in description and "propose actions" in description
+    assert len(description) <= 1_000
+    assert len(body.splitlines()) < 500
+
+
+def test_the_recipe_files_are_there_exactly_when_they_apply():
+    def files(document: Manifest) -> set[str]:
+        return {name for name in render(document).files if name.startswith("reference/")} - {
+            "reference/api.md",
+            "reference/recipes.md",
+            "reference/errors.md",
+        }
+
+    assert files(manifest()) == set()
+    assert files(live_manifest()) == set()  # no fidelity interval and window
+    assert files(acting_manifest()) == {"reference/fidelity.md", "reference/remodel.md"}
+    # No forecast question with a model: nothing to re-model.
+    document = acting_manifest()
+    document.contract.questions["q_ahead"].model = None
+    assert files(document) == {"reference/fidelity.md"}
+    assert "**Biased.**" not in render(document).files["reference/fidelity.md"]
+    # The managing agent may not be asked.
+    document = acting_manifest()
+    document.fidelity.correction.agent_remodel = False
+    assert files(document) == {"reference/fidelity.md"}
+    assert "remodel_requested" not in render(document).files[SKILL_FILE]
+
+
+def test_without_the_executors_add_on_the_twin_executes_nothing_it_proposes():
+    document = acting_manifest()
+    document.contract.addons.executors = False
+    body = render(document).files[SKILL_FILE]
+    assert "The twin executes none of these itself" in body
+    assert "`reconcile`" not in body
 
 
 def test_the_skill_teaches_filters_on_links_and_not_a_search_by_hand():

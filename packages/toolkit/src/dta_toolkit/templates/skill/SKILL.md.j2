@@ -71,10 +71,9 @@ How each answer is defined. Ask the twin for it; when you work it out from the t
 {% endif %}
 - Inside the contract: the questions above. Their answers are held to the stated tolerance.
 - Outside the contract: anything else you compute from the twin's data. The data is real and you may use it, but say plainly that no accuracy was agreed for the result.
-- The fidelity state in `/meta/health` says whether the twin currently keeps its promises:
-  - `unknown`: not measured yet. Say so when you answer a contract question.
-  - `ok`: within tolerance.
-  - `correcting` or `failed`: the twin is outside its tolerance. Report this with any answer, and do not base a decision or an action on it.
+{% if fidelity %}
+- Whether the twin keeps these promises right now is its fidelity state: read "Whether to trust an answer now" below before the first contract answer.
+{% endif %}
 
 ## Versions
 
@@ -108,6 +107,108 @@ What the twin did, and why data is missing:
 `POST /sync/runs` makes the twin read its sources now instead of at the next interval; it is the only request that brings new observed data. Use it when the user asks for the newest data, or after a source was mended. Do not call it in a loop: the schedule already does that. The answer is a job; wait for it as recipe 8 shows.
 
 {% endif %}
+{% if fidelity %}
+## Whether to trust an answer now
+
+At every fidelity interval ({{ fidelity.interval }}) the twin checks itself against the real system:{% if fidelity.scored %}whether its forecasts came true within their tolerance over the last {{ fidelity.window }}, {% endif %}whether its data is as fresh as agreed, and whether its sensors still behave. What it found is one state: `fidelity` in `/meta/health` (with `fidelity_detail`: since when, the last check, how many incidents are open and failed, how many signals are suspect), and in detail at `GET /fidelity`.
+
+| State | What it means | With an answer to a question of the contract |
+|---|---|---|
+| `unknown` | no check has completed yet | give the answer and say that the twin has not been checked against the real system yet |
+| `healthy` | the last check found everything within what was agreed | give the answer |
+| `correcting` | an incident is open and the twin is putting it right | give the answer, say that the twin is correcting and name the incident if it concerns this question (`GET /fidelity`, `incidents`); do not base a decision or an action on it |
+| `failed` | the twin could not put itself right | report the answer as unreliable, in the same sentence as the answer, whatever it is; do not base a decision or an action on it; tell the user the twin needs attention |
+
+- Read the state at the start of the session and again before any answer a decision will rest on: it can change at every check.
+- An answer of a twin that is `failed` is never presented as the twin's reliable answer, not even when it looks plausible.
+- How each measure is computed, with this twin's settings, and where to read it: `reference/fidelity.md`.
+
+## Incidents: what the twin does by itself
+
+Each thing that goes wrong is one incident (`GET /fidelity/incidents?status=unresolved`; `GET /fidelity/incidents/{id}` lists every step taken). The twin works on them itself, at every check; you do not need to start anything:
+
+{% if fidelity.scored %}
+- `breach`: a forecast question whose error over the window is above its tolerance. The twin re-fits the active model on recent data (up to {{ fidelity.recalibrate_attempts }} times){% if fidelity.reselect %}, then makes the best of the specification's candidates active{% endif %}{% if fidelity.agent_remodel %}, then asks the managing agent to revise the model (status `remodel_requested`){% endif %}. After {{ fidelity.retry_budget }} rounds without success the incident is `failed`.
+{% endif %}
+{% if fidelity.stale %}
+- `stale`: a question whose data is older than agreed. It resolves when fresh data arrives, and fails after {{ fidelity.retry_budget }} stale checks in a row.
+{% endif %}
+- `signal`: a sensor whose readings look stuck or biased. Sync stops writing its value{% if fidelity.scored %}, the twin writes an inferred one where a forecast question covers it,{% endif %} and the raw readings are kept on the signal (`GET /fidelity/signals`). It clears itself after 3 checks with plausible readings.
+{% if executes %}
+- `reconcile`: an executed action whose effect was not observed within its settle time. It resolves when a later action on the same control and object is observed to take effect.
+{% endif %}
+
+What is yours to do:
+
+{% if remodel %}
+- An incident in status `remodel_requested`, or the notification `twin.fidelity.remodel_requested`: follow `reference/remodel.md`. The twin waits {{ fidelity.remodel_timeout }} for a revised model, then the incident is `failed`.
+{% endif %}
+- A `failed` incident: tell the user what failed and since when. `POST /fidelity/incidents/{id}/retry` starts its corrections again; send it only when the user says so.
+- A `signal`{% if executes %} or `reconcile`{% endif %} incident whose cause the user says is mended (a sensor replaced, a reading checked on site): `POST /fidelity/signals/{uid}/clear`{% if executes %} or `POST /fidelity/incidents/{id}/resolve`{% endif %}, with `by` (the user) and `note` (what was done). Only on the user's word.
+- Never retry, resolve or clear anything to make the state look better: the state is what the user relies on.
+- The twin tells its owner of each change of state and incident {% if notification == "webhook" %}by a webhook{% else %}in its log{% endif %}; `GET /lifecycle/notifications` lists the last 200 since its API started.
+
+{% endif %}
+{% if controls %}
+## Acting on the real system
+
+The user delegated these controls to the twin. Each is carried out by an action type, within bounds, at an autonomy the user chose:
+
+| Control | What it is for | Sets | Bounds | Autonomy | Action |
+|---|---|---|---|---|---|
+{% for c in controls %}
+| `{{ c.id }}` | {{ c.description }} | `{{ c.target }}` | {{ c.bounds }} | {{ c.autonomy }} | {{ "`" ~ c.action ~ "`" if c.action else "-" }} |
+{% endfor %}
+
+{% if actions %}
+| Action | What it does | On | Parameters | Effect observable after |
+|---|---|---|---|---|
+{% for a in actions %}
+| `{{ a.id }}` | {{ a.description }} | {{ a.object_type }} | {{ a.parameters }} | {{ a.settle }} |
+{% endfor %}
+
+{% endif %}
+{% if objective %}
+What the controls serve: {{ objective.description }} ({{ objective.direction or "-" }}{% if objective.kpi %}, measured by the function `{{ objective.kpi }}`{% endif %}).
+
+{% endif %}
+{% if not executes %}
+The twin executes none of these itself: every proposal is recorded and stays a recommendation for a person to carry out.
+
+{% endif %}
+The interlock decides what becomes of a proposal, from the control's autonomy and the twin's fidelity state at that moment. This is the rule; the twin enforces it:
+
+| Autonomy | `healthy` | `correcting` or `unknown` | `failed` |
+|---|---|---|---|
+| advisory | recorded as `proposed`; never executed by the twin | same | same |
+| supervised | `proposed`; executed when a person approves it | same | an approval gives `blocked` |
+| autonomous | executed at once | `blocked` | `blocked` |
+
+Never work around a blocked action. Do not propose it again under another action or in smaller steps, do not ask for it through a loop, and do not reach the real system by any other route. A `blocked` record is final: tell the user that it was blocked and why (the record's `fidelity`, and the incidents that keep the twin from `healthy`), and propose it again only once the state allows it and the user still wants it.
+
+Proposing (recipe "Propose an action"):
+
+- `POST /actions/{id}/propose` with `{"object": "<uid>", "params": {"value": ...}, "reason": "<why, in one sentence>", "source": "<your name>"}` and a header `Idempotency-Key`. The twin checks the object, the parameters and the bounds; a refusal is `422` `action.rejected` with every reason in `errors`, and is recorded too.
+- Propose only what the user asked for, or what follows from a question the user asked, and tell the user what you proposed and its `status`.{% if executes and controls | selectattr("autonomy", "equalto", "autonomous") | list %} A proposal on an autonomous control is executed at once while the twin is `healthy`: there is no second look.{% endif %}
+- Approval is the human's. A `proposed` record of a supervised control waits for a person: give the user its uid and stop there. Never approve your own proposal (`POST /actions/records/{uid}/approve`) unless the user tells you to approve that record; then send `by` with the user's name, never your own.
+- An executed action changes the real system, not the twin's observed data: the change shows when a sync run reads it. After its settle time, `GET /actions/records/{uid}` gives `reconciliation`: `ok`, `mismatch` (the twin opens an incident) or `pending`.
+
+{% endif %}
+{% if loops %}
+## Control loops
+
+| Loop | What it regulates | Controls | Policy | Every |
+|---|---|---|---|---|
+{% for l in loops %}
+| `{{ l.id }}` | {{ l.description }} | {{ l.controls }} | `{{ l.policy }}` | {{ l.interval }} |
+{% endfor %}
+
+A loop asks its policy function what to do once per interval and proposes each action it names, with the loop as the source; the bounds and the interlock apply to it as to any proposal. Every loop starts disabled.
+
+- Enabling a loop is the user's decision. `POST /control/loops/{id}/enable` with `by` set to the user, only when the user says so; the same for `.../disable`.
+- `GET /control/loops/{id}` shows whether it is `enabled` and what its `last_run` did; `POST /control/loops/{id}/run` runs an enabled loop once, now, as a job.
+
+{% endif %}
 ## How to do things
 
 Read `reference/recipes.md` before the first request of each kind. In short:
@@ -127,6 +228,16 @@ Read `reference/recipes.md` before the first request of each kind. In short:
 {% if live %}
 | see whether the data is current, and the state of each source | `/meta/health` (`clock`, `sync`), `/sync/sources` |
 | make the twin read its sources now | `POST /sync/runs`, then `/lifecycle/jobs/{id}` |
+{% endif %}
+{% if fidelity %}
+| see whether the twin keeps its promises now, and what it is putting right | `/fidelity`, `/fidelity/incidents`, `/fidelity/signals` |
+| see how a forecast question's error developed | `/fidelity/questions/{id}/errors` |
+{% endif %}
+{% if actions %}
+| propose an action on the real system, and see what became of it | `POST /actions/{id}/propose`, `/actions/records/{uid}` |
+{% endif %}
+{% if loops %}
+| see the control loops and what their last run did | `/control/loops` |
 {% endif %}
 | find objects of any type by uid or name | `/search` |
 | ask a question it was built to answer | `GET /questions`, `POST /questions/{id}/answer` |
@@ -149,7 +260,7 @@ All endpoints, with parameters: `reference/api.md`. Error codes and what to do a
 4. Let the twin do the filtering, the sorting, the counting, the traversal and the history: use `where`, `sort`, `count=true`, the graph endpoints with `edge_where`, and the slice endpoint instead of downloading everything and searching it yourself.
 5. Every value has provenance (`include=provenance`): where it came from, whether it was observed, inferred, assumed or simulated, and when it was true. Quote it when the user asks how a number is known.
 6. Report what the twin says. If the data does not answer a question, say that; do not fill the gap with an estimate presented as the twin's. A null is "no value held", never zero. If a definition leaves a choice open (how to integrate, what counts as an occurrence, which time zone a day is in), state the choice you made with the answer.
-7. Reading never changes the twin, nor does asking a question or forecasting. Running a function changes it only when the function gives rows to write. What else changes it: registrations, evaluations and measurements, scenarios, derived data{% if live %} and sync runs (`POST /sync/runs`){% endif %} (`reference/api.md`, "What changes the twin"). Ask the user before any of these. Observed data cannot be edited through the API, and you should not try to reach the twin's database or its sources directly.
+7. Reading never changes the twin, nor does asking a question or forecasting. Running a function changes it only when the function gives rows to write. What else changes it: registrations, evaluations and measurements, scenarios, derived data{% if live %} and sync runs (`POST /sync/runs`){% endif %}{% if fidelity %}; the steps taken on incidents and signals{% endif %}{% if actions %}; proposals, approvals and rejections{% endif %}{% if loops %}; enabling, disabling and running loops{% endif %} (`reference/api.md`, "What changes the twin"). Ask the user before any of these.{% if actions %} A proposal that is executed changes the real system as well.{% endif %} Observed data cannot be edited through the API, and you should not try to reach the twin's database or its sources directly.
 8. If the user needs something the contract does not cover (a new question, a tighter tolerance, another source), that is a revision of the contract: tell the user it has to be agreed and rebuilt; do not improvise it.
 {% if ui %}
 

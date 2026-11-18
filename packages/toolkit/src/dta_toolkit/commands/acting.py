@@ -166,7 +166,17 @@ _QUESTION_COLUMNS = [
     "reason",
 ]
 _INCIDENT_COLUMNS = ["uid", "kind", "subject", "status", "rung", "attempt", "cycle", "opened_at"]
-_SIGNAL_COLUMNS = ["uid", "property", "object", "status", "reason", "since", "reading_at"]
+_SIGNAL_COLUMNS = [
+    "uid",
+    "property",
+    "object",
+    "status",
+    "reason",
+    "since",
+    "value_at_flag",
+    "reading",
+    "reading_at",
+]
 
 
 def _status_text(found: Mapping[str, Any]) -> str:
