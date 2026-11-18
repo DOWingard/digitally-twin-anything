@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from typing import Annotated, Any
 from urllib.parse import quote
 
@@ -45,21 +45,26 @@ def _api(ctx: typer.Context) -> Iterator[tuple[Manifest, TwinApi, dict[str, str]
         raise
 
 
-def _cell(value: Any) -> str:
+def _cell(value: Any, whole: bool = False) -> str:
     if value is None:
         return "-"
     if isinstance(value, float):
         return f"{value:.4g}"
     text = value if isinstance(value, str) else json.dumps(value, default=str)
-    return text if len(text) <= _CELL else text[: _CELL - 1] + "…"
+    return text if whole or len(text) <= _CELL else text[: _CELL - 1] + "…"
 
 
-def table(rows: Sequence[Mapping[str, Any]], columns: Sequence[str] | None = None) -> str:
-    """Rows as a plain text table, one column per key."""
+def table(
+    rows: Sequence[Mapping[str, Any]],
+    columns: Sequence[str] | None = None,
+    whole: Collection[str] = (),
+) -> str:
+    """Rows as a plain text table, one column per key; a long cell is cut short, except
+    in the `whole` columns (the ids a reader passes on to the next command)."""
     if not rows:
         return "(no rows)"
     names = list(columns or dict.fromkeys(key for row in rows for key in row))
-    cells = [[_cell(row.get(name)) for name in names] for row in rows]
+    cells = [[_cell(row.get(name), name in whole) for name in names] for row in rows]
     widths = [max(len(name), *(len(line[i]) for line in cells)) for i, name in enumerate(names)]
     lines = ["  ".join(name.ljust(widths[i]) for i, name in enumerate(names)).rstrip()]
     lines += ["  ".join(c.ljust(widths[i]) for i, c in enumerate(line)).rstrip() for line in cells]
@@ -81,10 +86,11 @@ def _counts_text(registered: Mapping[str, Any]) -> list[str]:
 
 @command
 def register(ctx: typer.Context) -> None:
-    """Register the manifest's functions, models and questions with the running twin.
+    """Register the manifest's functions, models, questions, actions and loops with the twin.
 
     The twin's own code is packed and uploaded first when the manifest names it
-    (runtime.code); nothing is written when nothing differs.
+    (runtime.code); nothing is written when nothing differs. A new control loop is
+    registered disabled.
     """
     workspace = session(ctx).workspace
     with _api(ctx) as (manifest, api, secrets):

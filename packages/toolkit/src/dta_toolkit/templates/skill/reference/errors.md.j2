@@ -77,11 +77,12 @@ Branch on `code`, not on the text. Quote `trace_id` when you report a failure to
 | 500 | `function.failed`, `function.memory`, `function.unknown_entry` | code of the twin's own raised (`frames` names where), ran out of memory, or a function names an entry this runtime does not have | do not retry in a loop; report `detail`, `frames` and the trace id |
 | 500 | `model.failed` | a model family failed while fitting or predicting | do not retry in a loop; report the trace id |
 | 503 | `store.unavailable`, `store.closed`, `store.lock_timeout`, `store.not_installed` | the twin's store cannot answer now | wait a few seconds and retry up to three times; then tell the user the twin is down |
+| 503 | `clock.unavailable` | the twin's clock cannot be read now | ask again later |
+{% if live %}
 | 400 | `fidelity.bad_request` | the step does not apply to this incident or question (resolving a breach by hand, a question without a model) | read `detail` |
 | 404 | `fidelity.not_found` | no such check, incident, signal or question | list them with `/fidelity/checks`, `/fidelity/incidents`, `/fidelity/signals` |
 | 409 | `fidelity.not_live`, `fidelity.unsupported` | the twin is static, sets no fidelity interval and window, or its store holds no fidelity records | there is nothing to check |
 | 409 | `fidelity.conflict`, `fidelity.out_of_order` | the step does not fit the present state, or a check is older than the newest | read the incident or signal again |
-| 503 | `clock.unavailable` | the twin's clock cannot be read now | ask again later |
 | 404 | `action.not_found` | no action type of that id | list them with `GET /actions` |
 | 404 | `action.record_not_found` | no record of a proposal with that uid | take uids from `GET /actions/records`; a uid is written whole, `twin_action_record:…` |
 | 404 | `action.loop_not_found` | no control loop of that id | list them with `GET /control/loops` |
@@ -93,6 +94,7 @@ Branch on `code`, not on the text. Quote `trace_id` when you report a failure to
 | 422 | `action.rejected` | the proposal cannot be carried out as asked: no such action type, object or parameter, or a value outside the bounds | read `errors` (each names the member); the refusal is recorded under `record` |
 | 502 | `action.policy_failed`, `action.bad_policy_answer` | a control loop's policy raised, or answered what cannot be used whole (the `error` of the loop run's job); nothing was proposed | a fault in the twin's code; read the loop's `last_run.error` and report it with the trace id |
 | 500 | `action.bad_state`, `action.executor_invalid` | a fault in the twin: a fidelity state it does not know, or an executor that cannot be called as declared | do not retry in a loop; report the trace id |
+{% endif %}
 | 503 | `job.closed` | the API is stopping and starts no job | wait until the twin is up again, then ask again |
 | 500 | `api.internal` | a fault in the twin | do not retry in a loop; report the trace id to the user |
 

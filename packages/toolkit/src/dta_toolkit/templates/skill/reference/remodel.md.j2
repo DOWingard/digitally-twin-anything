@@ -1,0 +1,88 @@
+# When the {{ twin_name }} twin asks for a new model
+
+The twin asks for this when a forecast question stayed outside its tolerance after it re-fitted its model{% if fidelity.reselect %} and tried every candidate of the specification{% endif %}: what it can do by itself did not hold. You see it as an incident in status `remodel_requested`, or as the notification `twin.fidelity.remodel_requested`. The twin waits {{ fidelity.remodel_timeout }} from the request (`requested_at`); then the incident is `failed`, and so is the twin.
+
+Questions this can concern:
+
+| Question | Horizon | Tolerance | Model specification |
+|---|---|---|---|
+{% for q in fidelity.scored %}
+| `{{ q.id }}` | {{ q.horizon or "-" }} | {{ q.tolerance or "-" }} | `{{ q.model }}` |
+{% endfor %}
+
+The work is done in the twin's workspace, with `dta`, never through the API: the twin's model specification, features and code live in the manifest and the workspace, and a build brings the twin in line with them.
+
+## 1. Read what the twin found
+
+With the helpers of `reference/recipes.md` (Setup):
+
+```python
+asked = get("/fidelity/incidents", status="remodel_requested").json()["data"]
+incident = get(f"/fidelity/incidents/{asked[0]['uid']}").json()["data"]
+print(incident["subject"], incident["opened_at"], incident["requested_at"], incident["detail"])
+for step in incident["steps"]:                   # every correction tried, and what it gave
+    print(step)
+```
+
+Or `dta fidelity incidents --status remodel_requested` and `dta fidelity incident <uid>`.
+
+Then the question's errors and the backtests:
+
+- `GET /fidelity/questions/{id}/errors` (`dta fidelity errors <question>`): the error per forecast origin. When did it rise: at once (something changed at a moment) or slowly (a drift)?
+- `GET /models?question=<question>` and `GET /models/{uid}/backtests`: the backtests of the build and those of the corrections (scope `recent`). A model that was accepted on the old history and not on the recent one fits a system that no longer exists.
+- `GET /fidelity/signals`: a suspect sensor can look like a bad model.
+
+## 2. Find what changed in the real system
+
+A model that kept its tolerance for a long time and then lost it usually describes the system as it was before something changed. Look for the change, at the time the error rose:
+
+- `GET /history/diff` and `GET /objects/{type}/{uid}/history` around that time: equipment added or taken out, a setting changed, a new object.
+- `GET /sync/sources` and `GET /sync/runs`: a source that changed what it sends, rows set aside, a gap.
+{% if actions %}
+- `GET /actions/records?status=executed`: what the twin itself did to the system in that time.
+{% endif %}
+- Ask the user: work on site, a new operating regime, a season, a sensor recalibrated.
+
+Name the change before you revise anything. If you find none, say so: a revision without a cause is a guess.
+
+## 3. Revise the model in the workspace
+
+Change what the change calls for, and nothing else:
+
+- the model specification in `manifest.yaml` (`models.<spec>`): its candidates, their family and parameters, its features, its training window;
+- the features the model uses, or the code of the twin's own models and functions in the workspace.
+
+Do not change the question, its tolerance or its horizon to make the error fit: those are the contract, agreed with the user. If the contract no longer fits the real system, tell the user; that is a revision of the contract, which the user agrees and signs.
+
+## 4. Validate, sign only if the contract changed, build
+
+```sh
+dta manifest validate        # must pass
+dta build                    # registers and evaluates the revised specification
+```
+
+- A change outside `contract` (models, features, functions, code) needs no new signature: validate, then build.
+- If the contract changed after all, the build refuses until it is signed again: the user confirms the fields that changed (`dta manifest confirm <field>…`), you validate again, and the user signs (`dta manifest sign`). The signature is the user's, never yours.
+- The build evaluates every specification whose candidates it registered anew or changed. Read its `models` step: a revised specification with no accepted candidate is not better on the twin's own history; go back to 2.
+
+## 5. Let the twin judge it, and check the incident
+
+The twin evaluates again by itself: at its next check it sees a model of the specification registered after the request, goes back to choosing among the candidates on recent data, makes the best accepted one active and waits for at least 3 forecasts it has not seen to come true within the tolerance. Do not start evaluations or corrections by hand to hurry it.
+
+```sh
+dta fidelity incident <uid>   # rung, awaiting, steps; resolved once the evidence is in
+dta fidelity status
+```
+
+Each check is {{ fidelity.interval }} apart and each question needs 3 origins after the model's data ends, so judging takes at least 3 forecasts' time. Tell the user what you changed and why, and that the twin is judging it.
+
+## 6. When it cannot be done in time
+
+If you cannot finish before `requested_at` + {{ fidelity.remodel_timeout }}, when the incident becomes `failed` (the cause is not found, the data that would show it is missing, a decision or access only the user has is needed), tell the user before the time is up, plainly:
+
+- which question is outside its tolerance, since when, and by how much (window error against tolerance);
+- what the twin tried, and what you found so far;
+- what is missing, and who can provide it;
+- that when the time is up the twin becomes `failed`: its answers are then to be reported as unreliable{% if executes %} and it executes no action{% endif %}, until a model fitted after the failure keeps the tolerance for 3 forecasts, or the user asks for `dta fidelity retry <uid>` once the cause is mended.
+
+Never resolve the incident, raise the tolerance or disable the question to avoid the failure.

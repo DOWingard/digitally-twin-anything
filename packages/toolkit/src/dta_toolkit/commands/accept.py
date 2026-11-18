@@ -71,6 +71,9 @@ def _text(document: dict[str, Any], report: str) -> str:
         )
         if not check["passed"] and check.get("remedy"):
             lines.append(f"     {check['remedy']}")
+        warning = (check.get("evidence") or {}).get("warning")
+        if check["passed"] and warning:
+            lines.append(f"     warning: {warning}")
     lines.append(f"Report: {report}")
     return "\n".join(lines)
 

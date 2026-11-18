@@ -173,11 +173,15 @@ def test_a_whole_build_runs_every_step_and_the_twin_is_accepted(twin: M5Twin) ->
     assert accepted["passed"] is True and accepted["failed"] == []
     assert accept_s <= ACCEPT_LIMIT_S
     ids = [found["id"] for found in accepted["checks"]]
-    assert ids[-4:] == [
+    assert ids[-8:] == [
         "questions.answered",
         "questions.error",
         "models.accepted",
         "compute.worker",
+        "fidelity.state",
+        "fidelity.schedule",
+        "actions.registered",
+        "notifications.configured",
     ]
     answered = check(accepted, "questions.answered")["evidence"]["questions"]
     assert all(entry["time_ms"] <= entry["budget_ms"] for entry in answered.values())

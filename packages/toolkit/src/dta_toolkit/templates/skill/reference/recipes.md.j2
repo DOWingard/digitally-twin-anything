@@ -439,3 +439,33 @@ print(found["total"])
 ```
 
 - `q` is an SQL pattern (`%` any run of characters, `_` one) matched against every object's uid and name, whatever its type; `types=` narrows it.
+{% if actions %}
+
+## {{ n + 9 }}. Propose an action
+
+```python
+fidelity = get("/fidelity").json()["state"]          # what the interlock will judge by
+types = get("/actions").json()
+for a in types["data"]:
+    print(a["id"], a["control"], a["autonomy"], a["bounds"], a["binding"], a["executable"])
+
+response = client.post("/actions/<action>/propose",
+                       json={"object": "<uid>", "params": {"value": "<number>"},
+                             "reason": "<why>", "source": "<your name>"},
+                       headers={"Idempotency-Key": str(uuid.uuid4())})
+proposal = response.json()
+if response.status_code == 422:                      # refused, and recorded as rejected
+    print(proposal["code"], proposal["errors"], proposal["record"])
+else:
+    record = checked(response).json()["data"]
+    print(record["uid"], record["status"], record["fidelity"], record["reasons"])
+    record = get(f"/actions/records/{record['uid']}").json()["data"]
+    print(record["approval"], record["execution"], record["reconciliation"], record["observed"])
+```
+
+- `status` `proposed`: advice only, or waiting for a person's approval. Give the user the record's uid and stop; approving is the user's (`POST /actions/records/{uid}/approve` with `by` the user, only when the user says so for that record).
+- `status` `blocked`: the interlock refused it in the twin's present state. Final: never work around it; tell the user why.
+- `status` `executed`: the call was made; `execution` holds its HTTP status and when it takes effect. `reconciliation` becomes `ok` or `mismatch` once its settle time has passed and a sync run has read the result.
+- `status` `failed`: the call failed; `execution` says how. Do not propose it again in a loop; report it.
+- The same `Idempotency-Key` with the same proposal gives back the same record (200); a new proposal needs a new key.
+{% endif %}

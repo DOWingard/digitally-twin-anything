@@ -51,6 +51,12 @@ COMPUTE_STEPS = {
 }
 SYNC_CHECKS = ("sync.scheduler", "sync.runs", "sync.sources", "sync.freshness")
 COMPUTE_CHECKS = ("questions.answered", "questions.error", "models.accepted", "compute.worker")
+ACTING_CHECKS = (
+    "fidelity.state",
+    "fidelity.schedule",
+    "actions.registered",
+    "notifications.configured",
+)
 CHECKS = {
     "api.contract",
     "readiness.R1",
@@ -65,6 +71,7 @@ CHECKS = {
     "skill.endpoints",
     *SYNC_CHECKS,
     *COMPUTE_CHECKS,
+    *ACTING_CHECKS,
 }
 LIVE_LOADED = "the twin already holds data; its runs keep it in step"
 

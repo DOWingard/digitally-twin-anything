@@ -31,6 +31,10 @@ REMEDY = (
     "the skill and the API disagree: generate the skill again with the toolkit version that "
     "built the twin, or report the difference"
 )
+# Route groups a live twin's skill must cover whole, and the lifecycle routes every
+# twin's skill must list.
+LIVE_GROUPS = ("fidelity", "actions", "control")
+LIFECYCLE_REQUIRED = ("schedule", "notifications", "register")
 
 
 def listed_endpoints(text: str) -> list[tuple[str, str]]:
@@ -71,10 +75,32 @@ def _under_root(path: str) -> str:
     return path if path == API or path.startswith(f"{API}/") else f"{API}{path}"
 
 
-def skill_endpoints(api: TwinApi, text: str | None, where: str) -> CheckResult:
+def required_endpoints(served: set[tuple[str, str]], live: bool) -> list[tuple[str, str]]:
+    """The served endpoints the skill must list: of a live twin, every one of fidelity,
+    actions and control loops; of any twin, the schedule, notifications and registration.
+
+    A static twin's API serves the fidelity, action and loop routes too, but on it no
+    check and no loop ever runs and nothing is executed, so its skill does not offer
+    them and they are not required of it.
+    """
+    lifecycle = {f"{API}/lifecycle/{name}" for name in LIFECYCLE_REQUIRED}
+    groups = tuple(f"{API}/{group}" for group in LIVE_GROUPS)
+    found = []
+    for method, path in sorted(served):
+        if path in lifecycle or (
+            live and any(path == group or path.startswith(f"{group}/") for group in groups)
+        ):
+            found.append((method, path))
+    return found
+
+
+def skill_endpoints(
+    api: TwinApi, text: str | None, where: str, *, live: bool = False
+) -> CheckResult:
     examined = (
         f"every endpoint the generated skill lists in {SKILL_API_FILE} is served by the API "
-        f"(GET {API}/openapi.json)"
+        f"(GET {API}/openapi.json), and it lists every route of the schedule, notifications and "
+        f"registration{', fidelity, actions and control loops' if live else ''}"
     )
     if text is None:
         return CheckResult(
@@ -99,12 +125,28 @@ def skill_endpoints(api: TwinApi, text: str | None, where: str) -> CheckResult:
         if (method, path) not in OUTSIDE_DOCUMENT
         and (method, _shape(_under_root(path))) not in served
     ]
-    evidence.update({"served": len(served), "missing": missing})
-    passed = bool(listed) and not missing
+    shown = {(method, _shape(_under_root(path))) for method, path in listed}
+    required = required_endpoints(served, live)
+    unlisted = [f"{method} {path}" for method, path in required if (method, path) not in shown]
+    evidence.update(
+        {
+            "served": len(served),
+            "missing": missing,
+            "required": len(required),
+            "unlisted": unlisted,
+            "tier": "live" if live else "static",
+        }
+    )
+    passed = bool(listed) and not missing and not unlisted
+    reasons = []
     if not listed:
-        evidence["reason"] = f"{SKILL_API_FILE} lists no endpoint in its tables"
-    elif missing:
-        evidence["reason"] = f"not served: {', '.join(missing)}"
+        reasons.append(f"{SKILL_API_FILE} lists no endpoint in its tables")
+    if missing:
+        reasons.append(f"not served: {', '.join(missing)}")
+    if unlisted:
+        reasons.append(f"served and not listed: {', '.join(unlisted)}")
+    if reasons:
+        evidence["reason"] = "; ".join(reasons)
     if not passed:
         log.warn("skill endpoints check failed", evidence=evidence)
     return CheckResult("skill.endpoints", examined, passed, evidence, REMEDY)

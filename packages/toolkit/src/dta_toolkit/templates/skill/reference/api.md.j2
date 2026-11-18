@@ -215,8 +215,9 @@ Each of these writes a new version on `main`, or on a scenario's branch:
 - derived data: `POST /derived`;
 - running a function that gives rows to write, through `POST /functions/{id}/run`: the answer names the version written in `wrote`;
 - runs of functions triggered `on_commit` or on an `interval`, each recorded in a `TwinFunctionRun`;
-- actions: `POST /actions/{id}/propose`, `POST /actions/records/{uid}/approve`, `.../reject` and `POST /actions/reconcile` record what was decided, sent and observed; `POST /control/loops/{id}/enable`, `.../disable` and `.../run` record the loop's state and its runs. An executed action changes the real system, not the twin's observed data: that changes when a sync run reads it;
 {% if live %}
+- fidelity: every check records what it measured and the twin's state; corrections record their evaluations and the model they make active; `POST /fidelity/incidents/{id}/retry`, `.../resolve` and `POST /fidelity/signals/{uid}/clear` record the step and who took it;
+- actions:`POST /actions/{id}/propose`, `POST /actions/records/{uid}/approve`, `.../reject` and `POST /actions/reconcile` record what was decided, sent and observed; `POST /control/loops/{id}/enable`, `.../disable` and `.../run` record the loop's state and its runs. An executed action changes the real system, not the twin's observed data: that changes when a sync run reads it;
 - sync runs: `POST /sync/runs` makes the twin read its sources, which is the only way new observed data arrives.
 {% endif %}
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -240,6 +241,73 @@ def test_the_api_alone_joins_the_networks_of_sources_on_this_machine():
 
 def test_the_same_manifest_always_gives_the_same_file():
     assert render_compose(plan_stack(manifest())) == render_compose(plan_stack(manifest()))
+
+
+def _acting(*, kind: str = "webhook", executors: bool = True, **more: Any) -> Manifest:
+    """A twin that notifies and whose action calls the plant."""
+    notification: dict[str, Any] = {"kind": kind}
+    if kind == "webhook":
+        notification["webhook_env"] = "ALERT_URL"
+    document: dict[str, Any] = {
+        "contract": {
+            "tier": "live",
+            "notification": notification,
+            "addons": {"executors": executors},
+        },
+        "actions": {
+            "set_pump": {
+                "binding": "executor",
+                "executor": {
+                    "kind": "http",
+                    "url": "${PLANT_URL}/pumps/{id}",
+                    "env": ["PLANT_URL", "PLANT_KEY"],
+                    "headers": {"X-Key": "${PLANT_KEY}"},
+                },
+            },
+            "advise_valve": {"binding": "advisory"},
+        },
+        **more,
+    }
+    return manifest(**document)
+
+
+def test_the_api_alone_gets_what_its_notifications_and_executors_need():
+    plan = plan_stack(_acting())
+    assert plan.api_env == ("PLANT_URL", "PLANT_KEY", "ALERT_URL")
+    assert set(plan.api_env) <= set(plan.required_env())
+    document = yaml.safe_load(render_compose(plan))
+    api = document["services"]["api"]
+    for name in plan.api_env:
+        assert api["environment"][name] == f"${{{name}:?{name} is required}}"
+    for service in ("scheduler", "ui"):
+        assert not set(plan.api_env) & set(document["services"][service]["environment"])
+    # A log notification needs no address; without the add-on no call is made.
+    assert plan_stack(_acting(kind="log")).api_env == ("PLANT_URL", "PLANT_KEY")
+    assert plan_stack(_acting(kind="log", executors=False)).api_env == ()
+    assert plan_stack(manifest()).api_env == ()
+
+
+def test_the_api_is_labelled_with_what_it_reads_once_at_its_start():
+    def label(document: Manifest) -> str:
+        rendered = yaml.safe_load(render_compose(plan_stack(document)))
+        return rendered["services"]["api"]["labels"]["dta.api-start"]
+
+    first = label(_acting())
+    assert first == plan_stack(_acting()).api_start and len(first) == 16
+    # What the API reads only when it acts does not start it anew.
+    calmer = _acting()
+    calmer.actions["set_pump"].settle = timedelta(minutes=5)
+    calmer.actions["set_pump"].executor.headers = {"X-Key": "${PLANT_KEY}", "X-Other": "1"}
+    assert label(calmer) == first
+    # Its notifier and its executors are made at its start.
+    assert label(_acting(kind="log")) != first
+    renamed = _acting()
+    renamed.contract.notification.webhook_env = "OTHER_URL"
+    assert label(renamed) != first
+    assert label(_acting(executors=False)) != label(_acting(kind="webhook", executors=True))
+    fewer = _acting()
+    fewer.actions["set_pump"].executor.env = ["PLANT_URL"]
+    assert label(fewer) != first
 
 
 def test_a_relative_local_source_and_a_missing_twin_id_are_refused():

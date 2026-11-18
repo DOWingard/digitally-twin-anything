@@ -1,0 +1,109 @@
+# How the {{ twin_name }} twin checks itself
+
+At every check the twin measures, on its own clock, whether it still keeps what was agreed, and leaves one state. Nothing here needs you to act; this file says what each number means and where to read it, so that you can explain the state to the user.
+
+Notation: Δ = {{ fidelity.interval }} (the time between checks); W = {{ fidelity.window }} (the window each check looks back over); δ the sync interval{% if interval %} ({{ interval }}){% endif %}; c the time of a check, a whole multiple of Δ on the twin's clock. For a forecast question q: h its horizon, ε its tolerance, m its error metric, and the active model of its specification.
+
+{% if fidelity.scored %}
+| Forecast question | Horizon h | Tolerance ε | Model specification |
+|---|---|---|---|
+{% for q in fidelity.scored %}
+| `{{ q.id }}` | {{ q.horizon or "-" }} | {{ q.tolerance or "-" }} | `{{ q.model }}` |
+{% endfor %}
+
+## The error of one forecast
+
+Each forecast origin o = Δ·⌊(c − h)/Δ⌋ is scored once, at the first check with c ≥ o + h, and only if the active model was fitted on data that ends at or before o (it has not seen what it predicts). The twin forecasts from the version at o, as the model would have then, and compares with what was observed:
+
+e(o) = m(forecast, observed) over every series and every step in (o, o + h].
+
+A series whose signal was suspect at any time in that span is left out. Per origin the twin keeps e(o), the number of values n, and per series the mean signed residual d_s(o) (observed less forecast) and the last forecast value.
+
+Read: `GET /fidelity/questions/{id}/errors` (one row per origin: `origin`, `scored_at`, `error`, `n`, `model`, `in_window`, `check`).
+
+## Window error and breach
+
+E(c) = the mean of e(o) over the scored origins with o + h in (c − W, c] and forecast by the model active then after the end of its data; n_q is their number.
+
+- **Breach** of q: n_q ≥ 3 and E(c) > ε. It opens a `breach` incident, and the twin corrects (below).
+- With fewer than 3 such origins nothing is concluded: the error is reported and no breach is raised.
+
+Read: `GET /fidelity`, per question in `questions`: `error` (the newest origin), `window_error`, `window_n`, `tolerance`, `metric`, `breach`; `GET /fidelity/checks/{uid}` for what a past check measured.
+
+## Warning
+
+For each newly scored origin: x = e(o)/ε, and the running sum S ← max(0, S + x − 0.8). A warning is raised when S > 1.0: the twin re-fits the active model once on recent data without leaving `healthy`, sets S back to 0, and raises no other warning for that question within W. A warning catches a drift before it becomes a breach.
+
+Read: `GET /fidelity`, `warning_sum` per question.
+
+## Correction
+
+A `breach` incident takes one step per check, each a job of its own (kind `correction`, in `GET /lifecycle/jobs?kind=correction`):
+
+1. Re-fit: evaluate the active candidate again on recent data, at most {{ fidelity.recalibrate_attempts }} times. Accepted: it is made active and the twin waits for evidence.
+{% if fidelity.reselect %}
+2. Reselect: evaluate every candidate of the specification on recent data; the best accepted one is made active.
+{% endif %}
+{% if fidelity.agent_remodel %}
+3. Ask the managing agent to revise the model: the incident is `remodel_requested` and the notification `twin.fidelity.remodel_requested` goes out (`reference/remodel.md`). A model of the specification registered or changed after the request sends the incident back to reselecting; nothing within {{ fidelity.remodel_timeout }} makes it `failed`.
+{% endif %}
+
+"Recent data" is the frame from c − (the specification's initial window + W) to c, with forecast origins in [c − W, c − h], judged exactly as the specification's acceptance says; the backtest is recorded with scope `recent` (`GET /models/{uid}/backtests`).
+
+Evidence: once a correction made a model active whose data ends at f (the incident's `awaiting`), the twin waits for n′ ≥ 3 scored origins with o ≥ f. Their mean E′ ≤ ε resolves the incident; E′ > ε means the correction did not hold, and the next step is taken. A round that ends without a resolution starts again from the first step on newer data; after {{ fidelity.retry_budget }} rounds the incident is `failed`. A failed incident resolves when a model fitted after the failure has 3 scored origins with a mean ≤ ε, or by `POST /fidelity/incidents/{id}/retry`.
+
+Read: `GET /fidelity/incidents/{id}`: `rung`, `attempt`, `cycle`, `awaiting`, `requested_at`, and `steps`, every step with its outcome.
+{% endif %}
+
+## Staleness
+
+{% if fidelity.stale %}
+A question is **stale** when its `fresh` is false at the check: the newest data of the source it waits for longest is older, on the twin's clock, than the question's limit. A `stale` incident opens and resolves by itself when fresh data arrives; after {{ fidelity.retry_budget }} stale checks in a row it is `failed`.
+
+Read: `/meta/health`, `sync.questions` (`fresh`, `freshness_s`, `staleness`, `source`); `GET /sync/sources` for why a source is behind.
+{% else %}
+No question of this twin sets a limit on the age of its data, so no question is ever stale.
+{% endif %}
+
+## Suspect signals
+
+A signal is one numeric observed property of one object. The twin tests two things.
+
+**Stuck.** Over the look-back L = (c − W, c]: t_last is the signal's last change; n is the number of whole sync intervals in (t_last, c] in which its source kept delivering (the source was `ok` with data newer than c − δ). Before t_last, of k intervals, u had no change. The signal is tested only when k − u ≥ 20; then p₀ = (u + 1)/(k + 2) is how often it stays unchanged by itself, and it is **stuck** when n ≥ 3 and p₀ⁿ < 10⁻⁴: that long without a change would be very unlikely for this signal.
+{% if fidelity.scored %}
+
+**Biased.** For each series of a forecast question's target with at least 8 scored origins: over its earlier origins (the newest 3 left out) the median m and the spread σ = 1.4826·MAD of d_s, with σ ≥ 0.1·ε; then z = (d_s(o) − m)/σ feeds a two-sided CUSUM with k = 0.5 and H = 5. The series is **biased** when |S| > H and fewer than half of the target's series alarm at the same check (when most do, it is the model that is off, and the breach logic has it).
+{% endif %}
+
+What a suspect signal does:
+
+- Sync stops writing that property of that object. The value in force stays, the raw reading is kept on the signal (`reading`, `reading_at`), not on the object.
+{% if fidelity.scored %}
+- At each check the twin writes an inferred value in its place, the forecast of the question on that target with the shortest horizon; its provenance says kind `inferred` and the model as source (`GET /objects/{type}/{uid}?include=provenance`). Without such a question the last value stays in force.
+{% endif %}
+- The signal is left out of every forecast error from the time it was flagged.
+- It clears itself after 3 checks in a row in which the raw reading differs from the value at the flag{% if fidelity.scored %} and lies within 2·ε of the inferred value{% endif %}; or by `POST /fidelity/signals/{uid}/clear`, which resolves its incident.
+
+Read: `GET /fidelity/signals?status=suspect` (`reason`: `stuck` or `biased`; `since`, `value_at_flag`, `reading`, `clear_checks`, `detail`).
+
+## The state
+
+- `failed` if any incident is `failed`;
+- otherwise `correcting` if any incident is open or `remodel_requested`;
+- otherwise `healthy` once a check has completed;
+- `unknown` before the first check.
+
+Freshness changes the state through stale incidents; the coverage (how many questions are validated, provisional, failing), the state of each source and the rows set aside are reported by the check and do not change the state.
+
+Read the whole picture, with the helpers of `reference/recipes.md` (Setup):
+
+```python
+fidelity = get("/fidelity").json()
+print(fidelity["state"], fidelity["since"], fidelity["check"])
+for q in fidelity["questions"]:
+    print(q["id"], q["error"], q["window_error"], q["window_n"], q["tolerance"], q["breach"], q["reason"])
+for incident in fidelity["incidents"]:            # every incident not resolved
+    print(incident["uid"], incident["kind"], incident["subject"], incident["status"], incident["rung"])
+for signal in fidelity["suspect_signals"]:
+    print(signal["uid"], signal["property"], signal["object"], signal["reason"], signal["since"])
+```
