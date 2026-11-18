@@ -458,13 +458,15 @@ class Build:
         return row.get("id") if row is not None and row.get("state") == RUNNING else None
 
     def api(self) -> dict[str, Any]:
-        worker = self._worker_up()
         # The API reads its notification and its executors once, when it starts. Compose
         # makes its container anew exactly when its configuration changed: the variables
         # it is given, or the label that digests what it sets up at its start. Anything
         # else leaves it running, with the jobs and keys it holds in memory, and leaves
-        # the scheduler, which remembers the boundaries it asked for, running too.
+        # the scheduler, which remembers the boundaries it asked for, running too. The
+        # worker depends on the API, so bringing the worker up may already make it anew:
+        # the container is noted before either.
         before = self._api_container()
+        worker = self._worker_up()
         self.stack.up(API_SERVICE)
         after = self._api_container()
         start = {
