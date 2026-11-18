@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import yaml
@@ -20,7 +20,9 @@ from dta_core.store import (
     NotInstalled,
     Provenance,
     StoreSettings,
+    TimeRegression,
 )
+from dta_runtime import twin as twin_module
 from dta_runtime.twin import (
     MANIFEST_UID,
     Bundle,
@@ -106,6 +108,86 @@ def test_a_changed_manifest_is_recorded_as_a_new_revision(
         assert history.column("revision").to_pylist() == [1, 2]
     finally:
         result.twin.close()
+
+
+def _a_sync_commits(settings: StoreSettings, t: datetime) -> None:
+    """What a live twin's sync does between two steps of an install: a later version."""
+    twin = open_twin(settings)
+    try:
+        run = {
+            "uid": f"twin_sync_run:{t:%H%M}",
+            "kind": "incremental",
+            "status": "succeeded",
+            "started_at": t,
+            "clock_at": t,
+        }
+        twin.store.commit(
+            ChangeSet(
+                upserts={"TwinSyncRun": [run]},
+                provenance=Provenance(source="test", kind=FactKind.inferred, t_valid=t),
+            ),
+            CommitMeta(cause="sync", actor="test", t=t),
+        )
+    finally:
+        twin.close()
+
+
+def test_a_revision_is_written_at_the_new_head_when_a_sync_commits_in_between(
+    new_settings: Callable[[], StoreSettings],
+    water_bundle: Bundle,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    settings = new_settings()
+    install_twin(settings, water_bundle, t=T0).twin.close()
+    revised = water_bundle.manifest.model_copy(deep=True)
+    revised.twin.revision = 2
+    later = T0 + timedelta(minutes=15)
+    rows = twin_module._manifest_rows
+    calls = []
+
+    def racing(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            _a_sync_commits(settings, later)
+        return rows(*args, **kwargs)
+
+    monkeypatch.setattr(twin_module, "_manifest_rows", racing)
+    result = install_twin(settings, dataclasses.replace(water_bundle, manifest=revised))
+    try:
+        assert result.actions == ("registered",)
+        assert len(calls) == 2
+        assert result.version.seq == 3 and result.version.t == later
+        assert result.twin.manifest().twin.revision == 2
+    finally:
+        result.twin.close()
+
+
+def test_a_revision_gives_up_when_the_live_line_never_stands_still(
+    new_settings: Callable[[], StoreSettings],
+    water_bundle: Bundle,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    settings = new_settings()
+    install_twin(settings, water_bundle, t=T0).twin.close()
+    revised = water_bundle.manifest.model_copy(deep=True)
+    revised.twin.revision = 2
+    rows = twin_module._manifest_rows
+    calls = []
+
+    def racing(*args, **kwargs):
+        calls.append(1)
+        _a_sync_commits(settings, T0 + timedelta(minutes=15 * len(calls)))
+        return rows(*args, **kwargs)
+
+    monkeypatch.setattr(twin_module, "_manifest_rows", racing)
+    with pytest.raises(TimeRegression):
+        install_twin(settings, dataclasses.replace(water_bundle, manifest=revised))
+    assert len(calls) == 3
+    twin = open_twin(settings)
+    try:
+        assert twin.manifest().twin.revision == 1
+    finally:
+        twin.close()
 
 
 def test_sources_of_the_manifest_become_objects_and_a_dropped_one_is_disabled(

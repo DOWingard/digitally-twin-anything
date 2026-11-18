@@ -37,11 +37,14 @@ from dta_core.store import (
     Provenance,
     Store,
     StoreSettings,
+    TimeRegression,
     VersionRef,
     stored_ontology,
 )
 
 log = Log("runtime.twin")
+
+_REVISION_TRIES = 3
 
 MANIFEST_TYPE = "TwinManifest"
 MANIFEST_UID = "twin_manifest:current"
@@ -242,25 +245,47 @@ def install_twin(
     stored = store.get(MANIFEST_UID)
     wanted = manifest_hash(manifest)
     if stored is None or stored.values["manifest_hash"] != wanted:
-        head = store.head()
         known = {
             uid.split(":", 1)[1]
             for uid in store.table(SOURCE_TYPE, columns=[]).column("uid").to_pylist()
         }
-        changes = _manifest_rows(manifest, ontology, known)
-        changes.provenance = Provenance(
-            source=MANIFEST_ORIGIN, kind=FactKind.assumed, t_valid=head.t
-        )
-        store.commit(
-            changes,
-            CommitMeta(
-                cause="registration",
-                actor=actor,
-                t=head.t,
-                note=f"manifest revision {manifest.twin.revision}",
-                extra={"manifest_hash": wanted, "revision": manifest.twin.revision},
-            ),
-        )
+        # The revision is written at the head's time. A live twin's sync may commit a
+        # later version between reading the head and writing: then it is written again
+        # at the new head.
+        for attempt in range(1, _REVISION_TRIES + 1):
+            head = store.head()
+            changes = _manifest_rows(manifest, ontology, known)
+            changes.provenance = Provenance(
+                source=MANIFEST_ORIGIN, kind=FactKind.assumed, t_valid=head.t
+            )
+            try:
+                store.commit(
+                    changes,
+                    CommitMeta(
+                        cause="registration",
+                        actor=actor,
+                        t=head.t,
+                        note=f"manifest revision {manifest.twin.revision}",
+                        extra={"manifest_hash": wanted, "revision": manifest.twin.revision},
+                    ),
+                )
+                break
+            except TimeRegression as exc:
+                if attempt == _REVISION_TRIES:
+                    log.error(
+                        "the manifest revision could not be written: the live line keeps moving",
+                        exc=exc,
+                        twin_id=manifest.twin.id,
+                        tries=attempt,
+                    )
+                    raise
+                log.warn(
+                    "the live line moved on while the manifest revision was being written; "
+                    "writing it again at the new head",
+                    twin_id=manifest.twin.id,
+                    attempt=attempt,
+                    head_t=head.t,
+                )
         actions.append("registered")
     version = store.head()
     log.info(
