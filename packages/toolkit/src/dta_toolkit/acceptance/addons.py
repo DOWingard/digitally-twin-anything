@@ -6,7 +6,7 @@ an add-on that is not selected passes as not applicable.
 - `mcp.reachable`: the adapter answers on its published port; its tools are the API's
   operations; a read tool answers with the token and is refused without it.
 - `sql.readonly`: the reader signs in on the published port, reads a table at head and
-  as of the first version, and is refused an INSERT, DDL and `CALL dolt_commit`.
+  as of the first version, and is refused an INSERT, DDL and `CALL dolt_branch`.
 
 The checks that stand on this machine's network run a one-off container of the
 twin's own images there; the toolkit holds no MCP client and no store driver.
@@ -47,19 +47,20 @@ _OUTPUT_TAIL = 2000
 SDK_PROBE = r"""
 import importlib, json, sys
 package = importlib.import_module(sys.argv[1])
+question = json.loads(sys.argv[2])
 report = {"types": {}, "question": None}
 with package.Twin() as twin:
-    accessors = {a.type_name: a for a in vars(twin).values() if isinstance(a, package.Objects)}
+    version = twin.head()
     for name, model in package.TYPES.items():
-        rows = accessors[name].list(limit=1)
+        rows = twin.objects(name).list(at=version, limit=1)
         entry = {"listed": len(rows), "typed": all(isinstance(r, model) for r in rows)}
         if rows:
-            one = accessors[name].get(rows[0].uid)
+            one = twin.objects(name).get(rows[0].uid, at=version)
             entry["read"] = isinstance(one, model) and one.uid == rows[0].uid
         report["types"][name] = entry
-    if package.QUESTIONS:
-        answer = twin.questions.ask(package.QUESTIONS[0])
-        report["question"] = {"id": package.QUESTIONS[0], "type": type(answer).__name__}
+    if question:
+        answer = twin.questions.ask(question["id"], at=version, **question["arguments"])
+        report["question"] = {"id": question["id"], "type": type(answer).__name__}
 print(json.dumps(report))
 """
 
@@ -72,25 +73,32 @@ password = os.environ["DTA_SQL_READER_PASSWORD"]
 report = {}
 def connect(user, secret, db=None):
     return pymysql.connect(host="127.0.0.1", port=port, user=user, password=secret,
-                           database=db, autocommit=True, connect_timeout=10)
+                           database=db, autocommit=False, connect_timeout=10)
 try:
     reader = connect("twin_reader", password, database)
 except pymysql.err.MySQLError as exc:
     print(json.dumps({"signed_in": False, "error": exc.args[0] if exc.args else None}))
     raise SystemExit(0)
 report["signed_in"] = True
-def run(name, sql):
+# Each write is one that leaves nothing behind should the reader be allowed it after
+# all: the row is rolled back, the table and the branch are dropped again.
+def run(name, sql, undo=None):
     try:
         with reader.cursor() as cursor:
             cursor.execute(sql)
             report[name] = {"ok": True, "rows": len(cursor.fetchall())}
+            if undo:
+                cursor.execute(undo)
     except pymysql.err.MySQLError as exc:
         report[name] = {"ok": False, "error": exc.args[0] if exc.args else None}
+    finally:
+        reader.rollback()
 run("read_head", f"SELECT COUNT(*) FROM `{table}`")
 run("read_first", f"SELECT COUNT(*) FROM `{table}` AS OF '{first}'")
 run("insert", f"INSERT INTO `{table}` (uid) VALUES ('dta-acceptance-probe')")
-run("ddl", "CREATE TABLE dta_acceptance_probe (a INT)")
-run("dolt_commit", "CALL dolt_commit('--allow-empty', '-m', 'dta acceptance probe')")
+run("ddl", "CREATE TABLE dta_acceptance_probe (a INT)", "DROP TABLE dta_acceptance_probe")
+run("dolt_branch", "CALL dolt_branch('dta-acceptance-probe')",
+    "CALL dolt_branch('-d', 'dta-acceptance-probe')")
 try:
     connect("root", password).close()
     report["root_with_reader_password"] = "accepted"
@@ -144,6 +152,19 @@ def _run(
     )
 
 
+def _question(manifest: Manifest) -> str:
+    """The first question with the arguments of its example, as the probe takes it."""
+    questions = (manifest.contract.questions if manifest.contract else None) or {}
+    ordered = sorted(
+        questions.items(),
+        key=lambda item: (item[1].priority if item[1].priority is not None else 1_000_000, item[0]),
+    )
+    if not ordered:
+        return "null"
+    question_id, question = ordered[0]
+    return json.dumps({"id": question_id, "arguments": dict(question.example or {})})
+
+
 def sdk_usable(manifest: Manifest, values: Mapping[str, str], access: AddonAccess) -> CheckResult:
     ident = "sdk.usable"
     examined = (
@@ -165,7 +186,9 @@ def sdk_usable(manifest: Manifest, values: Mapping[str, str], access: AddonAcces
         shutil.copytree(access.sdk_root, source, ignore=shutil.ignore_patterns("__pycache__"))
         venv = root / "venv"
         tool, (create, install) = _installer(venv)
-        base = {name: os.environ[name] for name in ("PATH", "HOME", "LANG") if name in os.environ}
+        # The installer's cache and index settings are the caller's; nothing else is.
+        passed_on = ("PATH", "HOME", "LANG", "UV_CACHE_DIR", "UV_INDEX_URL", "PIP_INDEX_URL")
+        base = {name: os.environ[name] for name in passed_on if name in os.environ}
         base["UV_NO_CONFIG"] = "1"
         steps = [("create", create), ("install", [*install, str(source)])]
         for name, command in steps:
@@ -198,7 +221,14 @@ def sdk_usable(manifest: Manifest, values: Mapping[str, str], access: AddonAcces
         started = time.perf_counter()
         # -I: only the fresh environment's packages, not the caller's directory or variables.
         done = _run(
-            [str(venv / "bin" / "python"), "-I", "-c", SDK_PROBE, str(package)],
+            [
+                str(venv / "bin" / "python"),
+                "-I",
+                "-c",
+                SDK_PROBE,
+                str(package),
+                _question(manifest),
+            ],
             env,
             _RUN_TIMEOUT_S,
             root,
@@ -348,7 +378,7 @@ def sql_readonly(
     ident = "sql.readonly"
     examined = (
         "the reader signs in on the published port, reads a table at head and as of the "
-        "first version, and is refused an INSERT, DDL and CALL dolt_commit"
+        "first version, and is refused an INSERT, DDL and CALL dolt_branch"
     )
     remedy = "Build again (dta build) so the reader is granted anew, and read the evidence."
     if not addons.selected(manifest).readonly_sql:
@@ -381,7 +411,7 @@ def sql_readonly(
     refused = {
         name: (report.get(name) or {}).get("ok") is False
         and (report.get(name) or {}).get("error") in (1142, 1044, 1227, 1370)
-        for name in ("insert", "ddl", "dolt_commit")
+        for name in ("insert", "ddl", "dolt_branch")
     }
     reads = {name: bool((report.get(name) or {}).get("ok")) for name in ("read_head", "read_first")}
     distinct = bool(password) and password != root_password
@@ -401,7 +431,7 @@ def sql_readonly(
         "first_version": first,
         "signed_in": report.get("signed_in"),
         "reads": {name: report.get(name) for name in ("read_head", "read_first")},
-        "refused": {name: report.get(name) for name in ("insert", "ddl", "dolt_commit")},
+        "refused": {name: report.get(name) for name in ("insert", "ddl", "dolt_branch")},
         "reader_password_differs_from_root": distinct,
         "root_with_reader_password": report.get("root_with_reader_password"),
     }

@@ -280,7 +280,7 @@ with Twin() as twin:
         some = objects.list(at=version, limit=5)
         frame = objects.table(at=version)
 {% if questions %}
-    answer = twin.questions.ask({{ questions[0].id | tojson }}, at=version)
+    answer = twin.questions.ask({{ questions[0].call }}, at=version)
 {% endif %}
 ```
 

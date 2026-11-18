@@ -10,6 +10,7 @@ and no analysis methods.
 from __future__ import annotations
 
 import json
+import keyword
 import re
 from dataclasses import dataclass
 from datetime import timedelta
@@ -45,6 +46,7 @@ REMODEL_FILE = "reference/remodel.md"
 _DESCRIPTION_MAX = 900
 _PURPOSE_MAX = 300
 _QUESTION_MAX = 120
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class SkillError(DtaError):
@@ -101,6 +103,17 @@ def _method(function: Any) -> str | None:
         f"{key} = {value}" for key, value in sorted((function.params or {}).items())
     )
     return f"{text} ({settings})" if settings else text
+
+
+def _call(question_id: str, example: dict[str, Any] | None) -> str:
+    """The arguments of a Python call that asks the question with its example."""
+    arguments = [json.dumps(question_id)]
+    if example:
+        if all(_IDENTIFIER.match(key) and not keyword.iskeyword(key) for key in example):
+            arguments += [f"{key}={value!r}" for key, value in example.items()]
+        else:
+            arguments.append(f"**{example!r}")
+    return ", ".join(arguments)
 
 
 def _number(value: Any) -> str:
@@ -278,6 +291,7 @@ def _context(
             "tolerance": _tolerance(question),
             "staleness": _duration(question.staleness),
             "targets": list(question.targets or []),
+            "call": _call(qid, question.example),
         }
         for qid, question in sorted(
             (contract.questions or {}).items(),
