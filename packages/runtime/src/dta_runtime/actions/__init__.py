@@ -16,9 +16,16 @@ becomes a `TwinActionRecord` on the live line, whatever becomes of it.
                         the control loops and their runs
 
 The caller hands in the twin's fidelity state (`unknown`, `healthy`, `correcting`,
-`failed`), the clock's `now`, what makes external calls (an `Executor`, such as the
-`HttpExecutor` built from the manifest; None when the executors add-on is off) and,
-for a loop, what runs its policy (a `Policy`). Nothing here reads the wall clock.
+`failed`) and, for a proposal or a loop's run, the `kind` and `uid` of every incident it
+has not resolved, both read at one version; the clock's `now`, what makes external
+calls (an `Executor`, such as the `HttpExecutor` built from the manifest; None when the
+executors add-on is off) and, for a loop, what runs its policy (a `Policy`). Nothing
+here reads the wall clock.
+
+The interlock: an autonomous action is executed while the twin is `healthy` or
+`correcting` and none of its unresolved incidents is `stale` or `reconcile`, and is
+`blocked` otherwise; a supervised one waits for an approval, which is `blocked` only
+while the twin is `failed`; an advisory one is only recorded.
 
 Uids: `twin_action:<id>` for an action type, `twin_control_loop:<id>` for a loop and
 `twin_action_record:<id>` for a record, whose id is the first 32 hexadecimal characters
@@ -32,7 +39,8 @@ Every refusal and failure is an `ActionError`. The statuses the API gives the co
                                     reason, `detail.record` names the record (None when
                                     the action type does not exist)
     action.key_reused         409   the key was used before for another proposal
-    action.bad_state          500   the fidelity state handed in does not exist
+    action.bad_state          500   the fidelity state handed in does not exist, or an
+                                    incident handed in is not {kind, uid} of a known kind
     action.record_not_found   404   no record of that uid
     action.not_pending        409   the record is not awaiting a decision
     action.not_executable     409   the twin cannot execute the record: advisory, its

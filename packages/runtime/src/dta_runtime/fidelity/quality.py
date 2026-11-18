@@ -14,6 +14,14 @@ newest three, standardised, run through a two-sided CUSUM (k = 0.5, H = 5) from
 zero; the series alarms when either side ends above H. Series alarm together when
 the model is wrong, so they are called biased only when fewer than half of the
 tested series of the question alarm at once.
+
+A series is tested by every predictive question on its property, and is called by
+the question that would infer it (the one with the shortest horizon). It is biased
+only when every other question on the property tested it at the same check and
+alarms too, on the same side: a sensor that reads wrong disagrees with every model
+of its property; a model that is wrong for one series disagrees alone (a pump the
+model does not see, say, moving one tank's level). A property with one predictive
+question needs no agreement.
 """
 
 from __future__ import annotations
@@ -35,6 +43,11 @@ BIAS_K = 0.5
 BIAS_H = 5.0
 MAD_SCALE = 1.4826
 SIGMA_FLOOR = 0.1
+
+# Why another question on the property does not bear out a series called biased.
+NOT_TESTED = "not_tested"
+NO_ALARM = "no_alarm"
+OTHER_SIDE = "other_side"
 
 
 # -- stuck -------------------------------------------------------------------------------
@@ -127,6 +140,14 @@ class BiasTest:
         """The side that ended highest, signed: positive when the residuals rose."""
         return self.upper if self.upper >= self.lower else -self.lower
 
+    @property
+    def side(self) -> int:
+        """+1 when the upper side ended above H, -1 when the lower one did, 0 without
+        an alarm."""
+        if not self.alarm:
+            return 0
+        return 1 if self.s > 0 else -1
+
     def document(self) -> dict[str, Any]:
         return {
             "tested": self.tested,
@@ -174,3 +195,18 @@ def biased(results: Mapping[str, BiasTest]) -> set[str]:
     if 2 * len(alarming) < len(tested):
         return alarming
     return set()
+
+
+def uncorroborated(called: BiasTest, others: Mapping[str, BiasTest | None]) -> dict[str, str]:
+    """Of the other questions on a series' property, keyed by id, with their test of
+    the series at this check (None when they did not test it), those that do not bear
+    out the alarm of `called`, and why. Empty when every one does: then it is biased."""
+    found: dict[str, str] = {}
+    for qid, test in sorted(others.items()):
+        if test is None or not test.tested:
+            found[qid] = NOT_TESTED
+        elif not test.alarm:
+            found[qid] = NO_ALARM
+        elif test.side != called.side:
+            found[qid] = OTHER_SIDE
+    return found

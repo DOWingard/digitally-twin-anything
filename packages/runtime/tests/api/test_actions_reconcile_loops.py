@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import pytest
 from actions_api_testkit import (
     APPROVAL_PENDING,
     INCIDENT,
@@ -155,18 +156,24 @@ def test_a_loop_runs_its_policy_through_the_worker_and_proposes_what_it_names(
     )
 
 
-def test_a_loop_run_while_the_twin_failed_proposes_and_blocks(acting: MakeActing):
+@pytest.mark.parametrize("state", ["unknown", "failed"])
+def test_a_loop_run_while_the_twin_is_unknown_or_failed_proposes_and_blocks(
+    acting: MakeActing, state: str
+):
     world = acting()
-    world.into("failed", 2)
+    world.into(state, 2)
     world.post("/control/loops/pumping/enable", json={"by": "operator@plant"})
     run = world.done(world.post("/control/loops/pumping/run"))
     assert (run["state"], run["proposed"], run["blocked"], run["executed"]) == (
-        "failed",
+        state,
         2,
         1,
         0,
     )
     assert run["key"].startswith("loop:pumping:")
+    blocked = next(found for found in run["records"] if found["status"] == "blocked")
+    (reason,) = world.record(blocked["uid"])["reasons"]
+    assert reason["message"].startswith(f"the twin is {state}")
     assert world.calls() == []
 
 

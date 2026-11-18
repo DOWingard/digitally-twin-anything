@@ -21,6 +21,7 @@ def executed(world: World, now: datetime, sender: Accepting | None = None, **mor
         "reason": None,
         "source": "tester",
         "state": "healthy",
+        "incidents": [],
         "now": now,
         "executor": sender,
     }

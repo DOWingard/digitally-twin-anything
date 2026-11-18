@@ -1,7 +1,9 @@
 """Proposing an action, deciding on it, sending it, and reading what became of it.
 
 A proposal is judged at the head of the live line: its object, its parameters and the
-bounds of its control, then the interlock. Whatever the judgment, it is recorded. A
+bounds of its control, then the interlock, with the twin's fidelity state and the
+incidents it has not resolved as the caller read them. Whatever the judgment, it is
+recorded, with the state and, when blocked, why. A
 record is always written before the external call is made, and the outcome of the call
 is a second version, so nothing is sent without a trace; a record left `approved`
 without an outcome (the process stopped in between) is sent again, with the same
@@ -12,7 +14,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -40,6 +42,7 @@ from .records import (
     BLOCKED,
     EXECUTED,
     FAILED,
+    INCIDENT_KINDS,
     LOCKS,
     PENDING,
     PROPOSED,
@@ -74,6 +77,33 @@ def check_state(state: str) -> None:
             f"{state!r} is not a fidelity state ({', '.join(STATES)})",
             state=str(state),
         )
+
+
+def check_incidents(incidents: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """The incidents not resolved as the gate reads them, `{"kind", "uid"}` each; refused
+    when one is not an incident of a kind the twin has."""
+    if isinstance(incidents, str | bytes | Mapping):
+        log.error("the incidents handed in are not a list", given=type(incidents).__name__)
+        raise refused(BAD_STATE, "the incidents are a list of {kind, uid}")
+    found: list[dict[str, str]] = []
+    for index, incident in enumerate(incidents):
+        kind = incident.get("kind") if isinstance(incident, Mapping) else None
+        uid = incident.get("uid") if isinstance(incident, Mapping) else None
+        if kind not in INCIDENT_KINDS or not isinstance(uid, str) or not uid:
+            log.error(
+                "an incident handed in is not one the twin could have",
+                index=index,
+                kind=str(kind),
+                uid=str(uid),
+            )
+            raise refused(
+                BAD_STATE,
+                f"incidents[{index}] is not {{kind, uid}} with a kind of "
+                f"{', '.join(INCIDENT_KINDS)}",
+                index=index,
+            )
+        found.append({"kind": kind, "uid": uid})
+    return found
 
 
 def _plain(value: Any) -> Any:
@@ -324,6 +354,7 @@ def propose(
     reason: str | None,
     source: str,
     state: str,
+    incidents: Iterable[Mapping[str, Any]],
     now: datetime,
     executor: Executor | None,
     key: str | None = None,
@@ -334,9 +365,10 @@ def propose(
 
     A proposal that cannot be carried out as asked is recorded as `rejected` and raised
     as `action.rejected`. `source` is who proposes: a name, or a control loop's uid.
-    `state` is the twin's fidelity state; `executor` what makes external calls, None
-    when the executors add-on is off. The same `key` gives the same record back and
-    does nothing again.
+    `state` is the twin's fidelity state and `incidents` the `kind` and `uid` of every
+    incident it has not resolved, read at one version; `executor` what makes external
+    calls, None when the executors add-on is off. The same `key` gives the same record
+    back and does nothing again.
     """
     return propose_with(
         twin,
@@ -346,6 +378,7 @@ def propose(
         reason_text=reason,
         source=source,
         state=state,
+        incidents=incidents,
         now=now,
         executor=executor,
         key=key,
@@ -362,6 +395,7 @@ def propose_with(
     reason_text: str | None,
     source: str,
     state: str,
+    incidents: Iterable[Mapping[str, Any]],
     now: datetime,
     executor: Executor | None,
     key: str | None,
@@ -370,6 +404,7 @@ def propose_with(
     """`propose`, with rows of the caller's own put into the version of its last write."""
     started = time.perf_counter()
     check_state(state)
+    unresolved = check_incidents(incidents)
     uid = record_uid(keyed_id(key) if key is not None else new_id())
     with LOCKS.hold(uid):
         store = twin.store
@@ -463,10 +498,16 @@ def propose_with(
             )
             raise rejected(judged.reasons, record=uid, action=document["id"], object=object_uid)
 
-        decision = gate.on_proposal(document, has_executor=executor is not None, state=state)
+        decision = gate.on_proposal(
+            document, has_executor=executor is not None, state=state, incidents=unresolved
+        )
+        blocking = [found["uid"] for found in gate.blocking(unresolved)]
         if decision == gate.BLOCK:
             row.update(
-                status=BLOCKED, reasons=canonical([gate.blocked_reason(state, approval=False)])
+                status=BLOCKED,
+                reasons=canonical(
+                    gate.blocked_reasons(state, approval=False, incidents=unresolved)
+                ),
             )
         else:
             row["status"] = PROPOSED if decision == gate.PROPOSE else APPROVED
@@ -482,7 +523,13 @@ def propose_with(
             extra={**extra, "status": row["status"]},
         )
         if decision == gate.BLOCK:
-            log.warn("proposal blocked by the interlock", **context, elapsed_ms=_ms(started))
+            log.warn(
+                "proposal blocked by the interlock",
+                **context,
+                blocking=blocking,
+                unresolved=len(unresolved),
+                elapsed_ms=_ms(started),
+            )
         elif decision == gate.PROPOSE:
             log.info(
                 "proposal recorded; it is not executed by the twin",
@@ -494,7 +541,9 @@ def propose_with(
             )
         else:
             assert executor is not None
-            log.info("proposal cleared to execute; sending it", **context)
+            log.info(
+                "proposal cleared to execute; sending it", **context, unresolved=len(unresolved)
+            )
             made = _execute(twin, document, made, executor=executor, now=now, tail=tail)
             log.info(
                 "proposal decided",
@@ -577,7 +626,7 @@ def approve(
                 "uid": uid,
                 "status": BLOCKED,
                 "approval": canonical(approval),
-                "reasons": canonical([gate.blocked_reason(state, approval=True)]),
+                "reasons": canonical(gate.blocked_reasons(state, approval=True)),
             }
             write(
                 twin,

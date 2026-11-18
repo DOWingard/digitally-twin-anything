@@ -41,6 +41,7 @@ def test_a_proposal_that_is_not_executed_is_judged_and_recorded_in_time(world: W
             reason="timing",
             source="timer",
             state="healthy",
+            incidents=[],
             now=at(2),
             executor=None,
         )
@@ -81,6 +82,7 @@ def test_two_hundred_due_actions_are_reconciled_in_time(make_world: Callable[[],
         reason=None,
         source="timer",
         state="healthy",
+        incidents=[],
         now=at(2),
         executor=Accepting(),
     )

@@ -122,8 +122,9 @@ def disable_loop(
     "follow it at `/lifecycle/jobs/{id}`. The run asks the loop's policy function, in the "
     "worker and as a function run does, reading the head and writing nothing, for "
     '`{"actions": [{"action", "object", "params", "reason"}], "notes": [...]}`. Each action '
-    "is proposed with the loop as its source, the twin's fidelity state at the run's start "
-    "and the twin's clock at the request: bounds, the interlock, execution and records are "
+    "is proposed with the loop as its source, the twin's fidelity state and the incidents "
+    "it has not resolved at the run's start, and the twin's clock at the request: bounds, "
+    "the interlock (as `POST /actions/{id}/propose` states it), execution and records are "
     "the twin's, never the policy's; an action whose control is not the loop's is refused. "
     "The job's result, kept on the loop's record as `last_run`, is what the run did. A "
     "policy that raises (`action.policy_failed`) or answers something that cannot be used "

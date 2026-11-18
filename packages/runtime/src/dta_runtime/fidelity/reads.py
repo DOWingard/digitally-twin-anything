@@ -1,8 +1,8 @@
 """What the rest of the twin reads of fidelity: the state, the suspect signals, the
 incidents, the checks and the errors measured, at the head or at a version.
 
-`state` and `suspects` are on the path of every action and every sync run: each is one
-read of the store.
+`standing` is on the path of every proposal, `state` on that of every approval and
+`suspects` on that of every sync run: each reads one version of the store.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from dta_core.log import Log
-from dta_core.store import VersionRef
+from dta_core.store import EPOCH, VersionRef
 
 from ..twin import Twin
 from . import records
@@ -57,6 +57,33 @@ def state(twin: Twin, at: At = None) -> dict[str, Any]:
     if found is None or found.type != FIDELITY_TYPE:
         return records.state_document(None)
     return records.state_document(found.values)
+
+
+def standing(twin: Twin, at: At = None) -> dict[str, Any]:
+    """What the interlock judges by, both read at one version: the twin's `state` (with
+    `since` and `check`, as `state` gives them) and `incidents`, every incident not
+    resolved as `{"uid", "kind", "status"}`, oldest first; `version` is the id read."""
+    started = time.perf_counter()
+    version = at if isinstance(at, VersionRef) else twin.store.resolve(_at(at))[0]
+    document = state(twin, version)
+    rows: list[dict[str, Any]] = []
+    if _has(twin, INCIDENT_TYPE):
+        rows = twin.store.table(
+            INCIDENT_TYPE,
+            columns=["kind", "status", "opened_at"],
+            filter=[("status", "!=", RESOLVED)],
+            at=version,
+        ).to_pylist()
+    rows.sort(key=lambda row: (records.utc(row.get("opened_at")) or EPOCH, row["uid"]))
+    incidents = [{"uid": row["uid"], "kind": row["kind"], "status": row["status"]} for row in rows]
+    log.debug(
+        "fidelity standing read",
+        state=document["state"],
+        incidents=[found["kind"] for found in incidents],
+        seq=version.seq,
+        elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
+    )
+    return {**document, "incidents": incidents, "version": version.id}
 
 
 def suspects(twin: Twin, at: At = None) -> set[Cell]:

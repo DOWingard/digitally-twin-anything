@@ -21,7 +21,10 @@ Besides, the manifest declares:
 
 The twin's fidelity state is moved by the fidelity library, as the checks and the
 incidents of the API would move it: `healthy` after a check told the data is fresh,
-`failed` after one told it is stale, `correcting` while a reconcile incident is open.
+`failed` after one told it is stale (with the retry budget of 1), `correcting` while a
+reconcile incident is open, while a stale one is (with a larger retry budget), after
+checks scored forecasts of the valve too far off (a breach), or with the valve's
+setting suspect.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pyarrow as pa
 from actions_testkit import (
     BARE_VALVE,
     J1,
@@ -53,15 +57,17 @@ from actions_testkit import (
     manifest_of,
     observe,
     ontology_text,
+    register_rows,
 )
 from actions_testkit import TOKEN as PLANT_TOKEN
 from api_testkit import TOKEN
 from compute_testkit import JOB_S, Calls, runtime_settings, serve_on
 from dta_core.errors import DtaError
 from dta_core.store import StoreSettings, VersionRef
+from dta_core.store.model import iso_utc
 from dta_runtime import fidelity
 from dta_runtime.api import create_app
-from dta_runtime.fidelity import Freshness
+from dta_runtime.fidelity import Freshness, records
 from dta_runtime.settings import WorkerSettings
 from dta_runtime.twin import Bundle, Twin, install_twin
 from dta_runtime.worker import create_app as create_worker
@@ -75,6 +81,7 @@ __all__ = ["BARE_VALVE", "PLANT_TOKEN", "PUMP", "T0", "VALVE"]
 PORTS = range(18980, 19000)
 WEBHOOK_ENV = "DTA_TEST_ACTIONS_WEBHOOK"
 QUESTION = "setting_ahead"
+SETTING_MODEL = "twin_model:setting/naive"
 CODE_MODULE = "plant"
 APPROVAL_PENDING = "twin.action.approval_pending"
 BLOCKED = "twin.action.blocked"
@@ -182,6 +189,7 @@ def acting_document(
     webhook: bool,
     executors: bool = True,
     fidelity_section: bool = True,
+    retry_budget: int = 1,
 ) -> dict[str, Any]:
     document = manifest_document(text)
     contract = document["contract"]
@@ -215,7 +223,7 @@ def acting_document(
         document["fidelity"] = {
             "interval": "PT15M",
             "window": int((6 * STEP).total_seconds()),
-            "correction": {"retry_budget": 1},
+            "correction": {"retry_budget": retry_budget},
         }
     document["functions"] = {
         "pump_policy": _own("policy"),
@@ -244,6 +252,22 @@ def no_predictor(model: Mapping[str, Any], **_: Any) -> Any:
     raise DtaError("no model is fitted in these tests", code="worker.unavailable")
 
 
+def setting_forecast(off_by: float) -> Callable[..., pa.Table]:
+    """Forecasts the valve at 5 plus `off_by` at every step of the horizon."""
+
+    def predict(model: Mapping[str, Any], *, origin: VersionRef, horizon: int, step, **_: Any):
+        times = [origin.t + j * step for j in range(1, horizon + 1)]
+        return pa.table(
+            {
+                "unique_id": pa.array([VALVE] * horizon, pa.string()),
+                "ds": pa.array(times, pa.timestamp("us", tz="UTC")),
+                "mean": pa.array([5.0 + off_by] * horizon, pa.float64()),
+            }
+        )
+
+    return predict
+
+
 @dataclass
 class Acting(Calls):
     """The twin behind its API and worker, the plant it acts on and its webhook."""
@@ -267,7 +291,7 @@ class Acting(Calls):
 
     # -- the twin's state, as the fidelity library moves it ----------------------------
 
-    def check(self, step: float, fresh: bool | None = True) -> str:
+    def check(self, step: float, fresh: bool | None = True, predictor: Any = None) -> str:
         """A fidelity check at a step, told whether the valve's data is fresh; the state."""
         freshness = (
             {}
@@ -284,7 +308,7 @@ class Acting(Calls):
         fidelity.check(
             self.twin,
             at(step),
-            predictor=no_predictor,
+            predictor=predictor or no_predictor,
             freshness=freshness,
             trace_id="actions-api",
             deadline_s=30.0,
@@ -295,6 +319,117 @@ class Acting(Calls):
         """An open reconcile incident on a record of no action: the twin is correcting."""
         fidelity.open_incident(self.twin, "reconcile", subject, {"why": "test"}, now=at(step))
         return self.state()
+
+    def breached(self, step: int) -> str:
+        """The valve's forecast question breached, as the checks find it: its model made
+        active, the valve observed at 5 at every step from `step` - 4, and the forecasts
+        scored at the checks of `step` - 2 to `step` are 5 off. The state."""
+        register_rows(
+            self.twin,
+            {
+                "TwinModel": [
+                    {
+                        "uid": SETTING_MODEL,
+                        "spec": "setting",
+                        "candidate": "naive",
+                        "family": "persistence",
+                        "params": "{}",
+                        "question": QUESTION,
+                        "target": "Valve.setting",
+                        "interventional": False,
+                        "origin": "runtime",
+                        "status": "active",
+                        "fitted_to": at(step - 4),
+                    }
+                ],
+                "TwinQuestion": [
+                    {
+                        "uid": f"twin_question:{QUESTION}",
+                        "question": QUESTION,
+                        "model": SETTING_MODEL,
+                    }
+                ],
+            },
+        )
+        for i in range(step - 4, step + 1):
+            observe(self.twin, at(i), {"Valve": [{"uid": VALVE, "setting": 5.0}]})
+        for i in range(step - 2, step + 1):
+            self.check(i, predictor=setting_forecast(off_by=5.0))
+        return self.state()
+
+    def flagged(self, step: float) -> str:
+        """The valve's setting suspect, with its incident, as a check that found it biased
+        leaves them; this twin's window is too short for a check to find it. The state."""
+        now = at(step)
+        head = self.head
+        signal = records.signal_uid("Valve.setting", VALVE)
+        incident = {
+            "uid": records.incident_uid("signal", signal, now),
+            "kind": "signal",
+            "subject": signal,
+            "status": "open",
+            "opened_at": now,
+            "opened_version": head.id,
+            "resolved_at": None,
+            "rung": 0,
+            "attempt": 0,
+            "cycle": 0,
+            "awaiting": None,
+            "requested_at": None,
+            "detail": {"signal": signal, "property": "Valve.setting", "object": VALVE},
+            "steps": [{"at": iso_utc(now), "action": "flagged", "reason": "biased"}],
+        }
+        suspect = {
+            "uid": signal,
+            "property": "Valve.setting",
+            "object": VALVE,
+            "status": "suspect",
+            "reason": "biased",
+            "since": now,
+            "value_at_flag": 5.0,
+            "reading": None,
+            "reading_at": None,
+            "clear_checks": 0,
+            "detail": {"question": QUESTION},
+        }
+        before = fidelity.state(self.twin, head)
+        records.write(
+            self.twin,
+            {
+                "TwinIncident": [records.incident_row(incident)],
+                "TwinSignal": [records.signal_row(suspect)],
+                "TwinFidelity": [
+                    {
+                        "uid": records.STATE_UID,
+                        "state": "correcting",
+                        "since": now,
+                        "check": before["check"],
+                    }
+                ],
+            },
+            now=now,
+            cause="derived",
+            note=f"signal {signal} flagged",
+            extra={"fidelity": "test"},
+        )
+        return self.state()
+
+    def opened(self, kind: str, step: int) -> str:
+        """An incident of `kind` open at `step` on a twin checked healthy before it; the
+        uid of the incident. A stale one needs a retry budget above 1, or it fails."""
+        if kind == "breach":
+            assert self.breached(step) == "correcting"
+        elif kind == "signal":
+            assert self.flagged(step) == "correcting"
+        elif kind == "stale":
+            assert self.check(step, fresh=False) == "correcting"
+        elif kind == "reconcile":
+            assert self.correcting(step) == "correcting"
+        else:
+            raise AssertionError(kind)
+        (found,) = fidelity.incidents(self.twin, kind=kind, status="unresolved")
+        self.clock.set(at(step))
+        return str(found["uid"])
 
     def state(self) -> str:
         return str(fidelity.state(self.twin)["state"])
@@ -403,6 +538,7 @@ def serve_acting(
     fidelity_section: bool = True,
     worker: bool = True,
     register: bool = True,
+    retry_budget: int = 1,
 ) -> Iterator[Acting]:
     """Install the twin, observe its network at step 1, and serve its API, a worker and
     the plant; the code is kept and the registries brought in line with the manifest."""
@@ -414,6 +550,7 @@ def serve_acting(
         webhook=webhook_receiver is not None,
         executors=executors,
         fidelity_section=fidelity_section,
+        retry_budget=retry_budget,
     )
     twin = install_twin(
         store, Bundle(manifest=manifest_of(document), ontology_text=text), t=T0

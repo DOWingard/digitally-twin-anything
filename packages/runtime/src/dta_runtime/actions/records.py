@@ -71,6 +71,12 @@ HEALTHY = "healthy"
 CORRECTING = "correcting"
 FAILED_STATE = "failed"
 STATES = (UNKNOWN, HEALTHY, CORRECTING, FAILED_STATE)
+# The kinds of the twin's incidents, as they are handed in.
+BREACH_KIND = "breach"
+STALE_KIND = "stale"
+SIGNAL_KIND = "signal"
+RECONCILE_KIND = "reconcile"
+INCIDENT_KINDS = (BREACH_KIND, STALE_KIND, SIGNAL_KIND, RECONCILE_KIND)
 
 # Autonomies and bindings of an action type.
 ADVISORY = "advisory"
