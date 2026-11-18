@@ -2,6 +2,11 @@
 
 A source is one place the twin reads data from: a folder of files, a database or an HTTP interface. Every source is read only, from inside the twin's containers, with the connector its `connector` field names. A mapping says how the rows of one dataset of a source become objects of one ontology class.
 
+## Which services are sources
+
+- A service the twin only sends commands to (a control interface that switches a pump or sets a setpoint) is not a source: it is the address of an action's executor ([live twins](live.md), "The executor"). It becomes a source only if it also serves data a question, control or required property needs.
+- A service or feed whose data no question, control target or required property needs is left out. Tell the user which ones you leave out and why, and record it in `discussion.md`.
+
 ## Connector kinds
 
 | The data is in | `sources.<source>.connector` | Reads |
@@ -15,6 +20,8 @@ The kind `custom` is accepted by the manifest but cannot be opened by the tool: 
 ## Locations
 
 `sources.<source>.location` is the source's address. Put every secret part, and every part that differs between machines, in a `${NAME}` placeholder, and name each variable in `sources.<source>.env` and under `env` ([stage 0](stage-0-intake.md), step 5).
+
+A part issued per account or per installation that is not secret (a host name, a database name, a port, a folder, a plant's base address) is a variable too, declared with `secret: false` and a description that says why it is safe to show: `env.<NAME>.secret: false`. The reason: in what `dta` relays from the twin's containers (the results of probe, profile, build, sync and acceptance), the value of every variable not declared `secret: false` is replaced by `***` wherever it appears, once the value is 6 characters or longer. A database named `registry` left secret blanks the word "registry" in all of those, a source id and a description included.
 
 | Kind | Form | Example |
 |---|---|---|
@@ -49,6 +56,11 @@ options:
 ```
 
 Every file of a dataset must have the same columns. Column type names: `text`, `integer`, `float`, `boolean`, `timestamp`, `date32`, or any Arrow type name.
+
+Times in text files:
+
+- The type `timestamp` is `timestamp[us, tz=UTC]`: it reads only times written with an offset (`2026-03-02T01:00:00+01:00`, `...Z`), and `timezone` does not apply to it. A time written without one (`2026-03-02 01:00`) fails the probe with `source.read_failed` ("expected a zone offset").
+- For times written without an offset, leave the column out of `types` (it is recognised as a time) or give it `timestamp[us]`, and set `timezone` to the zone they were written in, such as `Europe/Stockholm`. They are read in that zone and stored in UTC.
 
 ### sql
 
@@ -91,9 +103,13 @@ options:
       since:                   # optional: ask only for rows newer than the last read
         param: after
         format: iso            # iso, epoch_s or epoch_ms
-      columns:                 # optional: column types
+      columns:                 # optional: the columns kept, with their types
+        sensor_id: text
         ts: timestamp
+        value: float
 ```
+
+`columns`, when given, is the whole list of columns the dataset keeps: a field of the records it does not name is not read at all. Name every field a mapping, view, filter or cursor uses, or leave `columns` out and every field is kept with a guessed type. `dta source probe` lists, per dataset, the fields the declaration left out in `dropped_columns`; read it after every probe.
 
 Paging keys per type: `cursor`: `cursor_path`, `cursor_param`; `page`: `page_param`, `first_page`, `total_path`; `offset`: `limit` (required), `offset_param`, `limit_param`, `total_path`; `link`: `next_url_path`. A variable used in `headers` or `params` must also be listed in `sources.<source>.env`, or the twin's containers do not receive it.
 
@@ -111,7 +127,7 @@ One mapping per dataset and class, under `sources.<source>.mappings.<mapping>`:
 | `properties.<property>.unit` | The unit of the column in the source, as a UCUM code; values are converted to the property's unit. Give it for every property that has a `unit` in the ontology, and for no other (`ontology.unit` warns otherwise). |
 | `valid_time` | The column holding when each row's values were true. Give it in every mapping that fills a property with `dta_role: state`, and in no mapping that fills a fixed property (`ontology.role` warns otherwise): map the fixed and the timed properties of one class in separate mappings. |
 | `kind` | `observed` (the default: the source reported it), `inferred`, `assumed` (written down by a person, not measured) or `simulated`. |
-| `mode` | `upsert` (the default: an object missing from a later read is kept) or `snapshot` (it is deleted). Use `snapshot` for a register whose removed rows mean removed objects. |
+| `mode` | `upsert` (the default: an object missing from a later read is kept) or `snapshot` (it is deleted). `snapshot` only for a register whose removed rows mean removed objects, and only when its mapping is the one mapping of that class in the whole manifest and has no `valid_time`; otherwise `upsert`. |
 | `filter` | A SQL condition a row must meet, such as `status <> 'retired'`. |
 | `cursor` | A column that only grows, such as the time column, so a later read can take only new rows. |
 
@@ -122,8 +138,47 @@ Rules:
 - Several mappings may fill one class: the register gives a room its name, the telemetry its temperature. A row for an object no mapping has created yet still needs every required property.
 - A link class is mapped like any class: its identity columns and one column for each of its two references.
 - Map every property a question targets: `coverage.unmapped_target` warns otherwise, and the question cannot be answered.
-- `sources.<source>.views.<view>` may hold a named SELECT over the source's datasets (read in the same run), mapped as `dataset: <view>`, when one table must be joined or reshaped first.
 - `sources.<source>.incremental.<dataset>` names the time column of a dataset that is read on from where the last run stopped (live twins); the dataset must appear in the profile.
+- A property mapped without `valid_time` (a register's name, size or demand) is in force from the first version of the loaded history, before any timed value. A change to it that a later sync finds is written at that sync's version: the twin knows that it changed, not when.
+
+`dta manifest validate` refuses, with `sync.mapping_invalid`, what the build's `load` step would refuse: a view that names a dataset without its source, a view of more than one statement, `snapshot` on a class other mappings also fill, `snapshot` with a `valid_time`, a property with both or neither of `column` and `expression`, `kind: simulated`, and two time-series mappings of one dataset with different `valid_time` columns.
+
+## Views
+
+`sources.<source>.views.<view>` holds one SELECT statement that joins or reshapes datasets before they are mapped; a mapping of the same source reads it as `dataset: <view>`. Write it this way:
+
+- Name every dataset as `"<source>"."<dataset>"`, both parts in double quotes: `FROM "telemetry"."readings"`. A bare `FROM readings` is refused. A view may read datasets of any source of the manifest, and other views as `"<source>"."<view>"`.
+- The SQL is DuckDB's, and the session runs in UTC.
+- Names a `WITH` clause defines are used bare. One statement only, no `;` between statements.
+- Mapping `filter` and `expression` are DuckDB SQL too.
+- A dataset a view reads is read whole at every sync, unless `sources.<source>.incremental.<dataset>` names its time column: declare it for a growing readings dataset of a live twin (`incremental: {readings: ts}`). Every mapping that then reads it, directly or through a view, needs a `valid_time`.
+
+### Readings in long format
+
+When a source keeps one row per reading (`sensor_id`, `ts`, `value`) and a catalogue says what each sensor measures and where (`sensor_id`, `asset_id`, `quantity`), write one view per quantity the ontology has as a property, and map each view to the class whose objects carry the sensors:
+
+```yaml
+views:
+  tank_levels: |
+    SELECT s.asset_id, r.ts, r.value AS level_m
+    FROM "telemetry"."readings" AS r
+    JOIN "registry"."sensors" AS s ON s.sensor_id = r.sensor_id
+    WHERE s.quantity = 'level'
+mappings:
+  tank_level:
+    dataset: tank_levels
+    object_type: Tank
+    identity: [asset_id]
+    valid_time: ts
+    properties:
+      level:
+        column: level_m
+        unit: m
+```
+
+The view `tank_levels` and the mapping belong to the same source (here `telemetry`). Repeat it for each quantity (`pressure` on junctions, `status` on pumps). A reading's quality flag is a `WHERE` condition of the view (`AND r.quality <> 'suspect'`); a value the control interface writes as text and the telemetry as a number is turned into the same form in the view (`CASE r.value WHEN 1 THEN 'on' ELSE 'off' END AS status`), so that what an action sets and what the twin observes compare equal ([live twins](live.md), "Whether an action had its effect").
+
+The profile's `noise_sigma` of such a `value` column is one figure over every sensor and quantity together, and a property read through a view has no profile of its own: `feasible.noise` compares its tolerance with nothing. Propose such a tolerance from what the user's decisions need, and say in the handover that it was not compared with the noise of the data.
 
 ## Source settings the tool measures
 
