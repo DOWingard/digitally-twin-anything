@@ -28,6 +28,9 @@ from .{{ client_package }}.api.{{ ops.history.tag }} import {{ ops.history.modul
 from .{{ client_package }}.api.{{ ops.links.tag }} import {{ ops.links.module }} as _links
 from .{{ client_package }}.api.{{ ops.list.tag }} import {{ ops.list.module }} as _list
 from .{{ client_package }}.api.{{ ops.one.tag }} import {{ ops.one.module }} as _one
+from .{{ client_package }}.models.{{ ops.links.enums.direction.module }} import (
+    {{ ops.links.enums.direction.name }} as _Direction,
+)
 from .{{ client_package }}.types import Response
 
 BASE_URL_ENV = "{{ base_url_env }}"
@@ -122,7 +125,8 @@ class Objects(Generic[M]):
             {{ ops.one.kw.at }}=at,
             {{ ops.one.kw.branch }}=branch,
         )
-        return self._typed(_json(response)["data"])
+        found = _json(response)["data"]
+        return self._typed({**found["values"], "uid": found["uid"]})
 
     def list(
         self,
@@ -206,12 +210,12 @@ class Objects(Generic[M]):
         uid: str,
         *,
         at: str = HEAD,
-        direction: str | None = None,
+        direction: str = "both",
         edge_types: Sequence[str] = (),
         branch: str = MAIN,
     ) -> list[Link]:
-        """The edges of the object as of `at`: `direction` `in` or `out` (both when not
-        given), only of `edge_types` when they are given."""
+        """The edges of the object as of `at`: `direction` `in`, `out` or `both`, only of
+        `edge_types` when they are given."""
         found: list[Link] = []
         cursor: str | None = None
         named = {"direction", "edge_type", "neighbor", "neighbor_type", "link_uid"}
@@ -223,7 +227,7 @@ class Objects(Generic[M]):
                     client=self._client,
                     {{ ops.links.kw.at }}=at,
                     {{ ops.links.kw.branch }}=branch,
-                    {{ ops.links.kw.direction }}=direction,
+                    {{ ops.links.kw.direction }}=_Direction(direction),
                     {{ ops.links.kw.edge_types }}=list(edge_types) or None,
                     {{ ops.links.kw.limit }}=PAGE_SIZE,
                     {{ ops.links.kw.cursor }}=cursor,

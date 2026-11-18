@@ -161,6 +161,8 @@ class GlueOperation:
     module: str
     # API parameter name -> the keyword the generated function takes for it.
     keywords: dict[str, str]
+    # API parameter name -> (module, class) of the enum the generated function takes it as.
+    enums: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
 def _client(
@@ -171,6 +173,7 @@ def _client(
     from openapi_python_client import Project
     from openapi_python_client.config import Config, ConfigFile, MetaType
     from openapi_python_client.parser import GeneratorData
+    from openapi_python_client.parser.properties import EnumProperty
     from openapi_python_client.strings import PythonIdentifier
 
     document = work / "openapi.json"
@@ -217,10 +220,19 @@ def _client(
                         code="sdk.api_unexpected",
                         detail={"operation": [method, path], "lacking": lacking},
                     )
+                enums = {
+                    prop.name.get_untrusted_value(): (
+                        str(prop.class_info.module_name),
+                        str(prop.class_info.name),
+                    )
+                    for prop in endpoint.query_parameters
+                    if isinstance(prop, EnumProperty)
+                }
                 found[name] = GlueOperation(
                     tag=str(tag),
                     module=str(PythonIdentifier(endpoint.name, config.field_prefix)),
                     keywords=parameters,
+                    enums=enums,
                 )
     absent = sorted(set(GLUE_OPERATIONS) - set(found))
     if absent:
@@ -339,7 +351,12 @@ def render_sdk(manifest: Manifest, ontology: Ontology, spec: dict[str, Any]) -> 
         "types": types,
         "questions": questions,
         "ops": {
-            name: {"tag": op.tag, "module": op.module, "kw": op.keywords}
+            name: {
+                "tag": op.tag,
+                "module": op.module,
+                "kw": op.keywords,
+                "enums": {key: {"module": m, "name": c} for key, (m, c) in op.enums.items()},
+            }
             for name, op in operations.items()
         },
         "base_url_env": inputs["base_url_env"],
