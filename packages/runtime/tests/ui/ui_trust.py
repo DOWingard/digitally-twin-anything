@@ -61,7 +61,15 @@ from fidelity_testkit import at as plant_at
 from fidelity_testkit import flow as true_flow
 from fidelity_testkit import level as true_level
 from live_api_testkit import wait_for_job
-from ui_testkit import DRIVER_AGENT, ApiServer, RequestLog, ResponseLog, UiServer, free_port
+from ui_testkit import (
+    DRIVER_AGENT,
+    ApiServer,
+    RequestLog,
+    ResponseLog,
+    UiServer,
+    free_port,
+    release_port,
+)
 
 V1 = "/api/v1"
 G1, G2 = gauge("G1"), gauge("G2")
@@ -583,7 +591,8 @@ def build_acting(settings: StoreSettings, water_text: str, root: Path, logs: Pat
         },
     )
     acting_kit.register(twin, manifest)
-    plant = acting_kit.Plant(free_port())
+    plant_port = free_port()
+    plant = acting_kit.Plant(plant_port)
     http = acting_kit.executor(manifest, plant.url)
     made: dict[str, str] = {}
     with contextlib.ExitStack() as cleanup:
@@ -665,7 +674,13 @@ def build_acting(settings: StoreSettings, water_text: str, root: Path, logs: Pat
     clock = FixedClock(acting_kit.at(LOOP_STEP))
     env = {"PLANT_URL": plant.url, "PLANT_TOKEN": PLANT_TOKEN}
     served = serve(twin, clock, root, logs, env=env)
-    served.stops.append(plant.stop)
+
+    def stop_plant() -> None:
+        plant.stop()
+        # The range of test ports is small: a stopped plant gives its port back.
+        release_port(plant_port)
+
+    served.stops.append(stop_plant)
     return ActingWorld(served=served, plant=plant, records=made, loop_run=loop_run)
 
 

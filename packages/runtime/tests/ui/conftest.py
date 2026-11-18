@@ -428,7 +428,9 @@ def new_database(
     return make
 
 
-@pytest.fixture(scope="session")
+# The worlds below are shared by the tests of one module and stopped after it: the range
+# of loopback ports these tests may use is too small to hold them all for the session.
+@pytest.fixture(scope="module")
 def fidelity_world(
     new_database: Callable[[str], StoreSettings],
     ui_logs: Path,
@@ -462,7 +464,7 @@ def make_badge(
         world.plant.twin.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def crowded(
     new_database: Callable[[str], StoreSettings],
     ui_logs: Path,
@@ -500,7 +502,7 @@ def make_acting(
         world.served.twin.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def acting(
     new_database: Callable[[str], StoreSettings],
     water_text: str,
