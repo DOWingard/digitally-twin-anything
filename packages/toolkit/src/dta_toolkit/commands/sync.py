@@ -98,7 +98,7 @@ def _result(manifest: Manifest, found: IntervalDerivation) -> dict[str, Any]:
         "feasible": found.feasible,
         "problems": list(found.problems),
         "rule": found.inputs.rule,
-        "inputs": {name: _iso(getattr(found.inputs, name)) for name in _INPUTS},
+        "inputs": {name: _iso(found.term(name)) for name in _INPUTS},
         "before_fitting": _iso(found.unfitted),
         "horizon_questions": list(found.questions),
         "manifest_interval": _iso(stated),
@@ -111,7 +111,7 @@ def _result(manifest: Manifest, found: IntervalDerivation) -> dict[str, Any]:
 def _text(result: dict[str, Any], found: IntervalDerivation) -> str:
     lines = [f"Rule:     {result['rule']}"]
     for name in _INPUTS:
-        value = getattr(found.inputs, name)
+        value = found.term(name)
         lines.append(f"  {name:<16} {fmt_duration(value) if value is not None else 'not known'}")
     if found.questions:
         lines.append(f"  {'horizons of':<16} {', '.join(found.questions)}")

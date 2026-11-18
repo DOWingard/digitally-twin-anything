@@ -88,10 +88,18 @@ class IntervalDerivation:
     unfitted: timedelta | None = None
     # The forecast questions whose horizons the interval was fitted to.
     questions: tuple[str, ...] = field(default_factory=tuple)
+    # The greatest common divisor of their horizons, which the interval divides. It is
+    # not recorded under sync.derivation: the horizons are in the contract already, and a
+    # manifest field the schema did not have is refused by a runtime image built before it.
+    horizon: timedelta | None = None
 
     @property
     def feasible(self) -> bool:
         return self.interval is not None and not self.problems
+
+    def term(self, name: str) -> timedelta | None:
+        """One input of the rule by its name, the horizon included."""
+        return self.horizon if name == HORIZON else getattr(self.inputs, name)
 
 
 def derive_interval(manifest: Manifest) -> IntervalDerivation:
@@ -118,7 +126,6 @@ def derive_interval(manifest: Manifest) -> IntervalDerivation:
         min_staleness=min(stalenesses, default=None),
         freshness_bound=tightest.value if tightest else None,
         change_time=change_time,
-        horizon=horizon,
         rule=RULE,
     )
 
@@ -185,7 +192,7 @@ def derive_interval(manifest: Manifest) -> IntervalDerivation:
             f"{fmt_duration(sync.maximum_interval)}"
         )
     return IntervalDerivation(
-        interval, inputs, binding, tuple(problems), unfitted, tuple(sorted(horizons))
+        interval, inputs, binding, tuple(problems), unfitted, tuple(sorted(horizons)), horizon
     )
 
 

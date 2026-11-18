@@ -161,8 +161,11 @@ def test_the_bike_export_derives_the_hour_its_forecast_looks_ahead():
     )
     assert found.unfitted == timedelta(hours=3, minutes=7, seconds=30)
     assert (found.interval, found.binding, found.feasible) == (60 * MIN, "horizon", True)
-    assert found.inputs.horizon == 60 * MIN
+    assert found.horizon == found.term("horizon") == 60 * MIN
     assert found.questions == ("q_ahead",)
+    # Recorded under sync.derivation are the rule's own inputs only: a field the
+    # manifest schema did not have would be refused by a runtime built before it.
+    assert "horizon" not in found.inputs.model_dump()
 
 
 def test_the_water_utility_keeps_its_quarter_hour():
@@ -188,7 +191,7 @@ def test_several_horizons_are_divided_by_their_greatest_common_divisor():
     )
     # gcd(60, 90) = 30 min; the rule's 1 h is fitted to it.
     assert (found.interval, found.binding) == (30 * MIN, "horizon")
-    assert found.inputs.horizon == 30 * MIN and found.questions == ("q_a", "q_b")
+    assert found.horizon == 30 * MIN and found.questions == ("q_a", "q_b")
 
 
 def test_a_fit_that_leaves_whole_milliseconds_only_takes_the_next_divisor():
