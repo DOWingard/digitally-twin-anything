@@ -170,19 +170,30 @@ class Notification(Base):
 
 
 class Addons(Base):
-    sdk_python: bool = opt(Owner.user, "Generate a typed Python client", False)
-    mcp: bool = opt(Owner.user, "Generate an MCP adapter from the API description", False)
+    # Only `executors` changes what is built; the others record a wish for later.
+    sdk_python: bool = opt(
+        Owner.user, "Wish for a typed Python client; recorded only, nothing is built", False
+    )
+    mcp: bool = opt(Owner.user, "Wish for an MCP adapter; recorded only, nothing is built", False)
     executors: bool = opt(Owner.user, "Let actions call external systems", False)
     llm_extraction: bool = opt(
-        Owner.user, "Run a language model inside the twin to re-read documents", False
+        Owner.user,
+        "Wish for documents re-read by a language model; recorded only, nothing is built",
+        False,
     )
-    readonly_sql: bool = opt(Owner.user, "Expose read-only SQL over the history", False)
+    readonly_sql: bool = opt(
+        Owner.user,
+        "Wish for read-only SQL over the history; recorded only, nothing is built",
+        False,
+    )
 
 
 class Contract(Base):
     purpose: str | None = req(Owner.user, "What the twin is for")
     tier: Tier | None = req(Owner.user, "Static (one load) or live (recurring sync)")
-    cadence_preference: timedelta | None = opt(Owner.user, "Sync interval the user asked for")
+    cadence_preference: timedelta | None = opt(
+        Owner.user, "Sync interval the user asked for; recorded only, the interval is derived"
+    )
     questions: dict[str, Question] | None = req(Owner.user, "What the twin must answer or decide")
     controls: dict[str, Control] = opt(Owner.user, "Controls delegated to the twin", dict)
     objective: Objective | None = req(
@@ -191,7 +202,11 @@ class Contract(Base):
     boundary: Boundary | None = req(Owner.agent, "Roles of the ontology's properties")
     notification: Notification | None = req(Owner.user, "Where failures are raised", when="live")
     addons: Addons = opt(Owner.user, "Optional parts of the build", Addons)
-    hosting: Literal["local", "cloud"] = opt(Owner.user, "Where the twin is meant to run", "local")
+    hosting: Literal["local", "cloud"] = opt(
+        Owner.user,
+        "Where the twin is meant to run; recorded only, it runs on this machine",
+        "local",
+    )
 
 
 # -- ontology -----------------------------------------------------------------
