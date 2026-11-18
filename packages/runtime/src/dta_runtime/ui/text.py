@@ -560,6 +560,15 @@ NOTIFICATION_COLUMNS = {
 }
 
 
+def milliseconds_text(value: Any) -> str:
+    """`127 ms` under a second, `seconds_text` from a second on."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return ""
+    if value < 1000:
+        return f"{round(value)} ms"
+    return seconds_text(value / 1000.0)
+
+
 def fidelity_status(version: dict[str, Any]) -> str:
     return f"as of {version_text(version)} of the live twin"
 

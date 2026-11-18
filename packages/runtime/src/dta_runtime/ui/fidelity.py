@@ -286,7 +286,12 @@ def chart(question: str, figure: go.Figure, notes: list[str]) -> html.Div:
             dcc.Graph(
                 id={"role": ids.FIDELITY_CHART, "question": question},
                 figure=figure,
-                config={"displaylogo": False, "responsive": True},
+                # Without the button that would upload the chart to an outside service.
+                config={
+                    "displaylogo": False,
+                    "responsive": True,
+                    "modeBarButtonsToRemove": ["sendChartToCloud"],
+                },
                 className="fidelity-chart",
             ),
             *[note(text) for text in notes],
@@ -315,13 +320,16 @@ def incident_row(incident: dict[str, Any]) -> dict[str, Any]:
 
 
 def inferred_text(signal: dict[str, Any]) -> str:
-    """The value in force of a signal: the estimate written in place of its readings, or
-    the value it had when it was flagged, which stays when nothing estimates it."""
+    """The value in force of a suspect signal: the estimate written in place of its
+    readings, or the value it had when it was flagged, which stays when nothing estimates
+    it. A signal sound again has its readings in force, and none is inferred."""
+    if signal.get("status") != "suspect":
+        return ""
     estimate = (signal.get("detail") or {}).get("estimate") or {}
     if estimate.get("value") is not None:
         by = estimate.get("model") or estimate.get("question")
         return T.number_text(estimate["value"]) + (f" ({by})" if by else "")
-    if signal.get("status") == "suspect" and signal.get("value_at_flag") is not None:
+    if signal.get("value_at_flag") is not None:
         return T.value_text(signal["value_at_flag"])
     return ""
 
@@ -347,12 +355,11 @@ def signal_row(signal: dict[str, Any]) -> dict[str, Any]:
 
 
 def check_row(check: dict[str, Any]) -> dict[str, Any]:
-    duration = check.get("duration_ms")
     return {
         "uid": check.get("uid"),
         "at": T.time_text(check.get("at")),
         "state": T.state_text(check.get("state")),
-        "duration": T.seconds_text(duration / 1000.0) if isinstance(duration, int | float) else "",
+        "duration": T.milliseconds_text(check.get("duration_ms")),
     }
 
 
@@ -504,7 +511,9 @@ def layout() -> html.Div:
             html.Div(
                 field(
                     T.STATUS_FILTER_LABEL,
-                    dcc.Dropdown(id=ids.INCIDENTS_STATUS, options=[], placeholder="any"),
+                    dcc.Dropdown(
+                        id=ids.INCIDENTS_STATUS, options=[], placeholder="any", searchable=False
+                    ),
                 ),
                 className="filters",
             ),
