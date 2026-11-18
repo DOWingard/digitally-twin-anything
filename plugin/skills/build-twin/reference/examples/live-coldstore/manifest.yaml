@@ -1,0 +1,282 @@
+# A live twin over an HTTP telemetry interface and a SQL register: it follows the
+# cold rooms as they run, forecasts their temperature, and proposes setpoint changes
+# that a person approves before they are sent to the plant's control interface.
+# Profiles, refresh periods, sync.interval, sync.derivation and field_status are
+# written by dta (dta profile, dta sync derive --write, dta manifest confirm);
+# everything else was written by hand.
+manifest_version: 1
+twin:
+  id: coldstore
+  name: Cold store
+contract:
+  purpose: Follow the temperature of every cold room as it runs, warn before a room gets too
+    warm, and propose setpoint changes that keep the warmest room cold enough
+  tier: live
+  questions:
+    q_temp:
+      text: What is the air temperature of each room, and what was it at a given time?
+      kind: descriptive
+      priority: 1
+      tolerance:
+        metric: mae
+        value: 0.5
+        unit: Cel
+      staleness: PT15M
+      targets:
+        - Room.temperature
+      function: f_latest
+      example:
+        property: Room.temperature
+    q_temp_ahead:
+      text: What will the air temperature of each room be in two hours?
+      kind: predictive
+      priority: 2
+      tolerance:
+        metric: mae
+        value: 1.0
+        unit: Cel
+      staleness: PT30M
+      targets:
+        - Room.temperature
+      horizon: PT2H
+      function: q_temp_ahead
+      model: q_temp_ahead
+      example: {}
+  controls:
+    c_setpoint:
+      description: The temperature setpoint of each cold room
+      target: Room.setpoint
+      bounds:
+        minimum: -30
+        maximum: 4
+        max_step: 2
+      autonomy: supervised
+      action: set_setpoint
+  objective:
+    description: Keep the warmest room as cold as the goods in it need
+    direction: minimize
+    kpi: f_warmest
+    constraints:
+      no_icing:
+        description: No room colder than -28 °C, so that the evaporator coils do not ice over
+  boundary:
+    state:
+      - Room.temperature
+      - Room.setpoint
+    controls:
+      - Room.setpoint
+    observations:
+      - Room.temperature
+      - Room.setpoint
+  notification:
+    kind: webhook
+    webhook_env: COLDSTORE_ALERT_URL
+  addons:
+    executors: true
+ontology:
+  path: ontology/coldstore.yaml
+  # Written by `dta ontology check --write`, then confirmed by the user.
+  type_signature: 51c6f7e931d0b9396a239867eefdd66b7f1e5a5cb532c3792ba6b40e20c3f53e
+sources:
+  register:
+    description: The warehouse's asset register, a PostgreSQL database
+    connector: sql
+    location: postgresql://${COLDSTORE_DB_USER}:${COLDSTORE_DB_PASSWORD}@${COLDSTORE_DB_HOST}:5432/assets
+    env:
+      - COLDSTORE_DB_USER
+      - COLDSTORE_DB_PASSWORD
+      - COLDSTORE_DB_HOST
+    options:
+      schema: public
+      datasets:
+        rooms:
+          table: cold_rooms
+        compressors:
+          query: SELECT compressor_id, room_id, model, rated_kw FROM compressors WHERE retired = false
+    mappings:
+      rooms:
+        dataset: rooms
+        object_type: Room
+        identity:
+          - room_id
+        properties:
+          name:
+            column: name
+      compressors:
+        dataset: compressors
+        object_type: Compressor
+        identity:
+          - compressor_id
+        mode: snapshot
+        properties:
+          room:
+            column: room_id
+          model:
+            column: model
+          rated_power:
+            column: rated_kw
+            unit: kW
+  telemetry:
+    description: The plant's telemetry interface, one reading per room every five minutes
+    connector: http
+    location: ${COLDSTORE_API_URL}
+    env:
+      - COLDSTORE_API_URL
+      - COLDSTORE_API_TOKEN
+    options:
+      headers:
+        Authorization: Bearer ${COLDSTORE_API_TOKEN}
+      datasets:
+        readings:
+          path: /v2/readings
+          records: $.items
+          paging:
+            type: cursor
+            cursor_path: $.next
+            cursor_param: cursor
+          since:
+            param: after
+            format: iso
+    mappings:
+      readings:
+        dataset: readings
+        object_type: Room
+        identity:
+          - room
+        valid_time: ts
+        cursor: ts
+        properties:
+          temperature:
+            column: air_c
+            unit: Cel
+          setpoint:
+            column: setpoint_c
+            unit: Cel
+sync:
+  aggregation: last
+models:
+  q_temp_ahead:
+    question: q_temp_ahead
+    target: Room.temperature
+    candidates:
+      persistence:
+        family: persistence
+      seasonal:
+        family: seasonal_naive
+      ets:
+        family: ets
+    backtest:
+      initial_window: P7D
+      step: P1D
+      min_folds: 3
+    acceptance:
+      metric: mae
+      threshold: 1.0
+      baseline: persistence
+functions:
+  f_latest:
+    description: The value in force of a property, per object, at a version
+    kind: builtin
+    entry: latest
+    complexity: O(|V|)
+    latency_budget: PT2S
+  q_temp_ahead:
+    description: Forecast of each room's temperature by the question's selected model
+    kind: builtin
+    entry: forecast
+    params:
+      question: q_temp_ahead
+    complexity: O(|V|)
+    latency_budget: PT60S
+  f_warmest:
+    description: The temperature of the warmest room
+    kind: builtin
+    entry: aggregate
+    params:
+      property: Room.temperature
+      op: max
+    complexity: O(|V|)
+    latency_budget: PT2S
+  f_policy:
+    description: Which setpoints the setpoint loop proposes to change now
+    kind: registered
+    entry: coldstore:policy
+    complexity: O(|V|)
+    latency_budget: PT30S
+actions:
+  set_setpoint:
+    description: Set the temperature setpoint of a cold room through the plant's control
+      interface
+    control: c_setpoint
+    object_type: Room
+    binding: executor
+    executor:
+      kind: http
+      url: ${COLDSTORE_CONTROL_URL}/rooms/{id}/setpoint
+      method: PUT
+      env:
+        - COLDSTORE_CONTROL_URL
+        - COLDSTORE_CONTROL_TOKEN
+      headers:
+        Authorization: Bearer ${COLDSTORE_CONTROL_TOKEN}
+      body:
+        setpoint_c: "{value}"
+    parameters:
+      value:
+        type: number
+        unit: Cel
+        minimum: -30
+        maximum: 4
+    settle: PT30M
+    tolerance: 0.5
+control_loops:
+  l_setpoint:
+    description: Lowers the setpoint of a room that runs warmer than it should
+    controls:
+      - c_setpoint
+    policy: f_policy
+    interval: PT1H
+fidelity:
+  interval: PT1H
+  window: P2D
+interfaces:
+  ui: true
+runtime:
+  code: code
+env:
+  COLDSTORE_DB_USER:
+    description: User name of the asset register database
+    secret: true
+  COLDSTORE_DB_PASSWORD:
+    description: Password of the asset register database
+    secret: true
+  COLDSTORE_DB_HOST:
+    description: Host name of the asset register database, as seen from a container
+    secret: false
+  COLDSTORE_API_URL:
+    description: Base address of the telemetry interface
+    secret: false
+  COLDSTORE_API_TOKEN:
+    description: Bearer token of the telemetry interface
+    secret: true
+  COLDSTORE_CONTROL_URL:
+    description: Base address of the plant's control interface
+    secret: false
+  COLDSTORE_CONTROL_TOKEN:
+    description: Bearer token of the plant's control interface
+    secret: true
+  COLDSTORE_ALERT_URL:
+    description: Webhook address the twin's failures are sent to
+    secret: true
+  DTA_BASE_URL:
+    description: Address of the twin's API
+    secret: false
+  DTA_API_TOKEN:
+    description: Bearer token of the twin's API
+    secret: true
+  DTA_API_PORT:
+    description: Host port of the twin's API
+    secret: false
+  DTA_UI_PORT:
+    description: Host port of the twin's UI
+    secret: false

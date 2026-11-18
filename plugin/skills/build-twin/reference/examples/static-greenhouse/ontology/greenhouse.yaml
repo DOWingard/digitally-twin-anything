@@ -1,0 +1,49 @@
+id: https://example.org/dta/greenhouse
+name: greenhouse
+description: Greenhouses, the growing beds inside them and the soil moisture measured in each bed.
+prefixes:
+  linkml: https://w3id.org/linkml/
+  gh: https://example.org/dta/greenhouse/
+default_prefix: gh
+default_range: string
+imports:
+  - linkml:types
+
+classes:
+  House:
+    description: One greenhouse.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      name:
+        required: true
+        description: Name the growers use for the house.
+      area:
+        range: float
+        minimum_value: 0
+        description: Floor area of the house.
+        unit:
+          ucum_code: m2
+
+  Bed:
+    description: A growing bed inside a greenhouse.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      house:
+        range: House
+        required: true
+        description: Greenhouse the bed is in.
+      crop:
+        description: What grows in the bed.
+      moisture:
+        range: float
+        minimum_value: 0
+        maximum_value: 100
+        description: Volumetric soil moisture measured by the bed's probe.
+        unit:
+          ucum_code: "%"
+        annotations:
+          dta_role: state
