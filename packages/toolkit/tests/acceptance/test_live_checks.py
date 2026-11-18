@@ -39,7 +39,14 @@ def test_the_skill_lists_its_endpoints_from_the_first_column_of_its_tables() -> 
     assert ("GET", "/objects/{type}/{uid}/links") in static  # the query and `\|` cut off
     assert ("POST", "/graph/subgraph") in static
     assert ("POST", "/sync/runs") not in static and ("POST", "/sync/runs") in live
-    assert set(live) - set(static) == {("POST", "/sync/runs")}
+    only_live = set(live) - set(static)
+    assert ("POST", "/sync/runs") in only_live
+    assert {path.split("/")[1] for _, path in only_live} == {
+        "sync",
+        "fidelity",
+        "actions",
+        "control",
+    }
     # Parameter names are not endpoints; prose outside the tables is not read.
     assert all(path.startswith("/") for _, path in static)
     assert ("GET", "/healthz") not in static

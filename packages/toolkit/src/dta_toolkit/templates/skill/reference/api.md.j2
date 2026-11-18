@@ -92,9 +92,9 @@ As JSON these are paged like every other table; as Arrow or Parquet they come wh
 | `GET /lifecycle/jobs?kind=&state=&lane=` | work the API does in the background, newest first: `id`, `kind`, `lane` (`sync` for sync runs, `compute` for other long work; the jobs of a lane run one at a time, in order), `state` (`queued`, `running`, `succeeded`, `failed`), `result`, `error`, `trace_id`, `duration_ms` |
 | `GET /lifecycle/jobs/{id}` | one job, as `{"data": {...}}` |
 | `GET /lifecycle/logs?level=&since=&context=&trace_id=&service=&limit=` | the twin's own structured log lines, newest first |
-| `GET /lifecycle/schedule` | what the twin's scheduler asks for and when: `now` on the twin's clock and `entries`, each `{id, kind, interval, method, path, key, body}`; empty for a static twin |
+| `GET /lifecycle/schedule` | what the twin's scheduler asks for and when: `now` on the twin's clock and `entries`, each `{id, kind, interval, method, path, key, body}`: the sync run, the fidelity check, the reconciliation of executed actions (when the twin can execute one), each enabled control loop and each function triggered on an interval; empty for a static twin |
 | `GET /lifecycle/notifications` | the last 200 notifications the twin sent since it started, newest first, each with its `status` (`queued`, `delivered`, `failed`, `dropped`, `logged`, `unsent`), `tries` and `http_status`; the address they go to is never shown |
-| `POST /lifecycle/register` body `{"code": <sha256>\|null}` | brings the twin's functions, models and questions in line with its manifest in one version, and none when nothing differs: `functions`, `models` and `questions`, each with what was `created`, `changed` and left `unchanged`, and the `version`. `code` is the hash `POST /artifacts` gave for the twin's packed code |
+| `POST /lifecycle/register` body `{"code": <sha256>\|null}` | brings the twin's functions, models, questions, action types and control loops in line with its manifest in one version, and none when nothing differs: `functions`, `models` and `questions`, each with what was `created`, `changed` and left `unchanged`; `actions` and `loops`, each also with what was `orphaned` (no longer declared: disabled); and the `version`. A new loop is disabled until it is enabled. `code` is the hash `POST /artifacts` gave for the twin's packed code |
 
 {% if live %}
 ## Fidelity
@@ -115,6 +115,31 @@ Whether the twin still keeps what it promised, measured on its own clock at ever
 | `POST /fidelity/corrections` body `{"question", "rung"}` (`recalibrate` or `reselect`) | one correction by hand, as a job: the question's models are evaluated again on recent data |
 | `GET /fidelity/signals?status=` | the observed signals found suspect (`stuck` or `biased`), each with the raw `reading` that is kept and not written to the object |
 | `POST /fidelity/signals/{uid}/clear` body `{"by", "note"}` | takes a signal off the suspect list; its readings are written again |
+
+## Actions
+
+What the twin may do to the real system, and what became of each proposal. An action type carries out a control (`autonomy`: `advisory` is a recommendation only, `supervised` waits for an approval, `autonomous` is executed at once) or only advises. The interlock: nothing is executed at once unless the twin's fidelity is `healthy`; an approval is blocked only while it is `failed`. Every proposal is recorded, whatever became of it.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /actions?at=` | the action types: `control`, `target`, `object_type`, `binding` (`executor` or `advisory`), `autonomy`, `parameters`, `bounds` (`minimum`, `maximum`, `allowed`, `max_step`), `settle`, `tolerance`, `executable`; and `executor_configured` |
+| `GET /actions/{id}?at=` | one action type |
+| `POST /actions/{id}/propose` body `{"object", "params", "reason", "source"}`, optional header `Idempotency-Key` | judges the proposal at the head and records it: `201` with the record (`200` with the record the key made before); `status` is `proposed` (waiting for an approval, or advice only), `executed`, `failed` or `blocked`. An execution is one HTTP call made inside the request (up to 30 s and two retries of a connection). A refusal is `422` with every reason in `errors` and the record's uid in `record` |
+| `GET /actions/records?status=&action=&object=&source=&reconciliation=&limit=&cursor=` | the records, newest proposal first |
+| `GET /actions/records/{uid}` | one record: what was proposed and judged, the decision, the call and its answer, and whether its effect was observed (`reconciliation`: `pending`, `ok`, `mismatch`) |
+| `POST /actions/records/{uid}/approve` body `{"by", "note"}` | approves a proposed supervised action and executes it; `blocked` while the twin's fidelity is `failed` |
+| `POST /actions/records/{uid}/reject` body `{"by", "note"}` | turns a proposed action down |
+| `POST /actions/reconcile`, optional header `Idempotency-Key` | compares every executed action whose `settle` has passed with the observed value: `ok` within `tolerance`, otherwise `mismatch`, which opens an incident of kind `reconcile` (the twin is then `correcting`); an `ok` closes the open incident of an earlier action on the same control and object |
+
+## Control loops
+
+| Endpoint | Returns |
+|---|---|
+| `GET /control/loops?at=` | the loops: `controls`, `policy` (a function), `interval`, `enabled`, `last_run` |
+| `GET /control/loops/{id}?at=` | one loop and what its last run did |
+| `POST /control/loops/{id}/enable` body `{"by"}` | lets the loop run; the scheduler asks for it once per interval |
+| `POST /control/loops/{id}/disable` body `{"by"}` | stops the loop |
+| `POST /control/loops/{id}/run`, optional header `Idempotency-Key` | a run now, as a job of the compute lane (kind `loop`): the policy is asked, and each action it names is proposed as any other, with the loop as its source; the job's result is the run |
 {% endif %}
 
 ## Functions
@@ -125,7 +150,7 @@ What the twin computes: shipped built-ins with the arguments their registration 
 |---|---|
 | `GET /functions` | every function: `id`, `kind` (`builtin`, `registered`), `entry`, the fixed `params`, `latency_budget_ms`, `origin` (`manifest`, `runtime`), `status` (`active`, `disabled`) |
 | `GET /functions/{id}` | one function, with `parameters`: what its entry takes and which of them are fixed |
-| `POST /functions/{id}/run?at=&branch=` body: the arguments by name (a built-in's may be given in the query string instead) | the answer: `value` (a JSON value, or the rows of a table, paged; Arrow and Parquet as elsewhere), `unit`, `interval`, `notes`, the `version` read, `function`, `model`, `provisional` and `reasons`. The function is the one registered now; `at` chooses the data it reads. A function that gives rows to write names the version it wrote in `wrote`; any other run writes nothing |
+| `POST /functions/{id}/run?at=&branch=` body: the arguments by name (a built-in's may be given in the query string instead) | the answer: `value` (a JSON value, or the rows of a table, paged; Arrow and Parquet as elsewhere), `unit`, `interval`, `notes`, the `version` read, `function`, `model`, `provisional` and `reasons`. The function is the one registered now; `at` chooses the data it reads. A function that gives rows to write names the version it wrote in `wrote`; any other run writes nothing. With the header `Idempotency-Key` the run is a job of the compute lane (`202` with `job`, `200` with the job the key made before); its result is the answer, a table as its rows. A function triggered `on_commit` runs after every sync run that wrote; one triggered on an `interval` is asked for by the scheduler; each such run leaves a `TwinFunctionRun` |
 | `POST /functions` body `{id, entry, params, description, latency_budget, env, artifact}` | registers a function while the twin runs: 201 with the function |
 | `DELETE /functions/{id}` | disables a function registered while the twin ran |
 
@@ -189,6 +214,8 @@ Each of these writes a new version on `main`, or on a scenario's branch:
 - scenarios: `POST /scenarios` and `DELETE /scenarios/{id}` record the scenario on `main`; `POST /scenarios/{id}/run` writes the predictions on the scenario's branch and the run's status on `main`;
 - derived data: `POST /derived`;
 - running a function that gives rows to write, through `POST /functions/{id}/run`: the answer names the version written in `wrote`;
+- runs of functions triggered `on_commit` or on an `interval`, each recorded in a `TwinFunctionRun`;
+- actions: `POST /actions/{id}/propose`, `POST /actions/records/{uid}/approve`, `.../reject` and `POST /actions/reconcile` record what was decided, sent and observed; `POST /control/loops/{id}/enable`, `.../disable` and `.../run` record the loop's state and its runs. An executed action changes the real system, not the twin's observed data: that changes when a sync run reads it;
 {% if live %}
 - sync runs: `POST /sync/runs` makes the twin read its sources, which is the only way new observed data arrives.
 {% endif %}
