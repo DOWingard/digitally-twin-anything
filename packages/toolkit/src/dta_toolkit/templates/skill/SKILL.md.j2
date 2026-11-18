@@ -254,6 +254,78 @@ Read `reference/recipes.md` before the first request of each kind. In short:
 
 All endpoints, with parameters: `reference/api.md`. Error codes and what to do about each: `reference/errors.md`.
 
+{% if addons.any %}
+## Other ways in
+
+The owner chose these besides the HTTP API. Each reads the same twin and the same versions, and the rules below hold for each.
+
+{% if addons.sdk %}
+### Python client
+
+The typed Python package `{{ addons.sdk.package }}` is in `{{ addons.sdk.dir }}/` of the twin's workspace. Prefer it to composing requests when you work in Python.
+
+- Install it: `uv pip install <workspace>/{{ addons.sdk.dir }}` (Python 3.12 or later).
+- `Twin()` reads `{{ base_url_env }}` and `{{ token_env }}` from the environment and raises `TwinConfigError` naming each one that is unset.
+- One attribute per object and link type, named after the type in snake_case (`twin.objects("<Type>")` finds one by its schema name), with `get(uid)`, `list(where=, sort=, limit=)`, `history(uid, since=)`, `links(uid, direction=, edge_types=)` and `table(columns=, where=)`. Each takes `at` and `branch` as the API does. Objects come back as Pydantic models of their type; `table` gives a `pyarrow.Table`.
+- `twin.questions.ask("<id>")` asks a question; each question also has a method of its own. `twin.head()` gives the newest version's id.
+- A refusal of the API raises `TwinApiError` with its `status` and `code` (`reference/errors.md`).
+
+```python
+from {{ addons.sdk.package }} import TYPES, Twin
+
+with Twin() as twin:
+    version = twin.head()
+    for name in TYPES:
+        objects = twin.objects(name)
+        some = objects.list(at=version, limit=5)
+        frame = objects.table(at=version)
+{% if questions %}
+    answer = twin.questions.ask({{ questions[0].id | tojson }}, at=version)
+{% endif %}
+```
+
+{% endif %}
+{% if addons.mcp %}
+### MCP tools
+
+The twin's MCP adapter offers each operation of the API as a tool named by the operation's id, over streamable HTTP at `http://127.0.0.1:<port>{{ addons.mcp.path }}`, where `<port>` is the value of `{{ addons.mcp.port_env }}` in the twin's `.env`. Two operations are not offered: uploading and fetching artifacts, which carry only bytes.
+
+- The adapter holds no token. Send `Authorization: Bearer <token>` with every request, from `{{ token_env }}`; without it, or with a wrong one, every tool is refused with HTTP 401 as the API refuses it.
+- A tool that reads a table answers JSON, paged as in the API; for Arrow or Parquet use the API or the Python client.
+- To register it in Claude Code, put this in the project's `.mcp.json`, which takes the values from the environment when it is read:
+
+```json
+{
+  "mcpServers": {
+    "{{ addons.mcp.server }}": {
+      "type": "http",
+      "url": "http://127.0.0.1:${ {{- addons.mcp.port_env -}} }{{ addons.mcp.path }}",
+      "headers": {"Authorization": "Bearer ${ {{- token_env -}} }"}
+    }
+  }
+}
+```
+
+{% endif %}
+{% if addons.sql %}
+### Read-only SQL
+
+The twin's store is open for reading over the MySQL protocol at `127.0.0.1:<port>`, where `<port>` is the value of `{{ addons.sql.port_env }}` in the twin's `.env`. Sign in as `{{ addons.sql.user }}` with the password in `{{ addons.sql.password_env }}`; the database is `{{ addons.sql.database }}`.
+
+- The user may only read this database: every write, every change of schema and every `dolt_*` procedure is refused.
+- Each type is a table named after it in snake_case (`SHOW TABLES` lists them); each version of the API is a commit, and its id is the commit's hash.
+- `dolt_log`'s `date` is when a version was written, not the time of its data; its `message` is JSON with the version's `seq` and `valid_from`.
+
+```sql
+SHOW TABLES;
+SELECT commit_hash, date, message FROM dolt_log LIMIT 5;
+SELECT * FROM `<table>` AS OF '<version id>' LIMIT 10;
+SELECT * FROM `dolt_diff_<table>` WHERE to_commit = '<version id>' LIMIT 10;
+SELECT * FROM `{{ addons.sql.database }}/<branch>`.`<table>` LIMIT 10;
+```
+
+{% endif %}
+{% endif %}
 ## Rules
 
 1. Read the schema before naming a type or property.
@@ -262,7 +334,7 @@ All endpoints, with parameters: `reference/api.md`. Error codes and what to do a
 4. Let the twin do the filtering, the sorting, the counting, the traversal and the history: use `where`, `sort`, `count=true`, the graph endpoints with `edge_where`, and the slice endpoint instead of downloading everything and searching it yourself.
 5. Every value has provenance (`include=provenance`): where it came from, whether it was observed, inferred, assumed or simulated, and when it was true. Quote it when the user asks how a number is known.
 6. Report what the twin says. If the data does not answer a question, say that; do not fill the gap with an estimate presented as the twin's. A null is "no value held", never zero. If a definition leaves a choice open (how to integrate, what counts as an occurrence, which time zone a day is in), state the choice you made with the answer.
-7. Reading never changes the twin, nor does asking a question or forecasting. Running a function changes it only when the function gives rows to write. What else changes it: registrations, evaluations and measurements, scenarios, derived data{% if live %} and sync runs (`POST /sync/runs`){% endif %}{% if fidelity %}; the steps taken on incidents and signals{% endif %}{% if actions %}; proposals, approvals and rejections{% endif %}{% if loops %}; enabling, disabling and running loops{% endif %} (`reference/api.md`, "What changes the twin"). Ask the user before any of these.{% if actions %} A proposal that is executed changes the real system as well.{% endif %} Observed data cannot be edited through the API, and you should not try to reach the twin's database or its sources directly.
+7. Reading never changes the twin, nor does asking a question or forecasting. Running a function changes it only when the function gives rows to write. What else changes it: registrations, evaluations and measurements, scenarios, derived data{% if live %} and sync runs (`POST /sync/runs`){% endif %}{% if fidelity %}; the steps taken on incidents and signals{% endif %}{% if actions %}; proposals, approvals and rejections{% endif %}{% if loops %}; enabling, disabling and running loops{% endif %} (`reference/api.md`, "What changes the twin"). Ask the user before any of these.{% if actions %} A proposal that is executed changes the real system as well.{% endif %} Observed data cannot be edited through the API, and you should not try to reach the twin's database {% if addons.sql %}other than by the read-only SQL above, {% endif %}or its sources directly.
 8. If the user needs something the contract does not cover (a new question, a tighter tolerance, another source), that is a revision of the contract: tell the user it has to be agreed and rebuilt; do not improvise it.
 {% if ui %}
 

@@ -22,6 +22,10 @@ from dta_core.log import Log
 from dta_core.manifest import Manifest
 from jinja2 import Environment, StrictUndefined
 
+from . import addons
+from .sdk import package_name
+from .stack import database_name
+
 log = Log("skill")
 
 SKILL_FORMAT = 1
@@ -303,8 +307,31 @@ def _context(
             {"id": source_id, "description": _one_line(source.description, 200)}
             for source_id, source in sorted((manifest.sources or {}).items())
         ],
+        "addons": _addons(manifest, twin.id),
         **_acting(manifest),
     }
+
+
+def _addons(manifest: Manifest, twin_id: str) -> dict[str, Any]:
+    """How an agent reaches the twin through each add-on its owner selected; None for the others."""
+    chosen = addons.selected(manifest)
+    sdk = mcp = sql = None
+    if chosen.sdk_python:
+        sdk = {"package": package_name(twin_id), "dir": "/".join(addons.SDK_DIR)}
+    if chosen.mcp:
+        mcp = {
+            "server": skill_name(twin_id),
+            "port_env": addons.MCP_PORT_ENV,
+            "path": addons.MCP_PATH,
+        }
+    if chosen.readonly_sql:
+        sql = {
+            "port_env": addons.SQL_PORT_ENV,
+            "user": addons.READER_USER,
+            "password_env": addons.SQL_READER_PASSWORD_ENV,
+            "database": database_name(twin_id),
+        }
+    return {"sdk": sdk, "mcp": mcp, "sql": sql, "any": bool(sdk or mcp or sql)}
 
 
 def _description(context: dict[str, Any]) -> str:
