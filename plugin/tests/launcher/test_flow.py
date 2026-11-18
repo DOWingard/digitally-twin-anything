@@ -178,6 +178,17 @@ def test_static_twin_to_handover_through_the_launcher(
     twin.ok("manifest", "validate")
     twin.ok("manifest", "sign", "--non-interactive", "--approved-by", "Test Operator")
     assert twin.gates() == expect(gaps="passed")
+    # A person at a terminal signs too: the launcher gives the container a terminal.
+    code, shown = kit.on_terminal(
+        ["manifest", "sign"],
+        cwd=twin.root,
+        env=twin.env,
+        reply=(b"type the twin id", twin.id.encode() + b"\r"),
+    )
+    assert code == 0, shown[-2000:]
+    state = json.loads((twin.root / ".dta" / "state.json").read_text(encoding="utf-8"))
+    assert [entry["mode"] for entry in state["signatures"]] == ["non_interactive", "interactive"]
+    assert twin.gates() == expect(gaps="passed")
 
     built, seen, container = twin.build_watched()
     steps = {entry["step"]: (entry["action"], entry["status"]) for entry in built["steps"]}

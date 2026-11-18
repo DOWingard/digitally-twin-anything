@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import os
+import pty
 import secrets
+import select
 import shutil
 import socket
 import subprocess
@@ -93,10 +95,11 @@ def launch(
     cwd: Path,
     env: dict[str, str],
     launcher: Path = LAUNCHER,
+    shell: tuple[str, ...] = (),
     timeout: float = COMMAND_TIMEOUT_S,
 ) -> subprocess.CompletedProcess[str]:
-    """Run the launcher to its end, stdin closed to input."""
-    command = [str(launcher), *args]
+    """Run the launcher to its end, stdin closed to input; by `shell` when one is given."""
+    command = [*shell, str(launcher), *args]
     started = time.perf_counter()
     done = subprocess.run(
         command,
@@ -132,6 +135,59 @@ def native(
         timeout=COMMAND_TIMEOUT_S,
         check=False,
     )
+
+
+def on_terminal(
+    args: Iterable[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    stdout_too: bool = True,
+    reply: tuple[bytes, bytes] | None = None,
+    timeout: float = COMMAND_TIMEOUT_S,
+) -> tuple[int, bytes]:
+    """Run the launcher with a terminal as stdin, and as stdout and stderr when asked.
+
+    With `reply` (prompt, answer) the answer is typed once the prompt was shown.
+    Returns the exit code and everything written to the terminal and the pipes.
+    """
+    main, attached = pty.openpty()
+    try:
+        process = subprocess.Popen(
+            [str(LAUNCHER), *args],
+            cwd=cwd,
+            env=env,
+            stdin=attached,
+            stdout=attached if stdout_too else subprocess.PIPE,
+            stderr=attached if stdout_too else subprocess.PIPE,
+            start_new_session=True,
+        )
+    finally:
+        os.close(attached)
+    seen = b""
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([main], [], [], 0.5)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(main, 65536)
+            except OSError:  # the terminal's other end closed: the launcher is done
+                break
+            if not chunk:
+                break
+            seen += chunk
+            if reply is not None and reply[0] in seen:
+                os.write(main, reply[1])
+                reply = None
+        else:
+            process.kill()
+            raise AssertionError(f"the launcher did not end within {timeout:g} s: {seen[-500:]!r}")
+        piped, _ = process.communicate(timeout=timeout)
+    finally:
+        os.close(main)
+    return process.returncode, seen + (piped or b"")
 
 
 def refusal(done: subprocess.CompletedProcess[str]) -> str:

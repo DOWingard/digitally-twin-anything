@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-import pty
 import secrets
+import shutil
 import statistics
 import subprocess
 import time
@@ -127,46 +127,57 @@ def test_runs_with_stdin_closed(workdir: Path, env: dict[str, str]) -> None:
     assert done.stdout == kit.native(["--help"], cwd=workdir, env=env).stdout
 
 
-def _on_terminal(args: list[str], cwd: Path, env: dict[str, str], *, stdout_too: bool):
-    """Run the launcher with a terminal as stdin (and stdout and stderr when asked)."""
-    main, attached = pty.openpty()
-    try:
-        process = subprocess.Popen(
-            [str(kit.LAUNCHER), *args],
-            cwd=cwd,
-            env=env,
-            stdin=attached,
-            stdout=attached if stdout_too else subprocess.PIPE,
-            stderr=attached if stdout_too else subprocess.PIPE,
-            start_new_session=True,
-        )
-    finally:
-        os.close(attached)
-    seen = b""
-    while True:
-        try:
-            chunk = os.read(main, 65536)
-        except OSError:  # the terminal's other end closed: the launcher is done
-            break
-        if not chunk:
-            break
-        seen += chunk
-    piped, _ = process.communicate(timeout=kit.COMMAND_TIMEOUT_S)
-    os.close(main)
-    return process.returncode, seen + (piped or b"")
-
-
 def test_a_terminal_only_when_stdin_and_stdout_are_terminals(
     workdir: Path, env: dict[str, str]
 ) -> None:
     # The toolkit colours its help only when it writes to a terminal.
-    code, shown = _on_terminal(["--help"], workdir, env, stdout_too=True)
+    code, shown = kit.on_terminal(["--help"], cwd=workdir, env=env)
     assert code == 0, shown
     assert b"\x1b[" in shown and b"Usage" in shown
-    code, piped = _on_terminal(["--help"], workdir, env, stdout_too=False)
+    code, piped = kit.on_terminal(["--help"], cwd=workdir, env=env, stdout_too=False)
     assert code == 0, piped
     assert b"\x1b[" not in piped
     assert piped.decode() == kit.native(["--help"], cwd=workdir, env=env).stdout
+
+
+_SHELLS = {
+    "busybox": ("busybox", "sh"),
+    "dash": ("dash",),
+    "posh": ("posh",),
+    "mksh": ("mksh",),
+    "yash": ("yash", "--posix"),
+}
+POSIX_SHELLS = [
+    pytest.param(command, id=name) for name, command in _SHELLS.items() if shutil.which(name)
+] or [pytest.param((), marks=pytest.mark.skip(reason=f"none of {', '.join(_SHELLS)} installed"))]
+
+
+@pytest.mark.parametrize("shell", POSIX_SHELLS)
+def test_runs_under_another_posix_shell(
+    tmp_path: Path, workdir: Path, home: Path, env: dict[str, str], shell: tuple[str, ...]
+) -> None:
+    done = kit.launch(["--help"], cwd=workdir, env=env, shell=shell)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == kit.native(["--help"], cwd=workdir, env=env).stdout
+
+    refused = kit.launch(["status"], cwd=workdir, env={**env, "DTA_HOME": str(home)}, shell=shell)
+    assert refused.returncode == kit.EX_USAGE
+    assert "is not inside DTA_HOME" in kit.refusal(refused)
+
+    other = (tmp_path / "other, with a comma").resolve()
+    workspace = other / "ws"
+    workspace.mkdir(parents=True)
+    mounted = {**env, "DTA_MOUNTS": str(other), "DTA_LOG_LEVEL": "debug"}
+    args = ["--json", "-w", str(workspace), "init", "--id", f"{kit.TWIN_PREFIX}shell"]
+    done = kit.launch(args, cwd=workdir, env=mounted, shell=shell)
+    assert done.returncode == 0, done.stderr
+    assert (workspace / ".dta" / "state.json").is_file()
+    assert "debug" in _levels(done.stderr)
+
+    args = ["--json", "-w", str(workspace), "install-skill"]
+    done = kit.launch(args, cwd=workdir, env=mounted, shell=shell)
+    assert json.loads(done.stdout)["error"]["code"] == "skill.missing"
+    assert (home / ".claude" / "skills").is_dir()
 
 
 def test_help_is_fast(workdir: Path, env: dict[str, str]) -> None:
