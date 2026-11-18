@@ -1,0 +1,80 @@
+# {{ distribution }}
+
+Typed Python client of the twin **{{ twin_name }}** (`{{ twin_id }}`). It reads the
+twin through its HTTP API: every object and link type of the twin's ontology has an
+accessor that returns the type's Pydantic model, and every question of the twin is
+a method.
+
+This package is generated from the twin's ontology and from the OpenAPI document its
+API serves. Generate it again instead of editing it.
+
+## Install
+
+From the directory that holds this file:
+
+```sh
+uv pip install .        # or: python -m pip install .
+```
+
+Python {{ requires_python }}. It depends on {% for dependency in dependencies %}`{{ dependency }}`{% if not loop.last %}, {% endif %}{% endfor %}.
+
+## Configure
+
+`Twin()` reads two environment variables and refuses to start, naming what is
+missing, without them:
+
+| Variable | What it holds |
+|---|---|
+| `{{ base_url_env }}` | Address of the twin's API, such as `http://127.0.0.1:<port>` |
+| `{{ token_env }}` | The API's bearer token |
+
+The token is sent with each request and kept nowhere else; nothing here logs it.
+
+## Use
+
+```python
+from {{ package }} import Twin
+
+with Twin() as twin:
+{%- if example_type %}
+    first = twin.{{ example_type.attribute }}.list(limit=10)         # typed models, at head
+    earlier = twin.{{ example_type.attribute }}.list(at="#1")        # as of an earlier version
+    one = twin.{{ example_type.attribute }}.get(first[0].uid)
+    edges = twin.{{ example_type.attribute }}.links(one.uid)
+    changes = twin.{{ example_type.attribute }}.history(one.uid)
+    table = twin.{{ example_type.attribute }}.table()               # a pyarrow.Table
+{%- endif %}
+{%- if example_question %}
+    answer = twin.questions.{{ example_question.method }}()
+    print(answer.value, answer.unit)
+{%- endif %}
+```
+
+Every read is of one version of the twin: `at` is `head` (the default), a commit
+id, `#<seq>` or an ISO 8601 time with an offset (the last version at or before it).
+A refused request raises `TwinApiError` with the API's status and problem code.
+
+## Accessors
+
+| Attribute | Type | Kind |
+|---|---|---|
+{%- for type in types %}
+| `twin.{{ type.attribute }}` | `types.{{ type.name }}` | {{ "link" if type.link else "object" }} |
+{%- endfor %}
+
+Each has `get(uid)`, `list(where=..., sort=..., limit=...)`, `history(uid)`,
+`links(uid)` and `table()`; each takes `at` and `branch`.
+
+## Questions
+{% if questions %}
+| Method | Question |
+|---|---|
+{%- for question in questions %}
+| `twin.questions.{{ question.method }}()` | {{ question.text | replace("|", "\\|") }} |
+{%- endfor %}
+
+`twin.questions.ask("<id>", at=..., **arguments)` asks any of them by id and returns
+the API's `AnswerOut`.
+{%- else %}
+The twin declares no question.
+{%- endif %}

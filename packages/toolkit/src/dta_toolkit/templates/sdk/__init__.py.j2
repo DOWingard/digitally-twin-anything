@@ -1,0 +1,33 @@
+"""Typed Python client of the twin {{ json.dumps(twin_name) }} ({{ twin_id }}).
+
+    from {{ package }} import Twin
+
+    twin = Twin()  # reads {{ base_url_env }} and {{ token_env }}
+"""
+
+from . import types
+from .twin import (
+    QUESTIONS,
+    TYPES,
+    Change,
+    Link,
+    Objects,
+    Questions,
+    Twin,
+    TwinApiError,
+    TwinConfigError,
+)
+
+__version__ = "{{ version }}"
+__all__ = [
+    "QUESTIONS",
+    "TYPES",
+    "Change",
+    "Link",
+    "Objects",
+    "Questions",
+    "Twin",
+    "TwinApiError",
+    "TwinConfigError",
+    "types",
+]
