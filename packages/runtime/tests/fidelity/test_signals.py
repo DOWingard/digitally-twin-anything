@@ -154,9 +154,10 @@ def biased_plant(make_plant, shifted_uids):
         plant.sync(i)
     model = plant.activate("level", "Gauge.level", fitted_to=at(4))
     # Origins 4 to 13 are predicted exactly; from origin 14 on the chosen series are
-    # predicted 0.3 too high. Baseline median 0, MAD 0: sigma is the floor 0.05 and
-    # z = -6 at origin 14, scored at check 16: the lower sum is 5.5 > 5.
-    oracle = Oracle(plant, shifted(0.3, since=at(14), uids=shifted_uids))
+    # predicted 1.8 too high. Baseline median 0, MAD 0: sigma is the floor 0.05 and
+    # z = -36 at origin 14, scored at check 16: the lower sum is 35.5 > 5, and the
+    # newest three depart by 0.6 on average, above the tolerance 0.5.
+    oracle = Oracle(plant, shifted(1.8, since=at(14), uids=shifted_uids))
     return plant, model, plant.run(range(6, 18), oracle)
 
 
@@ -173,10 +174,10 @@ def test_a_series_off_on_its_own_is_biased(make_plant):
     signal = fidelity.signal(plant.twin, signal_uid("Gauge.level", G3))
     assert signal["value_at_flag"] == level(G3, 16)
     assert signal["detail"]["question"] == "level"
-    assert signal["detail"]["test"]["z"] == pytest.approx([0.0, 0.0, -6.0])
-    assert signal["detail"]["test"]["s"] == pytest.approx(-5.5)
+    assert signal["detail"]["test"]["z"] == pytest.approx([0.0, 0.0, -36.0])
+    assert signal["detail"]["test"]["s"] == pytest.approx(-35.5)
     value, provenance = stored(plant, "Gauge", "level", G3, at=flagged.version)
-    assert value == pytest.approx(level(G3, 16) + 0.3)
+    assert value == pytest.approx(level(G3, 16) + 1.8)
     assert (provenance["k"], provenance["s"]) == ("inferred", model)
     assert outcomes[17].check["questions"]["level"]["left_out"] == [G3]
 

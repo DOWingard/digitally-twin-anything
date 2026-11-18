@@ -101,12 +101,28 @@ def test_the_cusum_threshold_with_the_floor_on_sigma():
     assert under.sigma == pytest.approx(0.1)
     assert under.upper == pytest.approx(4.5)
     assert not under.alarm
-    # z = 2.5: S = 2, 4, 6 > 5.
-    over = bias_test(flat + [0.25] * 3, TOLERANCE)
-    assert over.upper == pytest.approx(6.0)
+    # z = 2.5: S = 2, 4, 6 > 5; but a quarter of the tolerance is not material.
+    small = bias_test(flat + [0.25] * 3, TOLERANCE)
+    assert small.upper == pytest.approx(6.0)
+    assert small.shift == pytest.approx(0.25)
+    assert not small.alarm
+    # The same steadiness with a shift of the tolerance itself: an alarm.
+    over = bias_test(flat + [1.0] * 3, TOLERANCE)
+    assert over.upper == pytest.approx(28.5) and over.shift == pytest.approx(1.0)
     assert over.alarm
-    falling = bias_test(flat + [-0.25] * 3, TOLERANCE)
-    assert falling.alarm and falling.s == pytest.approx(-6.0)
+    falling = bias_test(flat + [-1.0] * 3, TOLERANCE)
+    assert falling.alarm and falling.s == pytest.approx(-28.5)
+    assert not bias_test(flat + [0.99] * 3, TOLERANCE).alarm
+
+
+def test_a_material_shift_inside_the_series_own_spread_is_no_alarm():
+    # Baseline spread: MAD 1, sigma 1.4826. A shift of 1.2 is material against the
+    # tolerance and still within what the series does by itself.
+    spread = [-2.0, -1.0, 0.0, 1.0, 2.0]
+    found = bias_test(spread + [1.2] * 3, TOLERANCE)
+    assert found.sigma == pytest.approx(1.4826)
+    assert found.shift == pytest.approx(1.2)
+    assert found.upper < 5.0 and not found.alarm
 
 
 def test_the_baseline_leaves_out_the_newest_three():
@@ -139,17 +155,17 @@ def test_series_are_biased_only_when_fewer_than_half_alarm():
 
 def test_the_side_of_an_alarm_is_the_side_that_ended_above_h():
     flat = [0.0] * 5
-    assert bias_test(flat + [0.25] * 3, TOLERANCE).side == 1
-    assert bias_test(flat + [-0.25] * 3, TOLERANCE).side == -1
+    assert bias_test(flat + [1.0] * 3, TOLERANCE).side == 1
+    assert bias_test(flat + [-1.0] * 3, TOLERANCE).side == -1
     assert bias_test(flat + [0.2] * 3, TOLERANCE).side == 0
 
 
 def test_a_series_is_borne_out_only_by_every_other_question_alarming_on_its_side():
     flat = [0.0] * 5
-    rising = bias_test(flat + [0.25] * 3, TOLERANCE)
-    falling = bias_test(flat + [-0.25] * 3, TOLERANCE)
+    rising = bias_test(flat + [1.0] * 3, TOLERANCE)
+    falling = bias_test(flat + [-1.0] * 3, TOLERANCE)
     quiet = bias_test(flat + [0.0] * 3, TOLERANCE)
-    young = bias_test([0.25] * 3, TOLERANCE)
+    young = bias_test([1.0] * 3, TOLERANCE)
     assert uncorroborated(rising, {}) == {}
     assert uncorroborated(rising, {"b": rising, "c": rising}) == {}
     assert uncorroborated(rising, {"b": rising, "c": quiet}) == {"c": NO_ALARM}

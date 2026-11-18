@@ -5,8 +5,9 @@ The plant has two questions on Gauge.level: `level` (2 steps ahead, the one that
 infer the level) and `level_far` (4 steps ahead). Both models end their data at step 4,
 so a check at step c scores origin c - 2 of `level` and c - 4 of `level_far`. At check
 16 `level` has scored origins 4 to 14 and `level_far` 4 to 12: both test every series.
-G3 is predicted 0.3 too high by `level` from origin 14 on (z = -6 at origin 14, the
-lower sum 5.5 > 5); each test below chooses what `level_far` predicts.
+G3 is predicted 1.8 too high by `level` from origin 14 on (z = -36 at origin 14, the
+lower sum 35.5 > 5, the newest three 0.6 off on average against a tolerance of 0.5);
+each test below chooses what `level_far` predicts.
 """
 
 from __future__ import annotations
@@ -88,7 +89,7 @@ def observed(plant: Any, uid: str, at_version: Any = "head") -> tuple[float, str
 
 
 def test_both_questions_alarming_on_the_same_side_flag_the_series(make_plant):
-    plant, outcomes = checked(make_plant, per_model(0.3, 0.3))
+    plant, outcomes = checked(make_plant, per_model(1.8, 1.8))
     flagged = outcomes[16]
     assert [(found["object"], found["reason"]) for found in flagged.flagged] == [(G3, "biased")]
     signals = flagged.check["signals"]
@@ -98,11 +99,11 @@ def test_both_questions_alarming_on_the_same_side_flag_the_series(make_plant):
     signal = fidelity.signal(plant.twin, LEVEL_G3)
     assert (signal["status"], signal["reason"]) == ("suspect", "biased")
     assert signal["detail"]["question"] == "level"
-    assert signal["detail"]["test"]["s"] == pytest.approx(-5.5)
+    assert signal["detail"]["test"]["s"] == pytest.approx(-35.5)
     assert [found["subject"] for found in flagged.opened] == [LEVEL_G3]
     # Inferred as before: the forecast of `level`, the question with the shorter horizon.
     value, kind = observed(plant, G3, flagged.version)
-    assert value == pytest.approx(level(G3, 16) + 0.3) and kind == "inferred"
+    assert value == pytest.approx(level(G3, 16) + 1.8) and kind == "inferred"
     assert [entry["question"] for entry in signals["inferred"]] == ["level"]
     assert outcomes[17].check["questions"]["level"]["left_out"] == [G3]
 
@@ -134,7 +135,7 @@ def nothing_withheld(plant: Any, outcomes: dict[int, Any]) -> None:
 
 
 def test_a_series_the_other_question_tested_and_found_sound_is_not_biased(make_plant):
-    plant, outcomes = checked(make_plant, per_model(0.3, 0.0))
+    plant, outcomes = checked(make_plant, per_model(1.8, 0.0))
     uncorroborated_only(outcomes[16], "no_alarm")
     uncorroborated_only(outcomes[17], "no_alarm")
     nothing_withheld(plant, outcomes)
@@ -142,14 +143,14 @@ def test_a_series_the_other_question_tested_and_found_sound_is_not_biased(make_p
 
 def test_a_series_the_other_question_could_not_test_yet_is_not_biased(make_plant):
     # `level_far` ends its data at step 10: at check 16 it has scored origins 10 to 12.
-    plant, outcomes = checked(make_plant, per_model(0.3, 0.3, far_since=10), far_fitted_to=10)
+    plant, outcomes = checked(make_plant, per_model(1.8, 1.8, far_since=10), far_fitted_to=10)
     assert outcomes[16].check["signals"]["alarming"]["level_far"]["tested"] == 0
     uncorroborated_only(outcomes[16], "not_tested")
     nothing_withheld(plant, outcomes)
 
 
 def test_a_series_the_other_question_finds_off_the_other_way_is_not_biased(make_plant):
-    plant, outcomes = checked(make_plant, per_model(0.3, -0.3))
+    plant, outcomes = checked(make_plant, per_model(1.8, -1.8))
     assert outcomes[16].check["signals"]["alarming"]["level_far"]["biased"] == [G3]
     uncorroborated_only(outcomes[16], "other_side")
     nothing_withheld(plant, outcomes)
@@ -159,9 +160,9 @@ def test_a_control_moving_one_series_for_the_model_that_does_not_see_it_flags_no
     make_plant,
 ):
     # The pump switched at step 14 and moved G3's level: `level`, whose model does not
-    # see the pump, is 1.0 off for G3 from then on; `level_far`, whose model sees it
+    # see the pump, is 1.8 off for G3 from then on; `level_far`, whose model sees it
     # (interventional), stays exact.
-    plant, outcomes = checked(make_plant, per_model(1.0, 0.0), far_interventional=True, until=24)
+    plant, outcomes = checked(make_plant, per_model(1.8, 0.0), far_interventional=True, until=24)
     for i in range(16, 25):
         assert outcomes[i].check["signals"]["alarming"]["level"]["biased"] == [G3], i
         assert {entry["why"] for entry in outcomes[i].check["signals"]["uncorroborated"]} == {

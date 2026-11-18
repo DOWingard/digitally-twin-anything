@@ -11,7 +11,10 @@ Biased: the mean signed residual of a series at its newest origins against its o
 earlier ones. Baseline: the median and 1.4826 * MAD of the earlier residuals (the
 newest three left out), the scale no smaller than a tenth of the tolerance. The
 newest three, standardised, run through a two-sided CUSUM (k = 0.5, H = 5) from
-zero; the series alarms when either side ends above H. Series alarm together when
+zero; the series alarms when either side ends above H and the newest three depart
+from the baseline's median by at least the tolerance on average: a shift smaller
+than what the question tolerates is not material, however steady the series was
+before. Series alarm together when
 the model is wrong, so they are called biased only when fewer than half of the
 tested series of the question alarm at once.
 
@@ -133,6 +136,8 @@ class BiasTest:
     # The CUSUM's two sides after the newest origin.
     upper: float = 0.0
     lower: float = 0.0
+    # Mean of the newest residuals less the baseline's median, in the series' unit.
+    shift: float = 0.0
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -157,6 +162,7 @@ class BiasTest:
             "sigma": self.sigma,
             "z": list(self.z),
             "s": self.s,
+            "shift": self.shift,
         }
 
 
@@ -175,15 +181,17 @@ def bias_test(residuals: Sequence[float], tolerance: float) -> BiasTest:
     for value in z:
         upper = max(0.0, upper + float(value) - BIAS_K)
         lower = max(0.0, lower - float(value) - BIAS_K)
+    shift = float(np.mean(newest) - median)
     return BiasTest(
         True,
-        upper > BIAS_H or lower > BIAS_H,
+        (upper > BIAS_H or lower > BIAS_H) and abs(shift) >= tolerance,
         count,
         median,
         sigma,
         tuple(float(value) for value in z),
         upper,
         lower,
+        shift,
     )
 
 
