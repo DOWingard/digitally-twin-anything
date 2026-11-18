@@ -1,0 +1,41 @@
+id: https://example.org/dta/m7img-plant
+name: m7img_plant
+description: Sites and the level sensors installed at them.
+prefixes:
+  linkml: https://w3id.org/linkml/
+  plant: https://example.org/dta/m7img-plant/
+default_prefix: plant
+default_range: string
+imports:
+  - linkml:types
+
+classes:
+  Site:
+    description: A place where sensors are installed.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      name:
+        required: true
+
+  Sensor:
+    description: A level sensor at a site.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      site:
+        range: Site
+        required: true
+        description: Site the sensor is installed at.
+      kind:
+        description: What the sensor measures.
+      level:
+        range: float
+        minimum_value: 0
+        description: Measured level above the floor.
+        unit:
+          ucum_code: m
+        annotations:
+          dta_role: state

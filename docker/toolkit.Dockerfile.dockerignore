@@ -1,0 +1,13 @@
+# Only the workspace's metadata, its lock file and the sources of the packages
+# the toolkit installs are needed; the runtime's own code is not.
+*
+!pyproject.toml
+!uv.lock
+!packages
+packages/*/tests
+packages/runtime/src
+**/__pycache__
+**/*.pyc
+**/.venv
+**/.env
+**/.env.*

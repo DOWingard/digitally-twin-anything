@@ -1,0 +1,4 @@
+sensor_id,site_id,kind
+n1,north,level
+n2,north,level
+s1,south,level
