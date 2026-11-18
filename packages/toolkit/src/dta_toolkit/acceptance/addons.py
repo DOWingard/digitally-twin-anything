@@ -33,12 +33,12 @@ from dta_core.schema import Ontology
 
 from .. import addons
 from ..envfile import scrub
+from ..stack import STORE_PASSWORD_ENV
 from .client import ApiUnavailable, TwinApi, probe_health, service_url
 from .result import CheckResult
 
 log = Log("acceptance.addons")
 
-API_CONTAINER_PORT = 8000
 _INSTALL_TIMEOUT_S = 600.0
 _RUN_TIMEOUT_S = 300.0
 _OUTPUT_TAIL = 2000
@@ -388,7 +388,7 @@ def sql_readonly(
         return CheckResult(ident, examined, False, {"error": "the ontology has no type"}, remedy)
     table = types[0].table
     password = values.get(addons.SQL_READER_PASSWORD_ENV, "")
-    root_password = values.get("DTA_STORE_PASSWORD", "")
+    root_password = values.get(STORE_PASSWORD_ENV, "")
     first = _first_version(api)
     port = values.get(addons.SQL_PORT_ENV, "")
     try:
