@@ -1,0 +1,245 @@
+"""Running the plugin's launcher, and the toolkit as `uv run dta` runs it, from the tests.
+
+Every test runs the launcher with a small environment of its own: HOME is a
+temporary directory, so nothing is ever written to the real `~/.claude`, and
+the image is the one under test. The twins these tests build have ids that
+start with `m7img-`, compose projects that start with `dta-m7img-` and host
+ports in 13341-13349 on 127.0.0.1.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+
+import pytest
+from dta_core.log import Log
+
+log = Log("tests.launcher")
+
+REPO = Path(__file__).resolve().parents[3]
+LAUNCHER = REPO / "plugin" / "bin" / "dta"
+VERSION_FILE = LAUNCHER.with_name("VERSION")
+SAMPLE = Path(__file__).with_name("sample")
+# What `uv run dta` runs: the entry point installed in this environment.
+NATIVE = Path(sys.executable).with_name("dta")
+
+IMAGE = os.environ.get("DTA_TEST_TOOLKIT_IMAGE") or "dta-toolkit:main"
+RUNTIME_IMAGE = os.environ.get("DTA_TEST_RUNTIME_IMAGE") or "dta-runtime:main"
+
+EX_USAGE = 64
+EX_UNAVAILABLE = 69
+TWIN_PREFIX = "m7img-"
+PROJECT_PREFIX = "dta-m7img-"
+PORTS = range(13341, 13350)
+SECRET_MIN = 6  # shorter values (ports) are not masked by the toolkit either
+COMMAND_TIMEOUT_S = 600.0
+
+# The developer's own docker client configuration, read before any test moves HOME, so
+# that the launcher's docker calls reach the same daemon as the developer's.
+_DOCKER_CONFIG = os.environ.get("DOCKER_CONFIG") or str(Path.home() / ".docker")
+
+
+def _image_present(name: str) -> bool:
+    if shutil.which("docker") is None:
+        return False
+    done = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", name],
+        capture_output=True,
+        check=False,
+    )
+    return done.returncode == 0
+
+
+needs_image = pytest.mark.skipif(
+    not _image_present(IMAGE),
+    reason=f"needs docker and the image {IMAGE} (DTA_TEST_TOOLKIT_IMAGE), built from "
+    "docker/toolkit.Dockerfile",
+)
+needs_runtime = pytest.mark.skipif(
+    not _image_present(RUNTIME_IMAGE),
+    reason=f"needs the image {RUNTIME_IMAGE} (DTA_TEST_RUNTIME_IMAGE), built from "
+    "docker/runtime.Dockerfile",
+)
+
+
+def environment(home: Path, **extra: str) -> dict[str, str]:
+    """The launcher's whole environment: PATH, a temporary HOME, the image under test."""
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "DOCKER_CONFIG": _DOCKER_CONFIG,
+        "DTA_TOOLKIT_IMAGE": IMAGE,
+    }
+    for name in ("DOCKER_HOST", "DOCKER_CONTEXT"):
+        if name in os.environ:
+            env[name] = os.environ[name]
+    env.update(extra)
+    return env
+
+
+def launch(
+    args: Iterable[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    launcher: Path = LAUNCHER,
+    timeout: float = COMMAND_TIMEOUT_S,
+) -> subprocess.CompletedProcess[str]:
+    """Run the launcher to its end, stdin closed to input."""
+    command = [str(launcher), *args]
+    started = time.perf_counter()
+    done = subprocess.run(
+        command,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    log.debug(
+        "launcher finished",
+        args=command[1:3],
+        exit_code=done.returncode,
+        duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
+    )
+    return done
+
+
+def native(
+    args: Iterable[str], *, cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run the toolkit as `uv run dta` does, in this environment's interpreter."""
+    native_env = {name: value for name, value in env.items() if name != "DTA_TOOLKIT_IMAGE"}
+    return subprocess.run(
+        [str(NATIVE), *args],
+        cwd=cwd,
+        env=native_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=COMMAND_TIMEOUT_S,
+        check=False,
+    )
+
+
+def refusal(done: subprocess.CompletedProcess[str]) -> str:
+    """The one line a refusal printed; nothing may have gone to stdout."""
+    lines = done.stderr.splitlines()
+    assert done.stdout == "", done.stdout
+    assert len(lines) == 1, done.stderr
+    assert lines[0].startswith("dta: "), lines[0]
+    return lines[0]
+
+
+def owned_by_caller(paths: Iterable[Path]) -> list[str]:
+    """Paths not owned by this process's uid and gid."""
+    uid, gid = os.getuid(), os.getgid()
+    return [str(p) for p in paths if (p.lstat().st_uid, p.lstat().st_gid) != (uid, gid)]
+
+
+def free_port(taken: set[int] | None = None) -> int:
+    """A port of the assigned range that nothing listens on now."""
+    for port in secrets.SystemRandom().sample(list(PORTS), len(PORTS)):
+        if taken and port in taken:
+            continue
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+        return port
+    raise RuntimeError(f"no free port in {PORTS.start}-{PORTS.stop - 1}")
+
+
+# -- the launcher's container and processes ------------------------------------------
+
+
+def _docker(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
+
+
+def toolkit_container(workdir: Path) -> dict[str, Any] | None:
+    """`docker inspect` of the running container of the image under test working in `workdir`."""
+    listed = _docker("ps", "--quiet", "--no-trunc", "--filter", f"ancestor={IMAGE}")
+    for container in listed.stdout.split():
+        found = _docker("inspect", container)
+        if found.returncode != 0:
+            continue  # it ended in between
+        document = json.loads(found.stdout)[0]
+        if document["Config"]["WorkingDir"] == str(workdir):
+            return document
+    return None
+
+
+def wait_for_container(workdir: Path, process: subprocess.Popen, limit_s: float = 60.0):
+    """The launcher's container once it runs; fails when the launcher ends first."""
+    deadline = time.monotonic() + limit_s
+    while time.monotonic() < deadline:
+        document = toolkit_container(workdir)
+        if document is not None:
+            return document
+        assert process.poll() is None, "the launcher ended before its container was seen"
+        time.sleep(0.1)
+    raise AssertionError(f"no container of {IMAGE} working in {workdir} within {limit_s:g} s")
+
+
+def command_line(pid: int) -> list[str]:
+    """The arguments of a process of this machine, as the process list shows them."""
+    raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    return [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+
+
+def process_list() -> str:
+    """Every process of this machine with its full command line."""
+    return subprocess.run(
+        ["ps", "-eo", "pid,args"], capture_output=True, text=True, check=True
+    ).stdout
+
+
+def container_processes(container: str) -> str:
+    """Every process in a container with its full command line, as the host sees it."""
+    return _docker("top", container, "-eo", "pid,args").stdout
+
+
+def env_values(env_file: Path) -> list[str]:
+    """Values of an environment file long enough that they must never be shown."""
+    values = []
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#") or "=" not in line:
+            continue
+        value = line.split("=", 1)[1]
+        if len(value) >= SECRET_MIN:
+            values.append(value)
+    return values
+
+
+# -- stacks ------------------------------------------------------------------------------
+
+
+def leftovers(project: str) -> dict[str, list[str]]:
+    label = f"label=com.docker.compose.project={project}"
+    return {
+        "containers": _docker("ps", "-aq", "--filter", label).stdout.split(),
+        "volumes": _docker("volume", "ls", "-q", "--filter", label).stdout.split(),
+        "networks": _docker("network", "ls", "-q", "--filter", label).stdout.split(),
+    }
+
+
+def remove_project(project: str) -> None:
+    """Take one of these tests' stacks down with its volumes, by its project name."""
+    assert project.startswith(PROJECT_PREFIX), project
+    done = _docker("compose", "--project-name", project, "down", "--volumes", "--remove-orphans")
+    if done.returncode != 0:
+        log.warn("compose down by project name failed", project=project, stderr=done.stderr[-500:])

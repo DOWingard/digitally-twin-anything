@@ -1,0 +1,105 @@
+# A small static twin: two types, three CSV files, four hours of readings.
+# The tests give it a twin id of its own and the runtime image under test.
+twin:
+  id: m7img-sample
+  name: Plant levels (launcher test)
+contract:
+  purpose: Show the level of each sensor of the plant and how it changed
+  tier: static
+  questions:
+    q_level:
+      text: What was the level of each sensor at a given time?
+      kind: descriptive
+      priority: 1
+      tolerance:
+        metric: mae
+        value: 0.1
+        unit: m
+      staleness: P1D
+      targets:
+        - Sensor.level
+      function: f_latest
+      example:
+        property: Sensor.level
+  boundary:
+    state:
+      - Sensor.level
+    observations:
+      - Sensor.level
+ontology:
+  path: ontology/plant.yaml
+runtime:
+  image: dta-runtime:main
+sources:
+  plant:
+    description: CSV files the plant exports
+    connector: file
+    location: file://${M7IMG_DATA_DIR}
+    env:
+      - M7IMG_DATA_DIR
+    options:
+      datasets:
+        sites:
+          glob: sites.csv
+          format: csv
+        sensors:
+          glob: sensors.csv
+          format: csv
+        readings:
+          glob: readings.csv
+          format: csv
+    mappings:
+      sites:
+        dataset: sites
+        object_type: Site
+        identity:
+          - site_id
+        properties:
+          name:
+            column: name
+      sensors:
+        dataset: sensors
+        object_type: Sensor
+        identity:
+          - sensor_id
+        properties:
+          site:
+            column: site_id
+          kind:
+            column: kind
+      levels:
+        dataset: readings
+        object_type: Sensor
+        identity:
+          - sensor_id
+        valid_time: timestamp
+        properties:
+          level:
+            column: level
+            unit: m
+sync:
+  backfill_interval: PT1H
+functions:
+  f_latest:
+    description: Latest value of a property
+    kind: builtin
+    entry: latest
+    complexity: O(|V|)
+    latency_budget: PT1S
+interfaces:
+  ui: false
+env:
+  M7IMG_DATA_DIR:
+    description: Folder holding the plant's CSV files
+    secret: false
+  DTA_BASE_URL:
+    description: Twin API address
+    secret: false
+  DTA_API_TOKEN:
+    description: Twin API token
+  DTA_API_PORT:
+    description: Twin API port on the host
+    secret: false
+  DTA_UI_PORT:
+    description: Twin UI port on the host
+    secret: false
