@@ -125,7 +125,9 @@ def test_the_action_types_and_loops_are_listed_as_registered(acting: MakeActing)
     world.refused(world.get("/control/loops/nothing"), 404, "action.loop_not_found")
 
 
-# What each autonomy comes to in each fidelity state: (proposal, after an approval).
+# What each autonomy comes to in each fidelity state: (proposal, after an approval). The
+# twin is brought into `correcting` by a reconcile incident, which blocks an autonomous
+# action; what other incidents do is the next test's.
 EXPECTED = {
     "unknown": {"advisory": "proposed", "supervised": "executed", "autonomous": "blocked"},
     "healthy": {"advisory": "proposed", "supervised": "executed", "autonomous": "executed"},
@@ -157,11 +159,13 @@ def test_each_autonomy_in_each_fidelity_state(acting: MakeActing, state: str):
     assert decided["status"] == expected["supervised"]
     assert decided["approval"]["by"] == "operator@plant"
 
-    # Autonomous: executed only while the twin is healthy.
+    # Autonomous: executed while the twin is healthy, or correcting with no stale or
+    # reconcile incident open.
     autonomous = world.proposed("set_pump", PUMP, True)
     assert autonomous["status"] == expected["autonomous"]
     if autonomous["status"] == "blocked":
         assert autonomous["reasons"] and autonomous["execution"] is None
+        assert autonomous["reasons"][0]["message"].startswith(f"the twin is {state}")
     else:
         assert autonomous["execution"]["http_status"] == 200
 
@@ -174,6 +178,75 @@ def test_each_autonomy_in_each_fidelity_state(acting: MakeActing, state: str):
     ]
     assert sorted(event["subject"] for event in told if event["type"] == BLOCKED) == sorted(blocked)
     assert all(event["data"]["fidelity"] == state for event in told)
+
+
+# Per kind of incident open: whether an autonomous action is executed, and what the
+# reason of a block says besides the incident's uid.
+WITH_INCIDENT = {
+    "breach": (True, None),
+    "signal": (True, None),
+    "stale": (False, "the data is too old to decide on"),
+    "reconcile": (False, "an earlier command did not take effect"),
+}
+
+
+@pytest.mark.parametrize("kind", list(WITH_INCIDENT))
+def test_an_autonomous_action_and_a_loop_s_run_with_an_incident_open(acting: MakeActing, kind: str):
+    world = acting(with_webhook=True, retry_budget=2)
+    world.into("healthy", 2)
+    incident = world.opened(kind, 7)
+    executes, why = WITH_INCIDENT[kind]
+    assert world.state() == "correcting"
+
+    pumped = world.proposed("set_pump", PUMP, True)
+    assert pumped["fidelity"] == "correcting"
+    if executes:
+        assert pumped["status"] == "executed"
+        assert pumped["reasons"] == [] and pumped["execution"]["http_status"] == 200
+    else:
+        assert pumped["status"] == "blocked" and pumped["execution"] is None
+        (reason,) = pumped["reasons"]
+        assert reason["member"] == "fidelity"
+        assert kind in reason["message"] and incident in reason["message"]
+        assert why in reason["message"]
+        (told,) = world.wait_events(1, BLOCKED)
+        assert (told["subject"], told["data"]["reasons"]) == (pumped["uid"], [reason])
+
+    # A loop's run is judged the same way: its pump executed or blocked, its valve
+    # waiting for an approval.
+    world.post("/control/loops/pumping/enable", json={"by": "operator@plant"})
+    run = world.done(world.post("/control/loops/pumping/run"))
+    assert (run["state"], run["proposed"], run["awaiting"]) == ("correcting", 2, 1)
+    assert (run["executed"], run["blocked"]) == ((1, 0) if executes else (0, 1))
+    pump = next(found for found in run["records"] if found["action"] == "set_pump")
+    if not executes:
+        assert incident in world.record(pump["uid"])["reasons"][0]["message"]
+    assert len(world.calls()) == (2 if executes else 0)
+
+
+def test_an_autonomous_action_blocked_by_a_stale_incident_executes_once_it_resolves(
+    acting: MakeActing,
+):
+    world = acting(retry_budget=2)
+    world.into("healthy", 2)
+    incident = world.opened("stale", 3)
+    blocked = world.proposed("set_pump", PUMP, True)
+    assert (blocked["status"], blocked["fidelity"]) == ("blocked", "correcting")
+    assert incident in blocked["reasons"][0]["message"]
+    world.post("/control/loops/pumping/enable", json={"by": "operator@plant"})
+    run = world.done(world.post("/control/loops/pumping/run"))
+    assert (run["state"], run["executed"], run["blocked"]) == ("correcting", 0, 1)
+    assert world.calls() == []
+
+    # Fresh data again: the incident resolves, and the same proposal is executed.
+    assert world.check(4, fresh=True) == "healthy"
+    world.clock.set(at(4))
+    assert world.ok(f"/fidelity/incidents/{incident}")["data"]["status"] == "resolved"
+    pumped = world.proposed("set_pump", PUMP, True)
+    assert (pumped["status"], pumped["fidelity"]) == ("executed", "healthy")
+    run = world.done(world.post("/control/loops/pumping/run"))
+    assert (run["state"], run["executed"], run["blocked"]) == ("healthy", 1, 0)
+    assert len(world.calls()) == 2
 
 
 def test_the_interlock_holds_while_the_twin_failed_and_lets_go_once_it_recovered(
