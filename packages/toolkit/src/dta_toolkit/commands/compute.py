@@ -81,10 +81,11 @@ def _counts_text(registered: Mapping[str, Any]) -> list[str]:
 
 @command
 def register(ctx: typer.Context) -> None:
-    """Register the manifest's functions, models and questions with the running twin.
+    """Register the manifest's functions, models, questions, actions and loops with the twin.
 
     The twin's own code is packed and uploaded first when the manifest names it
-    (runtime.code); nothing is written when nothing differs.
+    (runtime.code); nothing is written when nothing differs. A new control loop is
+    registered disabled.
     """
     workspace = session(ctx).workspace
     with _api(ctx) as (manifest, api, secrets):

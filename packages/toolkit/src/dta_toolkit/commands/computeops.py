@@ -50,8 +50,17 @@ EVALUATE_FAILED = "models.evaluate_failed"
 MEASURE_FAILED = "questions.measure_failed"
 CODE_OUTSIDE = "code.outside_workspace"
 # What `register` answers per registry for what the manifest no longer has.
-ORPHANED = {"functions": "disabled", "models": "retired", "questions": "orphaned"}
-SECTIONS = ("functions", "models", "questions")
+ORPHANED = {
+    "functions": "disabled",
+    "models": "retired",
+    "questions": "orphaned",
+    "actions": "orphaned",
+    "loops": "orphaned",
+}
+SECTIONS = ("functions", "models", "questions", "actions", "loops")
+# Sections whose `orphaned` names only what this registration disabled; a question no
+# longer declared is named on every registration and writes nothing.
+ORPHANS_WRITTEN = ("functions", "models", "actions", "loops")
 
 
 # -- reading -----------------------------------------------------------------------------
@@ -186,7 +195,7 @@ def register(api: TwinApi, code: str | None) -> dict[str, Any]:
         lists[section] = {name: uids for name, uids in parts.items() if name != "unchanged"}
     written = any(
         counts[section][name] for section in SECTIONS for name in ("created", "changed")
-    ) or any(counts[section]["orphaned"] for section in ("functions", "models"))
+    ) or any(counts[section]["orphaned"] for section in ORPHANS_WRITTEN)
     result = {
         "code": code,
         "counts": counts,

@@ -453,9 +453,31 @@ class Build:
             )
         return found
 
+    def _api_container(self) -> str | None:
+        row = next((r for r in self.stack.services() if r["service"] == API_SERVICE), None)
+        return row.get("id") if row is not None and row.get("state") == RUNNING else None
+
     def api(self) -> dict[str, Any]:
         worker = self._worker_up()
+        # The API reads its notification and its executors once, when it starts. Compose
+        # makes its container anew exactly when its configuration changed: the variables
+        # it is given, or the label that digests what it sets up at its start. Anything
+        # else leaves it running, with the jobs and keys it holds in memory, and leaves
+        # the scheduler, which remembers the boundaries it asked for, running too.
+        before = self._api_container()
         self.stack.up(API_SERVICE)
+        after = self._api_container()
+        start = {
+            "start_config": self.stack.plan.api_start,
+            "variables": list(self.stack.plan.api_env),
+            "started": before is None,
+            "restarted": before is not None and before != after,
+        }
+        if start["restarted"]:
+            log.info(
+                "the API was started anew: what it sets up at its start changed",
+                start_config=self.stack.plan.api_start,
+            )
         with TwinApi(self.manifest, self.env) as client:
             health = client.wait_healthy()
             if health.status_code != 200:
@@ -472,6 +494,7 @@ class Build:
             "manifest_hash": (body.get("manifest") or {}).get("hash"),
             "head": body.get("head"),
             "versions": body.get("versions"),
+            "api_start": start,
         }
         if worker is not None:
             served["worker"] = {**worker, **((body.get("compute") or {}).get("worker") or {})}
@@ -580,8 +603,19 @@ class Build:
         return sorted((contract.questions or {}) if contract else {})
 
     def functions(self) -> dict[str, Any]:
-        if not (self.manifest.functions or self.manifest.models or self._question_ids()):
-            raise Skipped("the manifest declares no function, no model and no question")
+        manifest = self.manifest
+        if not (
+            manifest.functions
+            or manifest.models
+            or self._question_ids()
+            or manifest.actions
+            or manifest.control_loops
+        ):
+            raise Skipped(
+                "the manifest declares no function, model, question, action or control loop"
+            )
+        # A loop is registered disabled and keeps whether it is enabled when it changes:
+        # the build never enables one.
         with TwinApi(self.manifest, self.env) as client:
             self.registered = computeops.register(client, self.code_sha)
         return self.registered
@@ -736,6 +770,14 @@ class Build:
         }
 
 
+_GATE_HINTS = {
+    4: "The manifest changed since it was validated: run dta manifest validate. A change "
+    "outside contract needs no new signature.",
+    5: "Close the gaps and errors dta manifest validate --complete lists; when the contract "
+    "changed, have it agreed and signed again (dta manifest sign).",
+}
+
+
 def _refuse_unless_ready(ctx: typer.Context, workspace: Workspace, manifest: Manifest) -> None:
     outcomes = evaluate_gates(gate_inputs(workspace, manifest))
     unpassed = [o for o in outcomes if o.stage <= LAST_REQUIRED_STAGE and not o.passed]
@@ -746,6 +788,11 @@ def _refuse_unless_ready(ctx: typer.Context, workspace: Workspace, manifest: Man
     lines = [
         f"  {o.stage} {o.name:<10} {o.verdict.value:<13} {'; '.join(o.reasons)}" for o in unpassed
     ]
+    # A revision outside the contract needs the design checked again, not a signature.
+    hints = [_GATE_HINTS[o.stage] for o in unpassed if o.stage in _GATE_HINTS]
+    if hints:
+        result["next"] = hints
+        lines += ["", *hints]
     fail_check(
         ctx,
         "build.not_ready",
@@ -767,11 +814,29 @@ def _text(outcomes: list[dict[str, Any]]) -> str:
             note = f"{note}; {detail.get('reason')}"
         elif entry.get("step") == "image" and detail.get("action"):
             note = f"{note}; {detail['action']} {detail.get('tag')}"
+        elif entry.get("step") == "api" and (detail.get("api_start") or {}).get("restarted"):
+            note = f"{note}; started anew: what it sets up at its start changed"
+        elif entry.get("step") == "functions" and detail.get("counts"):
+            note = f"{note}; {_registered_text(detail['counts'])}"
         lines.append(
             f"{entry['step']:<9} {entry['action']:<7} {entry['status']!s:<8} {note}".rstrip()
         )
         lines.extend(f"  warning: {text}" for text in _warnings(entry))
     return "\n".join(lines)
+
+
+def _registered_text(counts: dict[str, dict[str, int]]) -> str:
+    """What a registration changed, per section; `nothing changed` when nothing did."""
+    parts = []
+    for section, found in counts.items():
+        changed = [
+            f"{found[name]} {name}"
+            for name in ("created", "changed", "orphaned")
+            if found.get(name) and (name != "orphaned" or section in computeops.ORPHANS_WRITTEN)
+        ]
+        if changed:
+            parts.append(f"{section} {', '.join(changed)}")
+    return "; ".join(parts) or "nothing changed"
 
 
 def _warnings(entry: dict[str, Any]) -> list[str]:
