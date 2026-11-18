@@ -71,6 +71,13 @@ def value_text(value: Any) -> str:
     return str(value)
 
 
+def exact_text(value: Any) -> str:
+    """A value as it was sent or seen, to its last digit; a whole float shows no `.0`."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return value_text(value)
+
+
 def with_unit(text: str, unit: str | None) -> str:
     return f"{text} {unit}" if unit and text else text
 
@@ -523,6 +530,8 @@ X_AXIS_TITLE = "time scored (data time)"
 POINTS_HELP = "Filled: counted in the window of the latest check; hollow: not counted."
 INCIDENTS_HEADING = "Incidents, newest first"
 STATUS_FILTER_LABEL = "status"
+# What a filter with nothing chosen lets through.
+FILTER_ANY = "any"
 INCIDENT_COLUMNS = {
     "kind": "kind",
     "subject": "subject",
@@ -822,7 +831,7 @@ def bounds_text(bounds: dict[str, Any] | None) -> str:
 
 def params_text(params: dict[str, Any] | None) -> str:
     """`value = 20`, each parameter of a proposal."""
-    return ", ".join(f"{name} = {value_text(value)}" for name, value in (params or {}).items())
+    return ", ".join(f"{name} = {exact_text(value)}" for name, value in (params or {}).items())
 
 
 def reason_text(found: dict[str, Any]) -> str:
@@ -873,9 +882,9 @@ def execution_lines(execution: dict[str, Any]) -> list[str]:
 
 def observed_lines(observed: dict[str, Any], reconciled_at: str | None) -> list[str]:
     """`observed 11 against expected 20 (difference 9, tolerance 0.5)`, where and when."""
-    value, expected = value_text(observed.get("value")), value_text(observed.get("expected"))
-    difference = value_text(observed.get("difference"))
-    tolerance = value_text(observed.get("tolerance"))
+    value, expected = exact_text(observed.get("value")), exact_text(observed.get("expected"))
+    difference = exact_text(observed.get("difference"))
+    tolerance = exact_text(observed.get("tolerance"))
     lines = [
         f"observed {value} against expected {expected} "
         f"(difference {difference}, tolerance {tolerance})"

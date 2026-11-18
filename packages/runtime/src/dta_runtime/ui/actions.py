@@ -228,13 +228,19 @@ def layout() -> html.Div:
                     field(
                         T.STATUS_FILTER_LABEL,
                         dcc.Dropdown(
-                            id=ids.RECORDS_STATUS, options=[], placeholder="any", searchable=False
+                            id=ids.RECORDS_STATUS,
+                            options=[],
+                            placeholder=T.FILTER_ANY,
+                            searchable=False,
                         ),
                     ),
                     field(
                         T.ACTION_FILTER_LABEL,
                         dcc.Dropdown(
-                            id=ids.RECORDS_ACTION, options=[], placeholder="any", searchable=False
+                            id=ids.RECORDS_ACTION,
+                            options=[],
+                            placeholder=T.FILTER_ANY,
+                            searchable=False,
                         ),
                     ),
                 ],

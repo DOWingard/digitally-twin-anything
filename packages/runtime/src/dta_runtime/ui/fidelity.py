@@ -512,7 +512,10 @@ def layout() -> html.Div:
                 field(
                     T.STATUS_FILTER_LABEL,
                     dcc.Dropdown(
-                        id=ids.INCIDENTS_STATUS, options=[], placeholder="any", searchable=False
+                        id=ids.INCIDENTS_STATUS,
+                        options=[],
+                        placeholder=T.FILTER_ANY,
+                        searchable=False,
                     ),
                 ),
                 className="filters",
