@@ -261,6 +261,8 @@ def test_no_secret_reaches_a_command_line_or_the_container(
 
     host = container["HostConfig"]
     assert host["NetworkMode"] == "host" and host["ReadonlyRootfs"] is True
+    # Compiled modules of an environment made in /tmp can be loaded.
+    assert "exec" in host["Tmpfs"]["/tmp"].split(",")
     assert container["Config"]["User"] == f"{os.getuid()}:{os.getgid()}"
     mounts = {m["Destination"]: m["Source"] for m in container["Mounts"]}
     assert mounts[str(workdir)] == str(workdir)

@@ -295,10 +295,12 @@ gid=$(id -g) || refuse "$EX_UNAVAILABLE" "the caller's gid cannot be read"
 
 arguments=$#
 bind_value "$socket" /var/run/docker.sock
+# /tmp allows execution: a check installs the generated client into an environment
+# there, and compiled modules cannot be loaded from a mount that forbids it.
 set -- "$@" docker run --rm --pull never --init \
 	--network host \
 	--user "$uid:$gid" \
-	--read-only --tmpfs /tmp \
+	--read-only --tmpfs /tmp:exec \
 	--cap-drop ALL --security-opt no-new-privileges \
 	--log-driver none \
 	--mount "$bind"
