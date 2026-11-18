@@ -10,6 +10,7 @@ and no analysis methods.
 from __future__ import annotations
 
 import json
+import keyword
 import re
 from dataclasses import dataclass
 from datetime import timedelta
@@ -21,6 +22,10 @@ from dta_core.errors import DtaError
 from dta_core.log import Log
 from dta_core.manifest import Manifest
 from jinja2 import Environment, StrictUndefined
+
+from . import addons
+from .sdk import REQUIRES_PYTHON, package_name
+from .stack import database_name
 
 log = Log("skill")
 
@@ -41,6 +46,7 @@ REMODEL_FILE = "reference/remodel.md"
 _DESCRIPTION_MAX = 900
 _PURPOSE_MAX = 300
 _QUESTION_MAX = 120
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class SkillError(DtaError):
@@ -97,6 +103,17 @@ def _method(function: Any) -> str | None:
         f"{key} = {value}" for key, value in sorted((function.params or {}).items())
     )
     return f"{text} ({settings})" if settings else text
+
+
+def _call(question_id: str, example: dict[str, Any] | None) -> str:
+    """The arguments of a Python call that asks the question with its example."""
+    arguments = [json.dumps(question_id)]
+    if example:
+        if all(_IDENTIFIER.match(key) and not keyword.iskeyword(key) for key in example):
+            arguments += [f"{key}={value!r}" for key, value in example.items()]
+        else:
+            arguments.append(f"**{example!r}")
+    return ", ".join(arguments)
 
 
 def _number(value: Any) -> str:
@@ -274,6 +291,7 @@ def _context(
             "tolerance": _tolerance(question),
             "staleness": _duration(question.staleness),
             "targets": list(question.targets or []),
+            "call": _call(qid, question.example),
         }
         for qid, question in sorted(
             (contract.questions or {}).items(),
@@ -303,8 +321,35 @@ def _context(
             {"id": source_id, "description": _one_line(source.description, 200)}
             for source_id, source in sorted((manifest.sources or {}).items())
         ],
+        "addons": _addons(manifest, twin.id),
         **_acting(manifest),
     }
+
+
+def _addons(manifest: Manifest, twin_id: str) -> dict[str, Any]:
+    """How an agent reaches the twin through each add-on its owner selected; None for the others."""
+    chosen = addons.selected(manifest)
+    sdk = mcp = sql = None
+    if chosen.sdk_python:
+        sdk = {
+            "package": package_name(twin_id),
+            "dir": "/".join(addons.SDK_DIR),
+            "python": REQUIRES_PYTHON.removeprefix(">="),
+        }
+    if chosen.mcp:
+        mcp = {
+            "server": skill_name(twin_id),
+            "port_env": addons.MCP_PORT_ENV,
+            "path": addons.MCP_PATH,
+        }
+    if chosen.readonly_sql:
+        sql = {
+            "port_env": addons.SQL_PORT_ENV,
+            "user": addons.READER_USER,
+            "password_env": addons.SQL_READER_PASSWORD_ENV,
+            "database": database_name(twin_id),
+        }
+    return {"sdk": sdk, "mcp": mcp, "sql": sql, "any": bool(sdk or mcp or sql)}
 
 
 def _description(context: dict[str, Any]) -> str:

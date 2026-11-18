@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from functools import cached_property
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -24,6 +25,7 @@ from dta_core.manifest.checks import (
 )
 from dta_core.ontology import OntologyError, load_ontology, type_signature
 
+from .. import addons
 from ..envfile import read_env, scrub
 from ..output import session
 from ..stack import Stack
@@ -130,13 +132,25 @@ def ontology_path(workspace: Workspace, manifest: Manifest) -> Path | None:
     return workspace.root / relative if relative else None
 
 
+class _TwinGateInputs(GateInputs):
+    """The gates' inputs with what the toolkit knows of the add-ons.
+
+    A selected add-on that needs a variable the manifest does not declare is an
+    error; a declared variable that only an add-on uses is not reported as unused.
+    """
+
+    @cached_property
+    def findings(self) -> list[Finding]:
+        return addons.without_false_unused(self.manifest, GateInputs.findings.func(self))
+
+
 def gate_inputs(workspace: Workspace, manifest: Manifest) -> GateInputs:
     state = workspace.load_state()
-    return GateInputs(
+    return _TwinGateInputs(
         manifest,
         recorded=state.gates,
         signatures=state.signatures,
-        extra_findings=ontology_checks(workspace, manifest),
+        extra_findings=[*ontology_checks(workspace, manifest), *addons.findings(manifest)],
     )
 
 

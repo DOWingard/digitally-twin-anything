@@ -64,10 +64,7 @@ KEY_NAMES = {
 # no code of the tool reads them, so this list fails loudly once one does.
 RECORDED_ONLY = (
     "contract.cadence_preference",
-    "contract.addons.sdk_python",
-    "contract.addons.mcp",
     "contract.addons.llm_extraction",
-    "contract.addons.readonly_sql",
     "contract.hosting",
 )
 

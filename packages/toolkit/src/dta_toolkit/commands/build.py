@@ -29,6 +29,11 @@ backtested (every one with `--force` or from `--from models`), and
 asks the API only for what differs, so building a built twin again builds no
 image, uploads nothing, registers nothing, evaluates nothing and measures
 nothing.
+
+The add-ons follow `contract.addons` on every build, on and off alike: `store`
+publishes the store's port and grants the reader for read-only SQL, or takes both
+away; `mcp` starts the MCP adapter, or removes its container; `sdk` generates the
+typed Python client when what it is made from changed, or removes it.
 """
 
 from __future__ import annotations
@@ -45,12 +50,14 @@ from dta_core.log import Log
 from dta_core.manifest import Manifest, manifest_hash
 from dta_core.manifest.checks import evaluate_gates, subject_of
 
-from .. import workerimage
+from .. import addons, workerimage
 from ..acceptance import ApiUnavailable, Context, TwinApi, probe_health, service_url, smoke
 from ..envfile import read_env
 from ..output import command, emit, session
+from ..sdk import ensure_sdk, remove_sdk
 from ..stack import (
     API_SERVICE,
+    MCP_SERVICE,
     SCHEDULER_SERVICE,
     STORE_SERVICE,
     UI_SERVICE,
@@ -94,7 +101,9 @@ STEPS = (
     "models",
     "questions",
     "ui",
+    "mcp",
     "skill",
+    "sdk",
 )
 # The only step whose earlier result may stand in for running it again.
 REUSABLE_STEPS = frozenset({"load"})
@@ -203,7 +212,9 @@ class Build:
             "models": self.models,
             "questions": self.questions,
             "ui": self.ui,
+            "mcp": self.mcp,
             "skill": self.skill,
+            "sdk": self.sdk,
         }
 
     # -- the record -----------------------------------------------------------
@@ -314,7 +325,34 @@ class Build:
         row = next((r for r in self.stack.services() if r["service"] == STORE_SERVICE), None)
         if row is None or row["state"] != "running" or row["health"] != "healthy":
             raise StepFailed("the store is not running and healthy", {"service": row})
-        return {"state": row["state"], "health": row["health"]}
+        return {"state": row["state"], "health": row["health"], "reader": self._reader()}
+
+    def _reader(self) -> dict[str, Any]:
+        """Grant the store's reader exactly `SELECT` on the twin's database, or drop the
+        reader when read-only SQL is off. Granting on a database not created yet holds."""
+        if not self.stack.plan.readonly_sql:
+            self.stack.store_sql(addons.drop_reader_sql())
+            log.info("the store's reader is absent: read-only SQL is off")
+            return {"user": addons.READER_USER, "present": False, "published": False}
+        statements = addons.grant_reader_sql(
+            self.stack.plan.database, addons.reader_password(self.env)
+        )
+        results = self.stack.store_sql(statements)
+        grants = [
+            value
+            for result in results
+            for row in (result.get("rows") or [] if isinstance(result, dict) else [])
+            for value in row.values()
+        ]
+        expected = f"GRANT SELECT ON `{self.stack.plan.database}`.* TO `{addons.READER_USER}`@`%`"
+        if expected not in grants or len(grants) != 2:
+            raise StepFailed(
+                f"the store's reader {addons.READER_USER} does not hold exactly SELECT on "
+                f"{self.stack.plan.database}",
+                {"grants": grants},
+            )
+        log.info("the store's reader may read the twin's database and nothing else")
+        return {"user": addons.READER_USER, "present": True, "published": True, "grants": grants}
 
     def install(self) -> dict[str, Any]:
         text = self.ontology_file.read_text(encoding="utf-8")
@@ -736,6 +774,41 @@ class Build:
             raise StepFailed("GET /healthz on the UI did not answer 200", {"status": status})
         return {"status": status}
 
+    def mcp(self) -> dict[str, Any]:
+        if not self.stack.plan.mcp:
+            if any(row["service"] == MCP_SERVICE for row in self.stack.services()):
+                # The compose file no longer has the service; its container is an orphan.
+                self.stack.up(API_SERVICE, remove_orphans=True)
+                left = [r for r in self.stack.services() if r["service"] == MCP_SERVICE]
+                if left:
+                    raise StepFailed("the MCP adapter's container is still there", {"left": left})
+                log.info("the MCP adapter was removed: the add-on is off")
+                raise Skipped("contract.addons.mcp is false; the adapter was removed")
+            raise Skipped("contract.addons.mcp is false")
+        self.stack.up(MCP_SERVICE)
+        status = probe_health(service_url(self.env, addons.MCP_PORT_ENV))
+        if status != 200:
+            raise StepFailed(
+                "GET /healthz on the MCP adapter did not answer 200", {"status": status}
+            )
+        return {"status": status, "path": addons.MCP_PATH, "port_variable": addons.MCP_PORT_ENV}
+
+    def sdk(self) -> dict[str, Any]:
+        if not addons.selected(self.manifest).sdk_python:
+            removed = remove_sdk(self.workspace)
+            if removed:
+                raise Skipped("contract.addons.sdk_python is false; the client package was removed")
+            raise Skipped("contract.addons.sdk_python is false")
+        with TwinApi(self.manifest, self.env) as client:
+            response = client.get(f"{API}/openapi.json")
+            if response.status_code != 200:
+                raise StepFailed(
+                    f"GET {API}/openapi.json answered {response.status_code}",
+                    {"status": response.status_code},
+                )
+            spec = response.json()
+        return ensure_sdk(self.workspace, self.manifest, self.ontology_file, spec)
+
     def skill(self) -> dict[str, Any]:
         states = None
         if self._question_ids():
@@ -850,6 +923,8 @@ def _text(outcomes: list[dict[str, Any]]) -> str:
             note = f"{note}; started anew: what it sets up at its start changed"
         elif entry.get("step") == "functions" and detail.get("counts"):
             note = f"{note}; {_registered_text(detail['counts'])}"
+        elif entry.get("step") == "sdk" and detail.get("action"):
+            note = f"{note}; {detail['action']} {detail.get('package')}"
         lines.append(
             f"{entry['step']:<9} {entry['action']:<7} {entry['status']!s:<8} {note}".rstrip()
         )

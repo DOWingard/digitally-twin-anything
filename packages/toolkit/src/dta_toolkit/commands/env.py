@@ -1,8 +1,9 @@
 """`dta env template` and `dta env check`: the variables the twin's stack needs.
 
 The values live in the workspace's `.env` only. These commands read and write
-names; a value is generated for the two secrets the twin itself owns and never
-printed, logged or put into a result.
+names; a value is generated for the secrets the twin itself owns (the store's
+password, the API token and, with read-only SQL, the store reader's password) and
+never printed, logged or put into a result.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import typer
 from dta_core.log import Log
 from dta_core.manifest import Manifest
 
+from .. import addons
 from ..envfile import read_env
 from ..output import command, emit, session
 from ..stack import STORE_PASSWORD_ENV, Stack
@@ -49,6 +51,7 @@ def _builtin(manifest: Manifest, stack: Stack) -> dict[str, tuple[str, bool]]:
             "Address of the twin's API for agents and clients: http://127.0.0.1:<API port>",
             False,
         ),
+        **addons.ENV_DESCRIPTIONS,
     }
 
 
@@ -56,6 +59,7 @@ def planned_names(manifest: Manifest, stack: Stack) -> list[EnvName]:
     """Every variable `.env` should hold: what the stack requires, then the API address."""
     builtin = _builtin(manifest, stack)
     generated = {STORE_PASSWORD_ENV, stack.plan.token_env}
+    generated |= set(addons.selected(manifest).generated_env())
     names = list(stack.plan.required_env())
     if manifest.interfaces.base_url_env not in names:
         names.append(manifest.interfaces.base_url_env)
@@ -69,7 +73,7 @@ def planned_names(manifest: Manifest, stack: Stack) -> list[EnvName]:
             description = known[0]
         else:
             description = "Not described in the manifest's env section"
-        if name == STORE_PASSWORD_ENV:
+        if name in (STORE_PASSWORD_ENV, addons.SQL_READER_PASSWORD_ENV):
             secret = True
         elif declared is not None:
             secret = declared.secret

@@ -53,13 +53,13 @@ None of these is a question of its own. Each row says when to write it; leave ev
 | `contract.controls.<control>.bounds.allowed` | Part of the bounds question. | | A list of values. |
 | `contract.controls.<control>.bounds.max_step` | Part of the bounds question. | | A number greater than 0. |
 | `contract.addons.executors` | Asked with each control that is `supervised` or `autonomous`: "The twin will call `<system>` to carry out approved actions. Is that allowed?" | `false`; `true` only when the user said yes. | `true` or `false`. It is optional, so it cannot be confirmed (`confirm.not_required`): leave it out of `dta manifest confirm` and record the user's answer in `discussion.md`. The summary the user signs in stage 5 lists it under "Add-ons", and the signature covers it. |
-| `contract.addons.sdk_python` | Not asked: recorded only, nothing is built for it. Write it only when the user asks for a Python client, after telling them so. | `false`. | `true` or `false`. |
-| `contract.addons.mcp` | Not asked: recorded only, nothing is built for it. Write it only when the user asks for an MCP adapter, after telling them so. | `false`. | `true` or `false`. |
+| `contract.addons.sdk_python` | Part of the add-ons question: "Do you want a Python package for your own code, with a typed accessor for each kind of object and a method for each question?" | `false`. | `true` or `false`. Optional, so it cannot be confirmed: record the answer in `discussion.md`; the signed summary lists it under "Add-ons". What it builds: [add-ons](addons.md). |
+| `contract.addons.mcp` | Part of the add-ons question: "Should AI agents reach the twin as MCP tools, on a port of this machine?" | `false`. | `true` or `false`, recorded as `contract.addons.sdk_python`. When `true`, declare `DTA_MCP_PORT` under `env` ([add-ons](addons.md)). |
 | `contract.addons.llm_extraction` | Not asked: recorded only, nothing is built for it. Write it only when the user asks for documents to be re-read by a language model, after telling them so. | `false`. | `true` or `false`. |
-| `contract.addons.readonly_sql` | Not asked: recorded only, nothing is built for it. Write it only when the user asks for SQL access, after telling them so. | `false`. | `true` or `false`. |
+| `contract.addons.readonly_sql` | Part of the add-ons question: "Do you want to read the twin's data and history with SQL, as a user that can only read, on a port of this machine?" | `false`. | `true` or `false`, recorded as `contract.addons.sdk_python`. When `true`, declare `DTA_SQL_PORT` and `DTA_SQL_READER_PASSWORD` under `env` ([add-ons](addons.md)). |
 | `contract.hosting` | Not asked: the twin runs on this machine. | `local`. | `local`. |
 
-Of the add-ons, only `contract.addons.executors` changes what is built.
+Of the add-ons, `contract.addons.llm_extraction` is recorded only: nothing is built for it. Write it only when the user asks for documents to be re-read by a language model, after telling them so. The others change what is built.
 
 ## Outside the contract
 

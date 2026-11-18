@@ -10,7 +10,7 @@ Gate `build` is recorded by `dta build`. It goes stale on any later change to th
 dta build
 ```
 
-It refuses to start unless gates 0 to 5 have passed, then runs these steps in order, each only when what it depends on changed since the last build: `scaffold`, `image`, `store`, `install`, `load`, `api`, `contract`, `sync`, `code`, `functions`, `models`, `questions`, `ui`, `skill`. It starts the twin's containers (named `dta-<id>-…`) and leaves them running.
+It refuses to start unless gates 0 to 5 have passed, then runs these steps in order, each only when what it depends on changed since the last build: `scaffold`, `image`, `store`, `install`, `load`, `api`, `contract`, `sync`, `code`, `functions`, `models`, `questions`, `ui`, `mcp`, `skill`, `sdk`. The steps `mcp` and `sdk`, and the reader in `store`, follow the add-ons the user chose ([add-ons](addons.md)): they build what is selected and remove what is not. It starts the twin's containers (named `dta-<id>-…`) and leaves them running.
 
 It can take long: loading a long history and evaluating models take minutes to hours. Let it run; do not start a second build while one runs (the second waits for the workspace lock or refuses with `workspace.locked`).
 

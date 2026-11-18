@@ -31,7 +31,7 @@ pytestmark = needs_stack
 FIRST_BUILD_LIMIT_S = 300.0
 SECOND_BUILD_LIMIT_S = 60.0
 ACCEPT_LIMIT_S = 300.0
-STATIC_SKIPPED = {"sync", "ui"}
+STATIC_SKIPPED = {"sync", "ui", "mcp", "sdk"}
 
 
 @pytest.fixture(scope="module")
@@ -118,7 +118,7 @@ def test_a_whole_build_runs_every_step_and_the_twin_is_accepted(twin: M5Twin) ->
     assert steps(result) == {
         name: ("ran", "skipped" if name in STATIC_SKIPPED else "ok") for name in steps(result)
     }
-    assert len(result["steps"]) == 14
+    assert len(result["steps"]) == 16
     assert took <= FIRST_BUILD_LIMIT_S
 
     # The worker image: built for the requirements, and the one the worker runs.
@@ -173,7 +173,7 @@ def test_a_whole_build_runs_every_step_and_the_twin_is_accepted(twin: M5Twin) ->
     assert accepted["passed"] is True and accepted["failed"] == []
     assert accept_s <= ACCEPT_LIMIT_S
     ids = [found["id"] for found in accepted["checks"]]
-    assert ids[-8:] == [
+    assert ids[-11:] == [
         "questions.answered",
         "questions.error",
         "models.accepted",
@@ -182,6 +182,9 @@ def test_a_whole_build_runs_every_step_and_the_twin_is_accepted(twin: M5Twin) ->
         "fidelity.schedule",
         "actions.registered",
         "notifications.configured",
+        "sdk.usable",
+        "mcp.reachable",
+        "sql.readonly",
     ]
     answered = check(accepted, "questions.answered")["evidence"]["questions"]
     assert all(entry["time_ms"] <= entry["budget_ms"] for entry in answered.values())
@@ -440,7 +443,15 @@ def test_code_without_a_module_the_manifest_names_fails_the_code_step(twin: M5Tw
         error = twin.failed("build.failed", "build")
         found = error["detail"]
         assert found["step"] == "code"
-        assert found["not_attempted"] == ["functions", "models", "questions", "ui", "skill"]
+        assert found["not_attempted"] == [
+            "functions",
+            "models",
+            "questions",
+            "ui",
+            "mcp",
+            "skill",
+            "sdk",
+        ]
         assert found["evidence"]["code"] == codepack.CODE_NO_MODULE
         assert "has no module plant" in error["message"] and "add the module" in error["message"]
     finally:

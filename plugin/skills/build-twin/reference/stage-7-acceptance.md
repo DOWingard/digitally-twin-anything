@@ -40,6 +40,9 @@ Read each failed check's `remedy` and `evidence`, then act by its id:
 | `fidelity.state`, `fidelity.schedule` | A live twin's self-check is not healthy or not scheduled. | `dta fidelity status`; [operate](operate.md). | If an incident needs the user. |
 | `actions.registered` | An action, control or loop of the manifest is not registered as declared. | `dta register`, then `dta accept` again. | No. |
 | `notifications.configured` | Failures cannot be raised where the contract says. | Check that the webhook variable is set (`dta env check`); `dta notifications` shows the last attempts. | Yes, if the webhook address is wrong. |
+| `sdk.usable` | The generated Python client did not install into a fresh environment, or could not read an object or answer a question; `evidence.output` ends with its error. | `dta generate sdk --force`, then `dta accept`; if it fails again, show the evidence to the user. | Only if it persists. |
+| `mcp.reachable` | The MCP adapter did not answer, offered other tools than the API's operations, or did not pass the caller's token on. | `dta logs mcp --tail 100`; `dta build --from mcp`. | If a port is in use. |
+| `sql.readonly` | The reader could not sign in, could not read, or was allowed a write. | `dta build --from store`, then `dta accept`; if the reader was allowed a write, stop and show the evidence to the user. | Yes, if a write was allowed. |
 
 After each fix: if you changed the manifest, `dta manifest validate` (and stage 5 again if the change touched `contract`), then the `dta build --from <step>` the table names, then `dta accept` again.
 

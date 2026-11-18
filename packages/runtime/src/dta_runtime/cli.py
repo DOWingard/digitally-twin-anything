@@ -29,7 +29,8 @@ log = Log("runtime.cli")
 API_PORT = 8000
 UI_PORT = 8050
 WORKER_PORT = 8100
-PORTS = {"api": API_PORT, "ui": UI_PORT, "worker": WORKER_PORT}
+MCP_PORT = 8200
+PORTS = {"api": API_PORT, "ui": UI_PORT, "worker": WORKER_PORT, "mcp": MCP_PORT}
 
 
 def _print(document: dict[str, Any]) -> None:
@@ -404,8 +405,41 @@ def worker(
 
 
 @app.command()
+def mcp(
+    host: Annotated[str, typer.Option(help="Address to listen on")] = "0.0.0.0",
+    port: Annotated[int, typer.Option(help="Port to listen on")] = MCP_PORT,
+    probe: Annotated[
+        str | None,
+        typer.Option(
+            help="Instead of serving, check the adapter at this MCP URL as an agent would; "
+            'the token is read as {"token": "..."} on standard input'
+        ),
+    ] = None,
+    api_url: Annotated[
+        str | None, typer.Option(help="With --probe: the API the adapter stands for")
+    ] = None,
+) -> None:
+    """Serve the twin's API to agents as MCP tools over streamable HTTP. Holds no token."""
+
+    def work() -> dict[str, Any] | None:
+        if probe is not None:
+            from .mcp.probe import run_probe
+            from .twin import TwinError
+
+            if not api_url:
+                raise TwinError("--probe needs --api-url", code="runtime.bad_arguments")
+            return run_probe(probe, api_url.rstrip("/"), sys.stdin.read())
+        from .mcp import McpSettings, serve
+
+        serve(McpSettings.from_env(), host=host, port=port)
+        return None
+
+    _run("mcp", work)
+
+
+@app.command()
 def health(
-    service: Annotated[str, typer.Argument(help="api, ui or worker")],
+    service: Annotated[str, typer.Argument(help="api, ui, worker or mcp")],
     port: Annotated[int | None, typer.Option(help="Port the service listens on")] = None,
 ) -> None:
     """Exit 0 when the named service of this container answers; used as its health check."""
