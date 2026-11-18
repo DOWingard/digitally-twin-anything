@@ -77,7 +77,9 @@ def test_static_twin_to_handover_through_the_launcher(
         "models": ("ran", "skipped"),
         "questions": ("ran", "ok"),
         "ui": ("ran", "skipped"),
+        "mcp": ("ran", "skipped"),
         "skill": ("ran", "ok"),
+        "sdk": ("ran", "skipped"),
     }
     load = next(entry for entry in built["steps"] if entry["step"] == "load")["detail"]
     assert load["versions_written"] == 4 and load["rows_rejected"] == 0
