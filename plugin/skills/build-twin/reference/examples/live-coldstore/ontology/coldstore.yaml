@@ -1,0 +1,56 @@
+id: https://example.org/dta/coldstore
+name: coldstore
+description: The cold rooms of a refrigerated warehouse and the compressors that cool them.
+prefixes:
+  linkml: https://w3id.org/linkml/
+  cs: https://example.org/dta/coldstore/
+default_prefix: cs
+default_range: string
+imports:
+  - linkml:types
+
+classes:
+  Room:
+    description: One cold room.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      name:
+        required: true
+        description: Name on the room's door.
+      temperature:
+        range: float
+        description: Air temperature measured in the room.
+        unit:
+          ucum_code: Cel
+        annotations:
+          dta_role: state
+      setpoint:
+        range: float
+        minimum_value: -30
+        maximum_value: 4
+        description: Temperature the room's controller holds; the twin may change it.
+        unit:
+          ucum_code: Cel
+        annotations:
+          dta_role: state
+
+  Compressor:
+    description: A compressor that cools one room.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      room:
+        range: Room
+        required: true
+        description: Room the compressor cools.
+      model:
+        description: Make and model.
+      rated_power:
+        range: float
+        minimum_value: 0
+        description: Electrical power at full load.
+        unit:
+          ucum_code: kW

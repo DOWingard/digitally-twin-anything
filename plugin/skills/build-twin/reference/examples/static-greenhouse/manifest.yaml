@@ -1,0 +1,134 @@
+# A static twin over files: a data logger's CSV exports of one growing season.
+# Profiles, sources.logger.refresh_period and field_status are written by dta
+# (dta profile, dta manifest confirm); everything else was written by hand.
+manifest_version: 1
+twin:
+  id: greenhouse
+  name: Greenhouse soil moisture
+contract:
+  purpose: Show the soil moisture of every growing bed in the two greenhouses over the 2025
+    season, and which beds ran dry and when
+  tier: static
+  questions:
+    q_moisture:
+      text: What was the soil moisture of each bed at a given time?
+      kind: descriptive
+      priority: 1
+      tolerance:
+        metric: mae
+        value: 2.0
+        unit: "%"
+      staleness: P1D
+      targets:
+        - Bed.moisture
+      function: f_latest
+      example:
+        property: Bed.moisture
+    q_dry:
+      text: Which beds were below 20 % soil moisture?
+      kind: diagnostic
+      priority: 2
+      tolerance:
+        metric: error_rate
+        value: 0.05
+      staleness: P1D
+      targets:
+        - Bed.moisture
+      function: f_dry
+      example: {}
+  boundary:
+    state:
+      - Bed.moisture
+    observations:
+      - Bed.moisture
+ontology:
+  path: ontology/greenhouse.yaml
+  # Written by `dta ontology check --write`, then confirmed by the user.
+  type_signature: d0156fc4a1f4efa5f1452be651a1dc38cdffb939d2d4bcc035f2bc1400ade430
+sources:
+  logger:
+    description: CSV exports of the greenhouse data logger
+    connector: file
+    location: file://${GREENHOUSE_DATA_DIR}
+    env:
+      - GREENHOUSE_DATA_DIR
+    options:
+      datasets:
+        houses:
+          glob: houses.csv
+          format: csv
+        beds:
+          glob: beds.csv
+          format: csv
+        moisture:
+          glob: moisture/*.csv
+          format: csv
+    mappings:
+      houses:
+        dataset: houses
+        object_type: House
+        identity:
+          - house_id
+        properties:
+          name:
+            column: name
+          area:
+            column: area_m2
+            unit: m2
+      beds:
+        dataset: beds
+        object_type: Bed
+        identity:
+          - bed_id
+        properties:
+          house:
+            column: house_id
+          crop:
+            column: crop
+      moisture:
+        dataset: moisture
+        object_type: Bed
+        identity:
+          - bed_id
+        valid_time: timestamp
+        properties:
+          moisture:
+            column: moisture_pct
+            unit: "%"
+sync:
+  # One version per hour of the recorded season, so that history can be read back.
+  backfill_interval: PT1H
+functions:
+  f_latest:
+    description: The value in force of a property, per object, at a version
+    kind: builtin
+    entry: latest
+    complexity: O(|V|)
+    latency_budget: PT2S
+  f_dry:
+    description: Beds whose soil moisture is below 20 %
+    kind: builtin
+    entry: below
+    params:
+      property: Bed.moisture
+      threshold: 20
+    complexity: O(|V|)
+    latency_budget: PT5S
+interfaces:
+  ui: true
+env:
+  GREENHOUSE_DATA_DIR:
+    description: Absolute path of the folder holding the logger's CSV exports
+    secret: false
+  DTA_BASE_URL:
+    description: Address of the twin's API
+    secret: false
+  DTA_API_TOKEN:
+    description: Bearer token of the twin's API
+    secret: true
+  DTA_API_PORT:
+    description: Host port of the twin's API
+    secret: false
+  DTA_UI_PORT:
+    description: Host port of the twin's UI
+    secret: false
