@@ -9,7 +9,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from ...families import FAMILIES
-from ...functions import BUILTINS, REGISTERED_ENTRY, shape_problem
+from ...functions import BUILTINS, REGISTERED_ENTRY, ParamKind, shape_problem
+from .filters import clause_problem, edge_clause_problem
 from .findings import Issue, Severity, check
 from .view import FORECAST_KINDS, ManifestView, is_property_ref
 
@@ -59,6 +60,16 @@ def function_entry(view: ManifestView) -> Iterator[Issue]:
             problem = shape_problem(parameter, value)
             if problem is not None:
                 yield Issue(f"{base}.params.{name}", f"{name} {problem}")
+                continue
+            judge = {
+                ParamKind.filters: clause_problem,
+                ParamKind.edge_filters: edge_clause_problem,
+            }.get(parameter.kind)
+            if judge is not None:
+                for clause in value:
+                    problem = judge(str(clause))
+                    if problem is not None:
+                        yield Issue(f"{base}.params.{name}", problem)
 
 
 @check("ref.model_family")

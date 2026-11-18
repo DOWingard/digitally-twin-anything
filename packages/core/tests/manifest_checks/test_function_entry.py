@@ -55,6 +55,33 @@ def test_a_parameter_the_built_in_does_not_take_and_one_of_the_wrong_shape_are_e
     )
 
 
+def test_where_clauses_the_twin_cannot_read_are_named_as_it_would():
+    """The water twin's first filters, written as SQL, passed validate as unknown properties."""
+    where = ["mean_demand > 0", "mean_demand>0", "mean_demand:above:0", "status:null:x", "x:eq"]
+    edge_where = ["status:eq:open", "Pipe.status:eq:open"]
+    functions = {
+        "f": _builtin("latest", property="Junction.mean_demand", where=where),
+        "g": _builtin("paths", edge_where=edge_where),
+    }
+    form = "<property>:<op>:<value>"
+    expected = [
+        ("f", "where", f"a filter is written {form}, got 'mean_demand > 0'"),
+        ("f", "where", f"a filter is written {form}, got 'mean_demand>0'"),
+        (
+            "f",
+            "where",
+            "unknown filter operator 'above' in 'mean_demand:above:0'; use one of eq, ne, lt, "
+            "le, gt, ge, in, like, null, notnull",
+        ),
+        ("f", "where", "filter on status: null takes no value"),
+        ("f", "where", "filter on x: eq needs a value"),
+        ("g", "edge_where", f"an edge filter is written <LinkType>.{form}, got 'status:eq:open'"),
+    ]
+    assert sorted(_findings(_manifest(functions))) == sorted(
+        (f"functions.{fid}.params.{name}", message) for fid, name, message in expected
+    )
+
+
 def test_code_is_named_as_module_and_function():
     ((path, message),) = _findings(_manifest({"f": {"kind": "registered", "entry": "simulate"}}))
     assert path == "functions.f.entry" and "module:function" in message
