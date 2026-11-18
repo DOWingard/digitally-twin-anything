@@ -8,6 +8,7 @@ manifest gives the same stack on any machine. What differs between machines
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -109,13 +110,23 @@ class StackPlan:
     worker_memory_mb: int
     # Variables the twin's own code declares; the worker hands each to the code that named it.
     worker_env: tuple[str, ...]
+    # Variables the API reads once, at its start: the webhook's address and what the
+    # executors of its actions send. Only the API is given them.
+    api_env: tuple[str, ...] = ()
+    # Digest of everything the API sets up once, at its start, from the manifest; it is a
+    # label of the API's container, so a change of it makes compose start the API anew.
+    api_start: str = ""
 
     def required_env(self) -> tuple[str, ...]:
         """Every variable the compose file refuses to start without, in a stable order."""
         names = [self.store_password_env, self.token_env, self.api_port_env]
         if self.ui:
             names.append(self.ui_port_env)
-        for name in (*self.source_env, *(self.worker_env if self.worker else ())):
+        for name in (
+            *self.source_env,
+            *self.api_env,
+            *(self.worker_env if self.worker else ()),
+        ):
             if name not in names:
                 names.append(name)
         return tuple(names)
@@ -163,6 +174,43 @@ def _networks(names: list[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+def api_start_config(manifest: Manifest) -> dict[str, Any]:
+    """What the API reads from the manifest once, when it starts, and keeps until it stops.
+
+    The notifier is made from the notification's kind and variable, and the executors
+    from the add-on and the variables of the actions bound to one; the templates of a
+    call are read from the action's record at each call, so they are not part of it.
+    """
+    contract = manifest.contract
+    notification = contract.notification if contract is not None else None
+    kind = notification.kind if notification is not None and notification.kind else "log"
+    webhook_env = notification.webhook_env if kind == "webhook" and notification else None
+    executors = bool(contract is not None and contract.addons.executors)
+    executor_env: dict[str, None] = {}
+    if executors:
+        for _action_id, action in sorted((manifest.actions or {}).items()):
+            if action.binding == "executor" and action.executor is not None:
+                executor_env.update(dict.fromkeys(action.executor.env))
+    return {
+        "notification": {"kind": kind, "webhook_env": webhook_env},
+        "executors": executors,
+        "executor_env": list(executor_env),
+    }
+
+
+def _api_env(config: dict[str, Any]) -> tuple[str, ...]:
+    names = dict.fromkeys(config["executor_env"])
+    webhook_env = config["notification"]["webhook_env"]
+    if webhook_env:
+        names.setdefault(webhook_env)
+    return tuple(names)
+
+
+def _digest(config: dict[str, Any]) -> str:
+    text = json.dumps(config, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 def plan_stack(manifest: Manifest, worker_image: str | None = None) -> StackPlan:
     """What the stack of this manifest consists of.
 
@@ -187,6 +235,7 @@ def plan_stack(manifest: Manifest, worker_image: str | None = None) -> StackPlan
     functions = manifest.functions or {}
     code = {fid: found for fid, found in functions.items() if found.kind == "registered"}
     worker_env = sorted({name for found in code.values() for name in found.env})
+    start_config = api_start_config(manifest)
     interfaces = manifest.interfaces
     plan = StackPlan(
         twin_id=twin_id,
@@ -209,12 +258,16 @@ def plan_stack(manifest: Manifest, worker_image: str | None = None) -> StackPlan
         worker_cpus=manifest.runtime.worker_cpus,
         worker_memory_mb=manifest.runtime.worker_memory_mb,
         worker_env=tuple(worker_env),
+        api_env=_api_env(start_config),
+        api_start=_digest(start_config),
     )
     log.debug(
         "stack planned",
         project=plan.project,
         database=plan.database,
         source_env=list(plan.source_env),
+        api_env=list(plan.api_env),
+        api_start=plan.api_start,
         mounts=len(plan.source_mounts),
         ui=plan.ui,
         live=plan.live,
@@ -250,6 +303,8 @@ def render_compose(plan: StackPlan) -> str:
         worker_cpus=plan.worker_cpus,
         worker_memory_mb=plan.worker_memory_mb,
         worker_env=plan.worker_env,
+        api_env=plan.api_env,
+        api_start=plan.api_start,
     )
 
 
@@ -432,6 +487,8 @@ class Stack:
                         "state": entry.get("State"),
                         "health": entry.get("Health") or None,
                         "container": entry.get("Name"),
+                        # Changes when compose made the container anew.
+                        "id": entry.get("ID"),
                     }
                 )
         return sorted(rows, key=lambda row: str(row["service"]))

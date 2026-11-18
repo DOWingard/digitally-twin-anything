@@ -38,6 +38,11 @@ services:
   api:
     <<: *runtime
     command: ["dta-runtime", "api"]
+    # The API sets up its notifications and the executors of its actions once, when it
+    # starts; this digest of what they are made from changes with them, and compose then
+    # starts the API anew.
+    labels:
+      dta.api-start: "{{ api_start }}"
     depends_on:
       store:
         condition: service_healthy
@@ -54,6 +59,9 @@ services:
       DTA_WORKER_URL: http://worker:8100
 {%- endif %}
 {%- for name in source_env %}
+      {{ name }}: ${{ '{' }}{{ name }}:?{{ name }} is required}
+{%- endfor %}
+{%- for name in api_env if name not in source_env %}
       {{ name }}: ${{ '{' }}{{ name }}:?{{ name }} is required}
 {%- endfor %}
     volumes:
