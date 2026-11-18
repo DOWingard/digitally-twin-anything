@@ -6,6 +6,7 @@ import typer
 
 from . import (
     accept,
+    acting,
     build,
     compute,
     env,
@@ -81,6 +82,51 @@ def register(app: typer.Typer) -> None:
     scenarios_app = typer.Typer(add_completion=False, no_args_is_help=True)
     scenarios_app.command("list")(compute.scenarios_list)
     app.add_typer(scenarios_app, name="scenarios", help="The twin's what-if scenarios.")
+
+    fidelity_app = typer.Typer(add_completion=False, no_args_is_help=True)
+    for name, function in (
+        ("status", acting.fidelity_status),
+        ("checks", acting.fidelity_checks),
+        ("check", acting.fidelity_check),
+        ("incidents", acting.fidelity_incidents),
+        ("incident", acting.fidelity_incident),
+        ("retry", acting.fidelity_retry),
+        ("resolve", acting.fidelity_resolve),
+        ("correct", acting.fidelity_correct),
+        ("signals", acting.fidelity_signals),
+        ("clear", acting.fidelity_clear),
+        ("errors", acting.fidelity_errors),
+    ):
+        fidelity_app.command(name)(function)
+    app.add_typer(
+        fidelity_app,
+        name="fidelity",
+        help="Whether the twin still matches the real system: its state, incidents, signals.",
+    )
+    actions_app = typer.Typer(add_completion=False, no_args_is_help=True)
+    for name, function in (
+        ("list", acting.actions_list),
+        ("propose", acting.actions_propose),
+        ("records", acting.actions_records),
+        ("record", acting.actions_record),
+        ("approve", acting.actions_approve),
+        ("reject", acting.actions_reject),
+        ("reconcile", acting.actions_reconcile),
+    ):
+        actions_app.command(name)(function)
+    app.add_typer(
+        actions_app, name="actions", help="What the twin does to the real system, and its records."
+    )
+    control_app = typer.Typer(add_completion=False, no_args_is_help=True)
+    for name, function in (
+        ("list", acting.control_list),
+        ("enable", acting.control_enable),
+        ("disable", acting.control_disable),
+        ("run", acting.control_run),
+    ):
+        control_app.command(name)(function)
+    app.add_typer(control_app, name="control", help="The twin's control loops.")
+    app.command("notifications")(acting.notifications)
 
     generate_app = typer.Typer(add_completion=False, no_args_is_help=True)
     generate_app.command("skill")(skill.generate_skill)
