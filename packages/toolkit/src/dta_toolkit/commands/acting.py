@@ -482,7 +482,8 @@ def actions_propose(
     ] = None,
 ) -> None:
     """Propose an action on one object; the twin judges it, records it and, if its control
-    allows and its fidelity is healthy, executes it. A refusal exits 1 with every reason."""
+    allows and the interlock lets it (the twin healthy, or correcting with no unresolved
+    stale or reconcile incident), executes it. A refusal exits 1 with every reason."""
     params = dict(_param(text) for text in param or [])
     body = {"object": object_uid, "params": params, "reason": reason, "source": source}
     with _api(ctx) as (_manifest, api, secrets):
