@@ -55,7 +55,14 @@ written with sorted keys and no spaces.
     cleared    [signal uid]
     suspect    [signal uid]: suspect after the check
     inferred   [{"signal", "property", "object", "value", "t", "question", "model"}]
-    alarming   {question id: {"tested", "alarming", "biased"}}
+    alarming   {question id: {"tested", "alarming", "biased"}}: "biased" are the series
+               the question's own test calls; one is flagged only when the question
+               would infer it and every other question on its property bears it out
+    uncorroborated
+               [{"signal", "property", "object", "question", "by", "why"}]: a series
+               the inferring `question` called, not flagged because question `by`
+               did not bear it out; `why` is `not_tested` (too few scored origins, or
+               not scored), `no_alarm` or `other_side`
     skipped    [{"signal", "reason"}]: inferred values that could not be written
 
 `TwinFidelityCheck.coverage`: {"validated": [ids], "provisional": [ids], "failing": [ids],

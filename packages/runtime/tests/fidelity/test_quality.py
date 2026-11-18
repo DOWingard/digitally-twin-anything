@@ -6,11 +6,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from dta_runtime.fidelity.quality import (
+    NO_ALARM,
+    NOT_TESTED,
+    OTHER_SIDE,
     BiasTest,
     bias_test,
     biased,
     changes_per_interval,
     stuck_test,
+    uncorroborated,
 )
 
 T0 = datetime(2026, 1, 5, tzinfo=UTC)
@@ -131,3 +135,23 @@ def test_series_are_biased_only_when_fewer_than_half_alarm():
     assert biased(_results(3, 1)) == set()
     # Series without enough origins are not in the count.
     assert biased(_results(2, 2, untested=5)) == set()
+
+
+def test_the_side_of_an_alarm_is_the_side_that_ended_above_h():
+    flat = [0.0] * 5
+    assert bias_test(flat + [0.25] * 3, TOLERANCE).side == 1
+    assert bias_test(flat + [-0.25] * 3, TOLERANCE).side == -1
+    assert bias_test(flat + [0.2] * 3, TOLERANCE).side == 0
+
+
+def test_a_series_is_borne_out_only_by_every_other_question_alarming_on_its_side():
+    flat = [0.0] * 5
+    rising = bias_test(flat + [0.25] * 3, TOLERANCE)
+    falling = bias_test(flat + [-0.25] * 3, TOLERANCE)
+    quiet = bias_test(flat + [0.0] * 3, TOLERANCE)
+    young = bias_test([0.25] * 3, TOLERANCE)
+    assert uncorroborated(rising, {}) == {}
+    assert uncorroborated(rising, {"b": rising, "c": rising}) == {}
+    assert uncorroborated(rising, {"b": rising, "c": quiet}) == {"c": NO_ALARM}
+    assert uncorroborated(falling, {"b": rising}) == {"b": OTHER_SIDE}
+    assert uncorroborated(rising, {"b": young, "c": None}) == {"b": NOT_TESTED, "c": NOT_TESTED}

@@ -520,22 +520,39 @@ def _new_incident(
     }
 
 
+def _on_property(measurement: _Measurement, property_text: str) -> list[Measured]:
+    """The predictive questions that target a property, shortest horizon first."""
+    type_name, _, name = property_text.partition(".")
+    return sorted(
+        (
+            found
+            for found in measurement.questions.values()
+            if (type_name, name) in found.setup.cells
+        ),
+        key=lambda found: (found.setup.horizon, found.setup.id),
+    )
+
+
+def _inferring(measurement: _Measurement, property_text: str) -> Measured | None:
+    """The question that would infer a signal of a property: of those with an active
+    model, the one with the shortest horizon."""
+    return next(
+        (
+            found
+            for found in _on_property(measurement, property_text)
+            if found.setup.model is not None
+        ),
+        None,
+    )
+
+
 def _estimate(measurement: _Measurement, property_text: str, uid: str) -> dict[str, Any] | None:
     """The inferred value of a signal: the latest predicted value of the predictive
     question on its property with the shortest horizon, when that question predicted it
     at this check."""
-    type_name, _, name = property_text.partition(".")
-    covering = sorted(
-        (
-            found
-            for found in measurement.questions.values()
-            if (type_name, name) in found.setup.cells and found.setup.model is not None
-        ),
-        key=lambda found: (found.setup.horizon, found.setup.id),
-    )
-    if not covering:
+    chosen = _inferring(measurement, property_text)
+    if chosen is None:
         return None
-    chosen = covering[0]
     value = chosen.estimates.get(uid)
     if value is None or chosen.estimates_at is None:
         return None
@@ -765,6 +782,8 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
             }
     observed_cells = set(setup.observations)
     alarming: dict[str, dict[str, Any]] = {}
+    bias_tests: dict[str, dict[str, quality.BiasTest]] = {}
+    called_by: dict[str, set[str]] = {}
     tested_biased = 0
     for qid, measured in sorted(measurement.questions.items()):
         question = measured.setup
@@ -788,6 +807,7 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
             history = [found.residuals[uid] for found in window_origins if uid in found.residuals]
             tests[uid] = quality.bias_test(history, question.tolerance)
         called = quality.biased(tests)
+        bias_tests[qid], called_by[qid] = tests, called
         tested = sum(1 for found in tests.values() if found.tested)
         tested_biased += tested
         alarming[qid] = {
@@ -795,17 +815,59 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
             "alarming": sum(1 for found in tests.values() if found.alarm),
             "biased": sorted(called),
         }
+    # A series is called by the question that would infer it, and is biased only when
+    # every other question on its property bears its alarm out.
+    uncorroborated: list[dict[str, Any]] = []
+    for qid, called in sorted(called_by.items()):
+        measured = measurement.questions[qid]
         for uid in sorted(called):
-            property_text = f"{measured.types[uid]}.{question.cells[0][1]}"
+            property_text = f"{measured.types[uid]}.{measured.setup.cells[0][1]}"
             signal = records.signal_uid(property_text, uid)
             if signal in flags:
+                continue
+            inferring = _inferring(measurement, property_text)
+            if inferring is None or inferring.setup.id != qid:
+                log.debug(
+                    "series alarms in a question that would not infer it; not called",
+                    signal=signal,
+                    question=qid,
+                    inferring=None if inferring is None else inferring.setup.id,
+                )
+                continue
+            test = bias_tests[qid][uid]
+            others = {
+                found.setup.id: bias_tests.get(found.setup.id, {}).get(uid)
+                for found in _on_property(measurement, property_text)
+                if found.setup.id != qid
+            }
+            unsupported = quality.uncorroborated(test, others)
+            if unsupported:
+                uncorroborated.extend(
+                    {
+                        "signal": signal,
+                        "property": property_text,
+                        "object": uid,
+                        "question": qid,
+                        "by": other,
+                        "why": why,
+                    }
+                    for other, why in unsupported.items()
+                )
+                log.info(
+                    "series alarms but another question on its property does not bear it "
+                    "out; not flagged",
+                    signal=signal,
+                    question=qid,
+                    side=test.side,
+                    uncorroborated=unsupported,
+                )
                 continue
             flags[signal] = {
                 "property": property_text,
                 "object": uid,
                 "reason": BIASED,
                 "value": measured.current.get(uid),
-                "test": tests[uid].document(),
+                "test": test.document(),
                 "question": qid,
             }
 
@@ -979,6 +1041,7 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
         ),
         "inferred": inferred_entries,
         "alarming": alarming,
+        "uncorroborated": uncorroborated,
         "skipped": [],
     }
     freshness_document = {
