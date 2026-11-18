@@ -288,7 +288,8 @@ def test_a_record_shows_its_proposal_refusal_decision_call_and_observation(
     found = show_record(browser, served, acting.records["blocked"])
     assert found["fidelity"] == "failed"
     assert part_lines(browser, "reasons") == [
-        "fidelity: the twin is failed: an autonomous action executes only while it is healthy"
+        "fidelity: the twin is failed: it could not put itself right; an autonomous action "
+        "executes only while it is healthy or correcting"
     ]
 
     # Waiting for a decision: nothing has happened to it yet.

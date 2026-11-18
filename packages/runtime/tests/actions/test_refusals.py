@@ -15,7 +15,13 @@ NOW = at(2)
 
 
 def refused(world: World, action: str, obj: str, params: Any, **more: Any) -> ActionError:
-    options = {"reason": "test", "source": "tester", "state": "healthy", "executor": None}
+    options = {
+        "reason": "test",
+        "source": "tester",
+        "state": "healthy",
+        "incidents": [],
+        "executor": None,
+    }
     options.update(more)
     with pytest.raises(ActionError) as caught:
         actions.propose(world.twin, action, object=obj, params=params, now=NOW, **options)
@@ -121,6 +127,7 @@ def test_a_step_of_exactly_max_step_from_the_value_in_force_is_accepted(world: W
         reason=None,
         source="tester",
         state="healthy",
+        incidents=[],
         now=NOW,
         executor=None,
     )
@@ -186,7 +193,40 @@ def test_a_fidelity_state_that_does_not_exist_is_refused(world: World):
             reason=None,
             source="tester",
             state="fine",
+            incidents=[],
             now=NOW,
             executor=None,
         )
     assert caught.value.code == "action.bad_state"
+
+
+@pytest.mark.parametrize(
+    "incidents",
+    [
+        [{"kind": "outage", "uid": "twin_incident:outage-1"}],
+        [{"kind": "stale"}],
+        [{"kind": "stale", "uid": ""}],
+        ["twin_incident:stale-1"],
+        {"kind": "stale", "uid": "twin_incident:stale-1"},
+    ],
+    ids=["unknown kind", "no uid", "empty uid", "not an object", "not a list"],
+)
+def test_incidents_that_are_not_the_twin_s_are_refused_before_anything_is_written(
+    world: World, incidents: Any
+):
+    head = world.store.head()
+    with pytest.raises(ActionError) as caught:
+        actions.propose(
+            world.twin,
+            "set_pump",
+            object=PUMP,
+            params={"value": True},
+            reason=None,
+            source="tester",
+            state="correcting",
+            incidents=incidents,
+            now=NOW,
+            executor=None,
+        )
+    assert caught.value.code == "action.bad_state"
+    assert world.store.head() == head

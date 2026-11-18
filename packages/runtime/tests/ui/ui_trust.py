@@ -609,6 +609,7 @@ def build_acting(settings: StoreSettings, water_text: str, root: Path, logs: Pat
                     reason=f"the test's {key} record",
                     source="operator@plant",
                     state=state,
+                    incidents=[],
                     now=now,
                     executor=http,
                 )
@@ -651,11 +652,14 @@ def build_acting(settings: StoreSettings, water_text: str, root: Path, logs: Pat
         )
         actions.reconcile(twin, now=acting_kit.at(RECONCILE_STEP))
         actions.enable(twin, "pumping", by="operator@plant", now=acting_kit.at(LOOP_STEP))
+        # Never checked, the twin is unknown: the loop's pump is blocked.
+        standing = fidelity.standing(twin)
         loop_run = actions.run_loop(
             twin,
             "pumping",
             policy=pump_policy,
-            state=str(fidelity.state(twin)["state"]),
+            state=str(standing["state"]),
+            incidents=standing["incidents"],
             now=acting_kit.at(LOOP_STEP),
             executor=http,
             key=f"loop:pumping:{acting_kit.at(LOOP_STEP).isoformat()}",

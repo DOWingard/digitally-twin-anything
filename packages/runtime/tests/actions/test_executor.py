@@ -47,6 +47,7 @@ def send(world: World, sender: Any, action: str = "set_pump", **more: Any) -> di
         "reason": "executor test",
         "source": "tester",
         "state": "healthy",
+        "incidents": [],
         "now": NOW,
         "executor": sender,
     }

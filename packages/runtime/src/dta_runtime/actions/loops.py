@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import copy
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -35,7 +35,7 @@ from .errors import (
     REJECTED as REJECTED_CODE,
 )
 from .executor import Executor
-from .proposals import Tail, check_state, propose_with
+from .proposals import Tail, check_incidents, check_state, propose_with
 from .records import (
     APPROVED,
     BLOCKED,
@@ -259,16 +259,20 @@ def run_loop(
     *,
     policy: Policy,
     state: str,
+    incidents: Iterable[Mapping[str, Any]],
     now: datetime,
     executor: Executor | None,
     key: str,
 ) -> dict[str, Any]:
     """Ask a loop's policy what to do and propose each action it names. What the run
-    did: `key`, `at`, `status`, how many actions were `proposed`, and of them how many
-    were `executed`, `blocked`, `rejected`, `failed` or are `awaiting` a decision, the
-    `records`, the policy's `notes`, the `error` of a failed run; with `loop`, and
-    `repeated` when `key` names the loop's last run, which is then given back as it is.
+    did: `key`, `at`, `status`, the fidelity `state` it was judged in, how many actions
+    were `proposed`, and of them how many were `executed`, `blocked`, `rejected`,
+    `failed` or are `awaiting` a decision, the `records`, the policy's `notes`, the
+    `error` of a failed run; with `loop`, and `repeated` when `key` names the loop's last
+    run, which is then given back as it is.
 
+    Every proposal of the run is judged with `state` and `incidents` (the `kind` and
+    `uid` of every incident not resolved), read once by the caller at the run's start.
     A disabled loop refuses (`action.loop_disabled`). A policy that raises
     (`action.policy_failed`) or answers something that cannot be used whole
     (`action.bad_policy_answer`) fails the run before anything is proposed; the failure
@@ -276,6 +280,7 @@ def run_loop(
     """
     started = time.perf_counter()
     check_state(state)
+    unresolved = check_incidents(incidents)
     uid = loop_uid(loop)
     with LOCKS.hold(uid):
         found = control_loop(twin, uid)
@@ -312,7 +317,13 @@ def run_loop(
             "error": None,
         }
         context = {"loop": uid, "policy": found["policy"], "key": key}
-        log.info("control loop run started", **context, state=state, deadline_s=deadline_s)
+        log.info(
+            "control loop run started",
+            **context,
+            state=state,
+            unresolved=[found["kind"] for found in unresolved],
+            deadline_s=deadline_s,
+        )
         asked = time.perf_counter()
         try:
             answer = policy(found["policy"], deadline_s=deadline_s)
@@ -374,6 +385,7 @@ def run_loop(
                     reason_text=item["reason"],
                     source=uid,
                     state=state,
+                    incidents=unresolved,
                     now=now,
                     executor=executor,
                     key=f"{key}:{index}",

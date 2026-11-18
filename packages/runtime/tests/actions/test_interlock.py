@@ -1,5 +1,5 @@
-"""The interlock: every autonomy against every fidelity state, with and without
-something to make the call; approvals and rejections."""
+"""The interlock: every autonomy against every fidelity state and set of incidents not
+resolved, with and without something to make the call; approvals and rejections."""
 
 from __future__ import annotations
 
@@ -12,7 +12,21 @@ from dta_runtime import actions
 from dta_runtime.actions import ActionError, HttpExecutor
 
 NOW = at(2)
-STATES = ["healthy", "correcting", "unknown", "failed"]
+BREACH = {"kind": "breach", "uid": "twin_incident:breach-20260105T003000Z-0a1b2c3d4e"}
+SIGNAL = {"kind": "signal", "uid": "twin_incident:signal-20260105T003000Z-1b2c3d4e5f"}
+STALE = {"kind": "stale", "uid": "twin_incident:stale-20260105T003000Z-2c3d4e5f60"}
+RECONCILE = {"kind": "reconcile", "uid": "twin_incident:reconcile-20260105T003000Z-3d4e5f6071"}
+# The state and the incidents not resolved of each cell of the table.
+CELLS: dict[str, tuple[str, list[dict[str, str]]]] = {
+    "healthy": ("healthy", []),
+    "correcting, a breach": ("correcting", [BREACH]),
+    "correcting, a signal": ("correcting", [SIGNAL]),
+    "correcting, a stale": ("correcting", [STALE]),
+    "correcting, a reconcile": ("correcting", [RECONCILE]),
+    "correcting, a breach and a reconcile": ("correcting", [BREACH, RECONCILE]),
+    "unknown": ("unknown", []),
+    "failed": ("failed", [STALE]),
+}
 # Action, object and parameters of a proposal that passes every check, per autonomy.
 PROPOSALS = {
     "advisory": ("advise_speed", PUMP, {"value": 0.9}),
@@ -20,22 +34,34 @@ PROPOSALS = {
     "supervised": ("set_valve", VALVE, {"value": 10.0}),
     "autonomous": ("set_pump", PUMP, {"value": True}),
 }
-# What a proposal becomes: per autonomy, per state, with and without an executor.
+# What a proposal becomes: per autonomy, per cell, with and without an executor.
 EXPECTED = {
-    ("advisory", True): dict.fromkeys(STATES, "proposed"),
-    ("advisory", False): dict.fromkeys(STATES, "proposed"),
-    ("advisory binding", True): dict.fromkeys(STATES, "proposed"),
-    ("advisory binding", False): dict.fromkeys(STATES, "proposed"),
-    ("supervised", True): dict.fromkeys(STATES, "proposed"),
-    ("supervised", False): dict.fromkeys(STATES, "proposed"),
+    ("advisory", True): dict.fromkeys(CELLS, "proposed"),
+    ("advisory", False): dict.fromkeys(CELLS, "proposed"),
+    ("advisory binding", True): dict.fromkeys(CELLS, "proposed"),
+    ("advisory binding", False): dict.fromkeys(CELLS, "proposed"),
+    ("supervised", True): dict.fromkeys(CELLS, "proposed"),
+    ("supervised", False): dict.fromkeys(CELLS, "proposed"),
     ("autonomous", True): {
         "healthy": "executed",
-        "correcting": "blocked",
+        "correcting, a breach": "executed",
+        "correcting, a signal": "executed",
+        "correcting, a stale": "blocked",
+        "correcting, a reconcile": "blocked",
+        "correcting, a breach and a reconcile": "blocked",
         "unknown": "blocked",
         "failed": "blocked",
     },
     # Nothing could make the call: the record stays proposed whatever the autonomy.
-    ("autonomous", False): dict.fromkeys(STATES, "proposed"),
+    ("autonomous", False): dict.fromkeys(CELLS, "proposed"),
+}
+# What the reason of each block names.
+NAMED = {
+    "correcting, a stale": ["stale", STALE["uid"]],
+    "correcting, a reconcile": ["reconcile", RECONCILE["uid"]],
+    "correcting, a breach and a reconcile": ["reconcile", RECONCILE["uid"]],
+    "unknown": ["unknown", "no check has vouched for it yet"],
+    "failed": ["failed"],
 }
 
 
@@ -46,7 +72,14 @@ def http(world: World, plant: Plant) -> Iterator[HttpExecutor]:
     found.close()
 
 
-def propose(world: World, autonomy: str, state: str, sender: Any, **more: Any) -> dict:
+def propose(
+    world: World,
+    autonomy: str,
+    state: str,
+    sender: Any,
+    incidents: list[dict[str, str]] | None = None,
+    **more: Any,
+) -> dict:
     action, obj, params = PROPOSALS[autonomy]
     return actions.propose(
         world.twin,
@@ -56,13 +89,14 @@ def propose(world: World, autonomy: str, state: str, sender: Any, **more: Any) -
         reason="interlock test",
         source="tester",
         state=state,
+        incidents=incidents or [],
         now=NOW,
         executor=sender,
         **more,
     )
 
 
-@pytest.mark.parametrize("state", STATES)
+@pytest.mark.parametrize("cell", list(CELLS))
 @pytest.mark.parametrize("with_executor", [True, False])
 @pytest.mark.parametrize("autonomy", list(PROPOSALS))
 def test_the_interlock_table(
@@ -71,19 +105,26 @@ def test_the_interlock_table(
     http: HttpExecutor,
     autonomy: str,
     with_executor: bool,
-    state: str,
+    cell: str,
 ):
-    made = propose(world, autonomy, state, http if with_executor else None)
-    expected = EXPECTED[(autonomy, with_executor)][state]
+    state, incidents = CELLS[cell]
+    made = propose(world, autonomy, state, http if with_executor else None, incidents)
+    expected = EXPECTED[(autonomy, with_executor)][cell]
     assert made["status"] == expected
     assert made["created"] is True
     assert made["fidelity"] == state
     stored = actions.record(world.twin, made["uid"])
     assert stored["status"] == expected
+    assert stored["fidelity"] == state
     assert len(fresh_plant.received) == (1 if expected == "executed" else 0)
     if expected == "blocked":
-        assert [found["member"] for found in stored["reasons"]] == ["fidelity"]
-        assert state in stored["reasons"][0]["message"]
+        (reason,) = stored["reasons"]
+        assert reason["member"] == "fidelity"
+        assert reason["message"].startswith(f"the twin is {state}")
+        for word in NAMED[cell]:
+            assert word in reason["message"], (word, reason["message"])
+    else:
+        assert stored["reasons"] == []
     if expected == "executed":
         assert stored["execution"]["http_status"] == 200
         assert stored["reconciliation"] == "pending"
@@ -274,11 +315,17 @@ def test_an_unknown_record_is_not_found(world: World, http: HttpExecutor):
         assert caught.value.code == "action.record_not_found"
 
 
-def test_whoever_proposed_may_propose_again_after_a_block(world: World, http: HttpExecutor):
-    first = propose(world, "autonomous", "correcting", http)
-    second = propose(world, "autonomous", "correcting", http)
+def test_whoever_proposed_may_propose_again_after_a_block(
+    world: World, fresh_plant: Plant, http: HttpExecutor
+):
+    first = propose(world, "autonomous", "correcting", http, [STALE])
+    second = propose(world, "autonomous", "correcting", http, [STALE])
     assert first["status"] == second["status"] == "blocked"
     assert first["uid"] != second["uid"]
+    # Once the stale incident is resolved, the same proposal is executed.
+    third = propose(world, "autonomous", "correcting", http, [BREACH])
+    assert third["status"] == "executed"
+    assert len(fresh_plant.received) == 1
 
 
 def test_records_are_read_newest_first_and_by_filter(world: World, http: HttpExecutor):

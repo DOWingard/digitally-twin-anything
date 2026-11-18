@@ -69,12 +69,20 @@ def loop_record(world: World, at_version: Any = "head") -> dict[str, Any]:
     return actions.control_loop(world.twin, "pumping", at=at_version)
 
 
-def run(world: World, policy: Any, key: str, state: str = "healthy", sender: Any = None) -> dict:
+def run(
+    world: World,
+    policy: Any,
+    key: str,
+    state: str = "healthy",
+    sender: Any = None,
+    incidents: list[dict[str, str]] | None = None,
+) -> dict:
     return actions.run_loop(
         world.twin,
         "pumping",
         policy=policy,
         state=state,
+        incidents=incidents or [],
         now=NOW,
         executor=sender,
         key=key,
@@ -137,6 +145,7 @@ def test_an_unknown_loop_is_not_found(world: World):
             "nowhere",
             policy=Answering({"actions": []}),
             state="healthy",
+            incidents=[],
             now=NOW,
             executor=None,
             key="k",
@@ -211,16 +220,50 @@ def test_a_run_proposes_every_action_and_keeps_what_came_of_each(enabled: World)
     assert loop_record(world, versions[-2].ref)["last_run"] is None
 
 
-def test_an_autonomous_action_of_a_run_is_blocked_while_the_twin_is_not_healthy(enabled: World):
+BREACH = {"kind": "breach", "uid": "twin_incident:breach-20260105T003000Z-0a1b2c3d4e"}
+SIGNAL = {"kind": "signal", "uid": "twin_incident:signal-20260105T003000Z-1b2c3d4e5f"}
+STALE = {"kind": "stale", "uid": "twin_incident:stale-20260105T003000Z-2c3d4e5f60"}
+RECONCILE = {"kind": "reconcile", "uid": "twin_incident:reconcile-20260105T003000Z-3d4e5f6071"}
+
+
+@pytest.mark.parametrize(
+    ("state", "incidents", "executed"),
+    [
+        ("healthy", [], True),
+        ("correcting", [BREACH], True),
+        ("correcting", [SIGNAL], True),
+        ("correcting", [STALE], False),
+        ("correcting", [BREACH, RECONCILE], False),
+        ("unknown", [], False),
+        ("failed", [STALE], False),
+    ],
+    ids=["healthy", "breach", "signal", "stale", "reconcile", "unknown", "failed"],
+)
+def test_an_autonomous_action_of_a_run_is_judged_by_the_state_and_the_incidents(
+    enabled: World, state: str, incidents: list[dict[str, str]], executed: bool
+):
+    key = f"loop:pumping:judged:{state}:{'-'.join(found['kind'] for found in incidents)}"
     found = run(
         enabled,
         Answering({"actions": [item("set_pump", PUMP, True)]}),
-        "loop:pumping:blocked",
-        state="correcting",
+        key,
+        state=state,
         sender=Scripted(),
+        incidents=incidents,
     )
-    assert (found["proposed"], found["blocked"], found["executed"]) == (1, 1, 0)
-    assert found["state"] == "correcting"
+    assert found["state"] == state
+    assert (found["proposed"], found["executed"], found["blocked"]) == (
+        1,
+        int(executed),
+        int(not executed),
+    )
+    record = actions.record(enabled.twin, found["records"][0]["uid"])
+    assert record["fidelity"] == state
+    if not executed:
+        assert record["reasons"][0]["member"] == "fidelity"
+        blocking = [incident for incident in incidents if incident["kind"] != "breach"]
+        if state in ("healthy", "correcting"):
+            assert blocking[0]["uid"] in record["reasons"][0]["message"]
 
 
 @pytest.mark.parametrize(

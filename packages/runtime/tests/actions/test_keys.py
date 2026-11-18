@@ -30,6 +30,7 @@ def send(world: World, sender: Any, key: str, **more: Any) -> dict[str, Any]:
         "reason": "keys test",
         "source": "tester",
         "state": "healthy",
+        "incidents": [],
         "now": NOW,
         "executor": sender,
         "key": key,

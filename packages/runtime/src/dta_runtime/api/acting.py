@@ -1,9 +1,12 @@
 """The twin acting on the real system, as the API does it.
 
 The actions library judges, records and sends; here it is handed what it needs at the
-moment of each request: the twin's fidelity state as the head holds it, the twin's clock
-for `now`, the executor built at start and, for a control loop, its policy run in the
-worker exactly as a function run is, reading the head and writing nothing. What its
+moment of each request: the twin's fidelity state and, for a proposal or a loop's run,
+the incidents it has not resolved, both as one version (the head) holds them; the
+twin's clock for `now`, the executor built at start and, for a control loop, its policy
+run in the worker exactly as a function run is, reading the head and writing nothing.
+An autonomous action is executed while the twin is healthy or correcting and no
+unresolved incident is `stale` or `reconcile`. What its
 decisions mean for others is told to the notifier: a supervised proposal waiting for an
 approval, an action the interlock blocked, an executed action whose effect was not
 observed. A mismatch is also an incident of kind `reconcile` on its record, kept by the
@@ -77,6 +80,14 @@ def clock_now(services: Services, head: VersionRef) -> datetime:
 def state_at(services: Services, head: VersionRef) -> str:
     """The twin's fidelity state as the head holds it."""
     return str(fidelity.state(services.twin, head)["state"])
+
+
+def standing_at(services: Services, head: VersionRef) -> tuple[str, list[dict[str, str]]]:
+    """The twin's fidelity state and the `kind` and `uid` of every incident it has not
+    resolved, as the head holds them: what the interlock judges a proposal by."""
+    found = fidelity.standing(services.twin, head)
+    incidents = [{"kind": item["kind"], "uid": item["uid"]} for item in found["incidents"]]
+    return str(found["state"]), incidents
 
 
 def type_document(action: Mapping[str, Any], has_executor: bool) -> dict[str, Any]:
@@ -157,12 +168,12 @@ def propose(
     source: str,
     key: str | None,
 ) -> tuple[dict[str, Any], VersionRef]:
-    """A proposal judged with the state and the clock of this moment; the record (with
-    `created`) and the head once it is decided."""
+    """A proposal judged with the state, the unresolved incidents and the clock of this
+    moment; the record (with `created`) and the head once it is decided."""
     started = time.perf_counter()
     head = services.store.head()
     now = clock_now(services, head)
-    state = state_at(services, head)
+    state, incidents = standing_at(services, head)
     made = actions.propose(
         services.twin,
         action_id,
@@ -171,6 +182,7 @@ def propose(
         reason=reason,
         source=source,
         state=state,
+        incidents=incidents,
         now=now,
         executor=services.executor,
         key=key,
@@ -184,6 +196,7 @@ def propose(
         status=made["status"],
         created=made.get("created"),
         state=state,
+        unresolved=[found["kind"] for found in incidents],
         keyed=key is not None,
         elapsed_ms=_ms(started),
     )
@@ -450,18 +463,19 @@ def _tell_run(services: Services, run: Mapping[str, Any], at: datetime) -> list[
 
 def loop_work(services: Services, loop_id: str, key: str, now: datetime) -> Work:
     """One run of a loop: its policy asked, each action it names proposed with the state
-    the head holds when the run starts."""
+    and the unresolved incidents the head holds when the run starts."""
 
     def work() -> Outcome:
         started = time.perf_counter()
         head = services.store.head()
-        state = state_at(services, head)
+        state, incidents = standing_at(services, head)
         try:
             run = actions.run_loop(
                 services.twin,
                 loop_id,
                 policy=policy_for(services),
                 state=state,
+                incidents=incidents,
                 now=now,
                 executor=services.executor,
                 key=key,
