@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 from dta_core.manifest import Manifest, manifest_hash, parse_manifest
+from dta_core.ontology import load_ontology
+from dta_core.schema import snake_case
+from dta_runtime.mcp import api_document
+from dta_runtime.mcp import operations as mcp_operations
+from dta_runtime.mcp import tool_names as mcp_tool_names
+from dta_toolkit import addons
+from dta_toolkit.sdk import render_sdk
 from dta_toolkit.skill import (
     MARKER_FILE,
     SKILL_FILE,
@@ -17,7 +26,9 @@ from dta_toolkit.skill import (
     render_skill,
     skill_name,
 )
+from dta_toolkit.stack import plan_stack
 
+_ONTOLOGY = Path(__file__).parents[3] / "testbed" / "twin" / "ontology" / "water_utility.yaml"
 SECRET_LOCATION = "postgresql://${ERP_USER}:${ERP_PASSWORD}@erp.internal:5432/erp"
 
 
@@ -481,3 +492,126 @@ def test_a_manifest_without_identity_or_contract_gives_no_skill(missing: str):
     with pytest.raises(SkillError) as caught:
         render(document)
     assert caught.value.code == "skill.incomplete"
+
+
+# -- the add-ons -------------------------------------------------------------------
+
+
+def addon_manifest(**selected: bool) -> Manifest:
+    data = _document()
+    data["contract"]["addons"] = selected
+    data["contract"]["questions"]["q_first"]["example"] = {"property": "Tank.level"}
+    return parse_manifest(data, origin="test")
+
+
+def _section(body: str, heading: str) -> str:
+    start = body.index(heading)
+    end = body.find("\n#", start + len(heading))
+    return body[start : end if end != -1 else len(body)]
+
+
+def _block(text: str, language: str) -> str:
+    found = re.search(rf"```{language}\n(.*?)```", text, re.DOTALL)
+    assert found, language
+    return found.group(1)
+
+
+@pytest.fixture(scope="module")
+def sdk_code() -> dict[str, ast.ClassDef]:
+    """The classes of the client package as it is generated for the skill's twin."""
+    rendered = render_sdk(addon_manifest(sdk_python=True), load_ontology(_ONTOLOGY), api_document())
+    tree = ast.parse(rendered.files[f"{rendered.package}/twin.py"].decode("utf-8"))
+    return {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+
+
+def _methods(cls: ast.ClassDef) -> dict[str, set[str]]:
+    found = {}
+    for node in cls.body:
+        if isinstance(node, ast.FunctionDef):
+            arguments = node.args
+            found[node.name] = {a.arg for a in [*arguments.args, *arguments.kwonlyargs]}
+    return found
+
+
+def test_without_addons_the_skill_offers_none_and_keeps_agents_off_the_database():
+    body = render(manifest()).files[SKILL_FILE]
+    assert "## Other ways in" not in body
+    assert "reach the twin's database or its sources directly" in body
+
+
+@pytest.mark.parametrize(
+    ("selected", "present"),
+    [
+        ({"sdk_python": True}, ["### Python client"]),
+        ({"mcp": True}, ["### MCP tools"]),
+        ({"readonly_sql": True}, ["### Read-only SQL"]),
+        (
+            {"sdk_python": True, "mcp": True, "readonly_sql": True},
+            ["### Python client", "### MCP tools", "### Read-only SQL"],
+        ),
+    ],
+    ids=["sdk", "mcp", "sql", "all"],
+)
+def test_each_selected_addon_has_its_section_and_no_other(selected, present):
+    body = render(addon_manifest(**selected)).files[SKILL_FILE]
+    assert "## Other ways in" in body
+    for heading in ("### Python client", "### MCP tools", "### Read-only SQL"):
+        assert (heading in body) == (heading in present), heading
+    assert ("other than by the read-only SQL above" in body) == ("### Read-only SQL" in present)
+    assert len(body.splitlines()) < 500
+
+
+def test_what_the_skill_says_of_the_client_is_what_the_package_offers(sdk_code):
+    body = render(addon_manifest(sdk_python=True)).files[SKILL_FILE]
+    section = _section(body, "### Python client")
+    assert "`twin_pump_station`" in section and f"`{'/'.join(addons.SDK_DIR)}/`" in section
+    # Every call the section names, with the keywords it names, is in the generated code.
+    classes = {name: _methods(cls) for name, cls in sdk_code.items()}
+    owners = {"objects": "Twin", "head": "Twin", "ask": "Questions"}
+    named = re.findall(r"`(?:twin\.(?:questions\.)?)?([a-z_]+)\(([^`]*)\)`", section)
+    assert {name for name, _ in named} >= {"get", "list", "history", "links", "table", "ask"}
+    for name, arguments in named:
+        methods = classes[owners.get(name, "Objects")]
+        assert name in methods, name
+        for keyword in re.findall(r"([a-z_]+)=", arguments):
+            assert keyword in methods[name], (name, keyword)
+    reads = ("get", "list", "history", "links", "table")
+    assert all({"at", "branch"} <= classes["Objects"][name] for name in reads)
+    for error, fields in (("TwinConfigError", ()), ("TwinApiError", ("status", "code"))):
+        assert f"`{error}`" in section and error in sdk_code
+        source = ast.unparse(sdk_code[error])
+        assert all(f"self.{field} =" in source for field in fields)
+    example = _block(section, "python")
+    compile(example, "skill-example", "exec")
+    assert "twin.questions.ask(\"q_first\", property='Tank.level', at=version)" in example
+
+
+def test_what_the_skill_says_of_the_mcp_adapter_is_what_it_serves():
+    section = _section(render(addon_manifest(mcp=True)).files[SKILL_FILE], "### MCP tools")
+    document = api_document()
+    left_out = [op for op in mcp_operations(document) if op.excluded]
+    assert len(left_out) == 2 and all("/artifacts" in op.path for op in left_out)
+    assert "Two operations are not offered: uploading and fetching artifacts" in section
+    assert set(mcp_tool_names(document)) == {
+        op.operation_id for op in mcp_operations(document) if not op.excluded
+    }
+    registration = json.loads(_block(section, "json"))
+    assert registration["mcpServers"].keys() == {"twin-pump-station"}
+    (server,) = registration["mcpServers"].values()
+    assert server["url"] == f"http://127.0.0.1:${{{addons.MCP_PORT_ENV}}}{addons.MCP_PATH}"
+    assert server["headers"] == {"Authorization": "Bearer ${DTA_API_TOKEN}"}
+
+
+def test_what_the_skill_says_of_read_only_sql_is_what_the_stack_grants():
+    document = addon_manifest(readonly_sql=True)
+    section = _section(render(document).files[SKILL_FILE], "### Read-only SQL")
+    database = plan_stack(document).database
+    assert f"`{database}`" in section and f"`{addons.READER_USER}`" in section
+    for name in (addons.SQL_PORT_ENV, addons.SQL_READER_PASSWORD_ENV):
+        assert f"`{name}`" in section
+    granted = addons.grant_reader_sql(database, "a-good-password-0123")
+    assert f"GRANT SELECT ON `{database}`.* TO '{addons.READER_USER}'@'%';" in granted
+    # "Each type is a table named after it in snake_case".
+    assert all(t.table == snake_case(t.name) for t in load_ontology(_ONTOLOGY).domain_types())
+    statements = _block(section, "sql").strip().splitlines()
+    assert any("AS OF" in s for s in statements) and any("dolt_diff_" in s for s in statements)

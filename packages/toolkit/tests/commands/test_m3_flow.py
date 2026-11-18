@@ -52,6 +52,9 @@ CHECKS = {
     "fidelity.schedule",
     "actions.registered",
     "notifications.configured",
+    "sdk.usable",
+    "mcp.reachable",
+    "sql.readonly",
 }
 
 
@@ -136,7 +139,9 @@ def test_flow_from_manifest_to_handover(make_twin, tmp_path: Path, home: Path) -
         "models": ("ran", "skipped"),
         "questions": ("ran", "ok"),
         "ui": ("ran", "skipped"),
+        "mcp": ("ran", "skipped"),
         "skill": ("ran", "ok"),
+        "sdk": ("ran", "skipped"),
     }
     load = next(entry for entry in built["steps"] if entry["step"] == "load")["detail"]
     assert load["versions_written"] == 4 and load["rows_rejected"] == 0

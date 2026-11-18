@@ -224,7 +224,7 @@ def test_the_twin_is_built_with_its_actions_and_loops_and_accepted(twin: M6Twin)
     accepted = twin.ok("accept")
     assert accepted["passed"] is True and accepted["failed"] == [], accepted["failed"]
     ids = [entry["id"] for entry in accepted["checks"]]
-    assert ids[-4:] == list(NEW_CHECKS)
+    assert ids[-7:-3] == list(NEW_CHECKS)
     fidelity = check(accepted, "fidelity.state")["evidence"]
     assert fidelity["state"] in ("healthy", "unknown")
     if fidelity["state"] == "unknown":

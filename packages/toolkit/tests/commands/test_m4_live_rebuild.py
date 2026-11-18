@@ -28,6 +28,7 @@ def test_rebuilding_a_live_twin_keeps_its_data_and_its_scheduler(make_twin) -> N
         **live.COMPUTE_STEPS,
         "ui": ("ran", "skipped"),
         "skill": ("ran", "ok"),
+        **live.ADDON_STEPS,
     }
     load = next(entry for entry in again["steps"] if entry["step"] == "load")
     assert load["reason"] == live.LIVE_LOADED

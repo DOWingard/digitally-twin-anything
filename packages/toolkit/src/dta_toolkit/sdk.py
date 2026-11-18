@@ -21,7 +21,6 @@ import io
 import json
 import keyword
 import re
-import shutil
 import tempfile
 import time
 import tomllib
@@ -519,8 +518,3 @@ def ensure_sdk(
         "warnings": rendered.warnings,
         "timings_ms": {**rendered.timings_ms, "total_ms": elapsed},
     }
-
-
-def copy_tree(source: Path, target: Path) -> None:
-    """A copy of the package outside the workspace, so that installing it writes nothing there."""
-    shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))

@@ -52,7 +52,9 @@ def test_failing_build_step_stops_the_build_and_a_rerun_completes_it(make_twin) 
         "models",
         "questions",
         "ui",
+        "mcp",
         "skill",
+        "sdk",
     ]
     assert detail["evidence"]["code"].startswith("sync.")
     record = json.loads((twin.root / ".dta" / "build.json").read_text(encoding="utf-8"))
@@ -77,7 +79,9 @@ def test_failing_build_step_stops_the_build_and_a_rerun_completes_it(make_twin) 
         "models": ("ran", "skipped"),
         "questions": ("ran", "ok"),
         "ui": ("ran", "skipped"),
+        "mcp": ("ran", "skipped"),
         "skill": ("ran", "ok"),
+        "sdk": ("ran", "skipped"),
     }
     assert twin.gates()["build"] == "passed"
     assert twin.leaked() == []

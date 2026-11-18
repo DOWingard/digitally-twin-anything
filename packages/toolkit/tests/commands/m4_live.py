@@ -39,8 +39,12 @@ STEPS = (
     "models",
     "questions",
     "ui",
+    "mcp",
     "skill",
+    "sdk",
 )
+# What a build of a twin without add-ons does in their steps.
+ADDON_STEPS = {"mcp": ("ran", "skipped"), "sdk": ("ran", "skipped")}
 # What a twin with questions and no code or model of its own does in each build.
 COMPUTE_STEPS = {
     "image": ("ran", "skipped"),
@@ -57,6 +61,7 @@ ACTING_CHECKS = (
     "actions.registered",
     "notifications.configured",
 )
+ADDON_CHECKS = ("sdk.usable", "mcp.reachable", "sql.readonly")
 CHECKS = {
     "api.contract",
     "readiness.R1",
@@ -72,6 +77,7 @@ CHECKS = {
     *SYNC_CHECKS,
     *COMPUTE_CHECKS,
     *ACTING_CHECKS,
+    *ADDON_CHECKS,
 }
 LIVE_LOADED = "the twin already holds data; its runs keep it in step"
 
