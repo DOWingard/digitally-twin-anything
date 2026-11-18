@@ -24,7 +24,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.append(str(Path(__file__).resolve().parents[1] / "sync"))
 # The notification tests' webhook and the ports this package's servers may listen on.
 sys.path.append(str(Path(__file__).resolve().parents[1] / "notify"))
+# The action library tests' twin with controls, and the plant its executors call.
+sys.path.append(str(Path(__file__).resolve().parents[1] / "actions"))
 
+from actions_api_testkit import Acting, own_port, serve_acting  # noqa: E402
 from api_testkit import (  # noqa: E402
     TOKEN,
     Api,
@@ -60,6 +63,7 @@ from live_api_testkit import served as serve  # noqa: E402
 from live_testkit import LIVE, at  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 from sync_testkit import T0  # noqa: E402
+from webhook_testkit import webhook  # noqa: E402
 
 WATER_ONTOLOGY = (
     Path(__file__).resolve().parents[3] / "core/tests/ontology/fixtures/water_network.yaml"
@@ -270,6 +274,37 @@ def small(
         app = create_app(settings, twin, clock=FixedClock(compute_at(history)))
         client = stack.enter_context(TestClient(app, raise_server_exceptions=False))
         return Small(client=client, twin=twin, app=app, ontology_text=water_text)
+
+    with stack:
+        yield make
+
+
+@pytest.fixture
+def acting(
+    new_settings: Callable[[], StoreSettings],
+    water_text: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Callable[..., Acting]]:
+    """A fresh twin with controls behind its API, a worker and the plant it acts on;
+    with `webhook`, its notices go to a webhook of the test's. Stopped and dropped after
+    the test."""
+    stack = contextlib.ExitStack()
+    made: list[Acting] = []
+
+    def make(*, with_webhook: bool = False, **options: Any) -> Acting:
+        root = tmp_path / f"acting-{len(made)}"
+        receiver = stack.enter_context(webhook(own_port())) if with_webhook else None
+        world = serve_acting(
+            new_settings(),
+            water_text,
+            root,
+            monkeypatch.setenv,
+            webhook_receiver=receiver,
+            **options,
+        )
+        made.append(stack.enter_context(world))
+        return made[-1]
 
     with stack:
         yield make
