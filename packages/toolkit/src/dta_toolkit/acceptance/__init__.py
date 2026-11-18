@@ -23,6 +23,7 @@ from .acting import (
     fidelity_state,
     notifications_configured,
 )
+from .addons import AddonAccess, mcp_reachable, sdk_usable, sql_readonly
 from .client import ApiUnavailable, TwinApi, probe_health, service_url
 from .compute import compute_worker, models_accepted, questions_answered, questions_error
 from .contract import DEFAULT_EXAMPLES, DEFAULT_SEED, api_contract
@@ -41,6 +42,7 @@ from .readiness import (
 from .result import CheckResult
 
 __all__ = [
+    "AddonAccess",
     "DEFAULT_EXAMPLES",
     "DEFAULT_SEED",
     "SKILL_API_FILE",
@@ -163,13 +165,21 @@ def run_checks(
     rendered_skill_hash: str | None,
     skill: SkillText,
     services: Callable[[], list[dict[str, Any]]],
+    addon_access: AddonAccess | None = None,
     examples: int = DEFAULT_EXAMPLES,
     seed: int = DEFAULT_SEED,
 ) -> AcceptanceRun:
     """Every check of acceptance, in a fixed order.
 
-    `services` gives the state of the stack's containers when a check asks for it.
+    `services` gives the state of the stack's containers when a check asks for it;
+    `addon_access` what the checks of the add-ons reach beyond the API.
     """
+
+    def needs_access() -> AddonAccess:
+        if addon_access is None:
+            raise DtaError("nothing was given to reach the add-ons", code="acceptance.no_access")
+        return addon_access
+
     with TwinApi(manifest, values) as api:
         ctx = Context(api=api, manifest=manifest, ontology=ontology)
         plan: list[tuple[str, Callable[[], CheckResult]]] = [
@@ -201,6 +211,12 @@ def run_checks(
             ("fidelity.schedule", lambda: fidelity_schedule(ctx)),
             ("actions.registered", lambda: actions_registered(ctx)),
             ("notifications.configured", lambda: notifications_configured(ctx)),
+            ("sdk.usable", lambda: sdk_usable(manifest, values, needs_access())),
+            ("mcp.reachable", lambda: mcp_reachable(manifest, values, needs_access())),
+            (
+                "sql.readonly",
+                lambda: sql_readonly(manifest, ontology, values, needs_access(), api),
+            ),
         ]
         checks = [_guarded(ident, run) for ident, run in plan]
     return AcceptanceRun(checks=checks)

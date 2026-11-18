@@ -21,11 +21,13 @@ from ..acceptance import (
     DEFAULT_EXAMPLES,
     DEFAULT_SEED,
     SKILL_API_FILE,
+    AddonAccess,
     SkillText,
     render_markdown,
     run_checks,
 )
 from ..output import command, emit, session
+from ..sdk import sdk_dir
 from ..stack import Stack
 from ..workspace import now
 from .common import (
@@ -128,6 +130,12 @@ def accept(
             rendered_skill_hash=rendered_hash(generated),
             skill=_skill_text(workspace.root, generated),
             services=stack.services,
+            addon_access=AddonAccess(
+                sdk_root=sdk_dir(workspace),
+                run_image=stack.run_image,
+                runtime_image=stack.plan.runtime_image,
+                database=stack.plan.database,
+            ),
             examples=examples,
             seed=seed,
         )
