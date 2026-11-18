@@ -104,6 +104,12 @@ RECORD_VERSION = 1
 # The record's map of model specification -> what its last evaluation rested on.
 BASES_KEY = "evaluated_bases"
 INSTALL_TIMEOUT_S = 900.0
+# A live twin's scheduler keeps writing while install records a new manifest revision at
+# the head it read; a sync committed in between makes that time earlier than the head's.
+# Nothing was written then, so install is run again on the new head.
+TIME_REGRESSION = "store.time_regression"
+INSTALL_TRIES = 3
+INSTALL_PAUSE_S = 0.5
 # How long a load of a live twin waits for a sync job in progress to end.
 LOAD_WAIT_S = 600.0
 API = "/api/v1"
@@ -313,7 +319,23 @@ class Build:
     def install(self) -> dict[str, Any]:
         text = self.ontology_file.read_text(encoding="utf-8")
         bundle = Bundle(manifest=self.manifest, ontology_text=text).to_json()
-        document = self.stack.runtime("install", input=bundle, timeout=INSTALL_TIMEOUT_S)
+        attempt = 1
+        while True:
+            try:
+                document = self.stack.runtime("install", input=bundle, timeout=INSTALL_TIMEOUT_S)
+                break
+            except StackError as exc:
+                if exc.code != TIME_REGRESSION or attempt >= INSTALL_TRIES:
+                    raise
+                log.warn(
+                    "install raced a sync run for the head; it runs again on the new head",
+                    attempt=attempt,
+                    tries=INSTALL_TRIES,
+                    pause_s=INSTALL_PAUSE_S,
+                    detail=exc.detail,
+                )
+                attempt += 1
+                time.sleep(INSTALL_PAUSE_S)
         version = document.get("version")
         if not isinstance(version, dict) or "seq" not in version:
             raise StepFailed("install returned no version", {"document_keys": sorted(document)})
@@ -328,6 +350,7 @@ class Build:
             "version": self.install_head,
             "ontology_hash": document.get("ontology"),
             "loaded": self.install_loaded,
+            "attempts": attempt,
         }
 
     def _quiet_writers(self) -> dict[str, Any]:
