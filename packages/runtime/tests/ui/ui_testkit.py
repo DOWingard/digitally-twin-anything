@@ -49,6 +49,12 @@ TIMED_RUNS = 3
 QUESTIONS_S: list[float] = []
 COMPARE_S: list[float] = []
 SWITCH_S: list[float] = []
+# The fidelity tab drawn whole from the click on it, three questions of 300 scored origins
+# and 50 incidents; the actions tab with the first page of a thousand records.
+FIDELITY_TAB_LIMIT_S = 2.0
+ACTIONS_TAB_LIMIT_S = 1.5
+FIDELITY_TAB_S: list[float] = []
+ACTIONS_TAB_S: list[float] = []
 # The tests' own calls to the API (starting runs, waiting for them) carry this user agent,
 # so that what the page asked for can be told apart.
 DRIVER_AGENT = "dta-ui-tests"
