@@ -98,7 +98,8 @@ def check(
         typer.Option("--write", help="Write the file's signature to the manifest when it differs."),
     ] = False,
 ) -> None:
-    """Compare the ontology file's type signature with the one confirmed in the manifest."""
+    """Compare the ontology file's type signature with ontology.type_signature of the
+    manifest, whether that is confirmed or only proposed."""
     workspace = session(ctx).workspace
     manifest = workspace.load_manifest()
     path = ontology_path(workspace, manifest)

@@ -168,7 +168,8 @@ def derive(
                     ctx,
                     INTERVAL_CONFIRMED,
                     f"sync.interval is confirmed as {_iso(stated)}; it is not replaced by the "
-                    f"derived {_iso(found.interval)}. Change it in the manifest to use the rule.",
+                    f"derived {_iso(found.interval)}. To use the rule, delete sync.interval and "
+                    "its field_status line from the manifest and run this command again.",
                     result,
                     _text(result, found),
                 )

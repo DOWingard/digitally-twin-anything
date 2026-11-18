@@ -243,7 +243,8 @@ def install_skill(
         Scope | None,
         typer.Option(
             "--scope",
-            help="personal: ~/.claude/skills (the default); project: ./.claude/skills.",
+            help="personal: ~/.claude/skills (the default); project: .claude/skills under the "
+            "directory the command is run in, which need not be the workspace.",
         ),
     ] = None,
     provisional: Annotated[
@@ -264,14 +265,15 @@ def install_skill(
     if found is None:
         log.warn("install refused: no generated skill", path=str(source))
         raise CheckFailed(
-            "no skill has been generated; run `dta generate skill`",
+            "no skill has been generated; run `dta build --from skill`, then `dta accept`",
             code="skill.missing",
             detail={"path": str(source)},
         )
     if found != digest:
         log.warn("install refused: skill is from another manifest", found=found, current=digest)
         raise CheckFailed(
-            "the generated skill is from another manifest; run `dta generate skill` again",
+            "the generated skill is from another manifest; run `dta build --from skill`, "
+            "then `dta accept`",
             code="skill.stale",
             detail={"skill_manifest_hash": found, "manifest_hash": digest},
         )
