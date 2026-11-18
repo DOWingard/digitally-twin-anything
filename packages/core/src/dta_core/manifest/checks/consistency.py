@@ -8,7 +8,7 @@ from ..models import Autonomy
 from ..status import stale_status_entries
 from .findings import Issue, Severity, check
 from .secrets import credential_name, literal_value, url_problems
-from .view import ManifestView
+from .view import FORECAST_KINDS, ManifestView
 
 
 @check("control.bounds")
@@ -76,20 +76,22 @@ def static_extras(view: ManifestView) -> Iterator[Issue]:
     if not view.static:
         return
     manifest = view.manifest
-    # How existing history is loaded applies to a static twin too; only the
-    # settings of the recurring sync are of no use to it.
+    # A static twin is loaded once, but its models and scenarios step on
+    # sync.interval all the same; the bounds of the interval matter only to the
+    # derivation of a grid that something steps on.
     sync = manifest.sync
-    recurring = sync is not None and any(
-        value is not None
-        for value in (
-            sync.interval,
-            sync.minimum_interval,
-            sync.maximum_interval,
-            sync.derivation,
-        )
+    steps = bool(view.models) or any(
+        question.kind in FORECAST_KINDS for question in view.questions.values()
     )
-    if recurring:
-        yield Issue("sync", "a static twin is loaded once; its sync interval will be ignored")
+    bounds = sync is not None and any(
+        value is not None for value in (sync.minimum_interval, sync.maximum_interval)
+    )
+    if bounds and not steps:
+        yield Issue(
+            "sync",
+            "a static twin is loaded once and has no forecast to step: sync.minimum_interval "
+            "and sync.maximum_interval bound nothing and will be ignored",
+        )
     for section, present in (
         ("fidelity", manifest.fidelity is not None),
         ("control_loops", bool(manifest.control_loops)),

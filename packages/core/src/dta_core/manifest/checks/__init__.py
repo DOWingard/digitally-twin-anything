@@ -4,7 +4,7 @@ Importing this package registers every check. Findings are sorted by path and
 code, so the order in which checks run does not show in the output.
 """
 
-from . import consistency, feasibility, references  # noqa: F401 - registers the checks
+from . import consistency, feasibility, grid, loading, references  # noqa: F401 - registers checks
 from .against_ontology import ontology_findings
 from .findings import CHECKS, Check, Finding, Issue, Severity, check, errors_of, run_checks
 from .gates import (

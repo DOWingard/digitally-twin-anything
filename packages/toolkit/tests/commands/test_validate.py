@@ -56,6 +56,18 @@ def stale_status(data: dict[str, Any]) -> None:
     data["field_status"]["contract.questions.q_gone.text"] = "confirmed"
 
 
+def no_forecasts(data: dict[str, Any]) -> None:
+    """Without a forecast nothing steps on the grid, so the twin may go without an interval."""
+    for question in ("q_forecast", "q_schedule"):
+        del data["contract"]["questions"][question]
+    del data["models"]
+    data["field_status"] = {
+        path: status
+        for path, status in data["field_status"].items()
+        if not path.startswith(("contract.questions.q_forecast", "contract.questions.q_schedule"))
+    }
+
+
 Q = "contract.questions"
 STATIC = put("contract.tier", "static")
 
@@ -128,10 +140,10 @@ CASES = [
     ("executor_addon", "action.executor_addon", "error", "actions.set_pump_speed.binding",
      put("contract.addons.executors", False)),
     ("static_control", "tier.static_control", "error", "contract.controls.c_pump_speed.autonomy",
-     chain(STATIC, drop("sync"), drop("fidelity"), drop("control_loops"))),
-    ("static_extras", "tier.static_extras", "warning", "sync",
+     chain(STATIC, drop("fidelity"), drop("control_loops"))),
+    ("static_extras", "tier.static_extras", "warning", "fidelity",
      chain(STATIC, put("contract.controls.c_pump_speed.autonomy", "advisory"),
-           drop("fidelity"), drop("control_loops"))),
+           drop("control_loops"))),
     ("secret_query", "secret.inline", "error", "sources.pumps.location",
      put("sources.pumps.location", "https://pumps.example.org/api/v1/status?api_key=k3yL1teral")),
     ("secret_userinfo", "secret.inline", "error", "sources.scada.location",
@@ -148,7 +160,15 @@ CASES = [
     # With a sync interval set, refresh <= interval <= staleness already implies this
     # rule, so it is observable on its own only before the interval is derived.
     ("staleness", "feasible.staleness", "error", f"{Q}.q_level.staleness",
-     chain(put(f"{Q}.q_level.staleness", "PT30S"), drop("sync.interval"))),
+     chain(put(f"{Q}.q_level.staleness", "PT30S"), drop("sync.interval"), no_forecasts)),
+    ("grid_no_interval", "grid.no_interval", "error", "sync.interval", drop("sync.interval")),
+    ("grid_horizon", "grid.horizon", "error", f"{Q}.q_forecast.horizon",
+     put(f"{Q}.q_forecast.horizon", "PT62M")),
+    ("grid_backtest_step", "grid.backtest_step", "error", "models.m_forecast.backtest.step",
+     put("models.m_forecast.backtest.step", "PT7M")),
+    ("mapping_invalid", "sync.mapping_invalid", "error", "sources.pumps.views.pump_log",
+     chain(put("sources.pumps.views", {"pump_log": "SELECT * FROM pump_status"}),
+           put("sources.pumps.mappings.pumps.dataset", "pump_log"))),
     ("interval_rate_limit", "feasible.interval", "error", "sync.interval",
      put("sources.scada.rate_limit_period", "PT6M")),
     ("interval_staleness", "feasible.interval", "error", "sync.interval",

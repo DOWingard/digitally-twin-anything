@@ -153,6 +153,9 @@ sources:
             column: setpoint_c
             unit: Cel
 sync:
+  # Written by `dta sync derive --write`: the 15 min staleness of q_temp less the 5 min
+  # refresh period of the telemetry leaves 10 min, which divides the 2 h horizon.
+  interval: PT10M
   aggregation: last
 models:
   q_temp_ahead:
