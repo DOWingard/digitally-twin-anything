@@ -20,6 +20,17 @@ from actions_api_testkit import (
     code,
 )
 from actions_testkit import manifest_of, ontology_text
+from dta_runtime.api.models import (
+    ActionDecided,
+    ActionRecordList,
+    ActionRecordOne,
+    ActionStepped,
+    ActionTypeList,
+    ActionTypeOne,
+    ControlLoopList,
+    ControlLoopOne,
+    Registered,
+)
 from dta_runtime.twin import Bundle, install_twin
 
 MakeActing = Callable[..., Acting]
@@ -36,6 +47,7 @@ def test_registration_writes_actions_and_loops_in_the_version_of_the_other_regis
 ):
     world = acting()
     answer = world.registered
+    Registered.model_validate(answer)
     assert answer["actions"] == {
         "created": uids("twin_action", ACTIONS),
         "changed": [],
@@ -79,6 +91,7 @@ def test_registration_writes_actions_and_loops_in_the_version_of_the_other_regis
 def test_the_action_types_and_loops_are_listed_as_registered(acting: MakeActing):
     world = acting()
     listed = world.ok("/actions")
+    ActionTypeList.model_validate(listed)
     assert listed["executor_configured"] is True
     assert [found["id"] for found in listed["data"]] == ACTIONS
     executable = {found["id"]: found["executable"] for found in listed["data"]}
@@ -90,6 +103,7 @@ def test_the_action_types_and_loops_are_listed_as_registered(acting: MakeActing)
         "suggest_pump": False,
     }
     one = world.ok("/actions/set_valve")
+    ActionTypeOne.model_validate(one)
     assert one["data"]["uid"] == "twin_action:set_valve"
     assert (one["data"]["autonomy"], one["data"]["binding"]) == ("supervised", "executor")
     assert one["data"]["bounds"] == {"minimum": 1.0, "maximum": 200.0, "max_step": 50.0}
@@ -99,10 +113,13 @@ def test_the_action_types_and_loops_are_listed_as_registered(acting: MakeActing)
     assert world.ok("/actions/twin_action:set_pump")["data"]["id"] == "set_pump"
     world.refused(world.get("/actions/nothing"), 404, "action.not_found")
 
-    loops = world.ok("/control/loops")["data"]
+    loops = ControlLoopList.model_validate(world.ok("/control/loops")).model_dump()["data"]
     assert [found["id"] for found in loops] == LOOPS
     assert {found["enabled"] for found in loops} == {False}
     pumping = world.ok("/control/loops/pumping")["data"]
+    ControlLoopOne.model_validate(
+        {"data": pumping, "version": world.ok("/control/loops")["version"]}
+    )
     assert pumping["controls"] == ["pump_running", "valve_setting"]
     assert (pumping["policy"], pumping["interval"]) == ("pump_policy", "PT15M")
     world.refused(world.get("/control/loops/nothing"), 404, "action.loop_not_found")
@@ -134,6 +151,8 @@ def test_each_autonomy_in_each_fidelity_state(acting: MakeActing, state: str):
     assert (waiting["status"], waiting["fidelity"]) == ("proposed", state)
     approved = world.decide(waiting["uid"], "approve", note="go ahead")
     assert approved.status_code == 200, approved.text
+    ActionStepped.model_validate(approved.json())
+    ActionRecordOne.model_validate(world.ok(f"/actions/records/{waiting['uid']}"))
     decided = approved.json()["data"]
     assert decided["status"] == expected["supervised"]
     assert decided["approval"]["by"] == "operator@plant"
@@ -229,6 +248,7 @@ def test_a_key_names_one_proposal(acting: MakeActing):
     first = world.propose("set_pump", PUMP, True, key="agent-7:pump-on")
     assert first.status_code == 201, first.text
     assert first.json()["created"] is True
+    ActionDecided.model_validate(first.json())
     head = world.head
     again = world.propose("set_pump", PUMP, True, key="agent-7:pump-on")
     assert again.status_code == 200, again.text
@@ -289,6 +309,7 @@ def test_records_are_listed_newest_first_page_by_page_and_filtered(acting: MakeA
     cursor = None
     while True:
         page = world.ok("/actions/records", limit=3, **({"cursor": cursor} if cursor else {}))
+        ActionRecordList.model_validate(page)
         pages.extend(found["uid"] for found in page["data"])
         cursor = page["next_cursor"]
         if cursor is None:

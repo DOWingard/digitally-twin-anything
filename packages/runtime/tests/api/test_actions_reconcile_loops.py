@@ -16,6 +16,7 @@ from actions_api_testkit import (
     at,
 )
 from actions_testkit import link, observe
+from dta_runtime.api.models import ControlLoopOne, ReconcileOut
 
 MakeActing = Callable[..., Acting]
 
@@ -52,6 +53,7 @@ def test_a_mismatch_opens_an_incident_and_an_action_that_had_its_effect_closes_i
     asked = world.post("/actions/reconcile", headers={"Idempotency-Key": "reconcile:one"})
     assert asked.status_code == 200, asked.text
     answer = asked.json()
+    ReconcileOut.model_validate(answer)
     (outcome,) = answer["data"]
     assert (outcome["record"], outcome["outcome"]) == (first["uid"], "mismatch")
     assert (outcome["value"], outcome["observed"], outcome["tolerance"]) == (20.0, 11.0, 0.5)
@@ -132,7 +134,7 @@ def test_a_loop_runs_its_policy_through_the_worker_and_proposes_what_it_names(
     assert world.record(waiting["uid"])["params"] == {"value": 15.0}
     world.wait_events(1, APPROVAL_PENDING)
 
-    loop = world.ok("/control/loops/pumping")["data"]
+    loop = ControlLoopOne.model_validate(world.ok("/control/loops/pumping")).model_dump()["data"]
     assert loop["last_run"]["key"] == "run-1"
     assert loop["last_run"]["status"] == "succeeded"
 
