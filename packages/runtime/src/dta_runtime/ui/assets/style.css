@@ -551,3 +551,113 @@ body {
   border-top: 1px solid var(--line);
   padding-top: 8px;
 }
+
+/* The state badge: a word and a sign carry the state; the colour repeats it. */
+.state-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.state-badge .state-label {
+  color: var(--muted);
+}
+
+.state-unknown {
+  background: #eef0f2;
+  color: #3d454d;
+}
+
+.state-healthy {
+  background: #e3f4e6;
+  color: #1b6e2d;
+  border-color: #9fd3aa;
+}
+
+.state-correcting {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border-color: #f0c85a;
+}
+
+.state-failed {
+  background: var(--error-bg);
+  color: var(--error-ink);
+  border-color: #e3a0a0;
+}
+
+.failed-line {
+  margin: 6px 0;
+  padding: 6px 10px;
+  background: var(--error-bg);
+  color: var(--error-ink);
+  border-radius: 4px;
+}
+
+.failed-line:empty {
+  display: none;
+}
+
+/* The fidelity tab. */
+.fidelity-summary dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 6px 0;
+}
+
+.fidelity-summary dt {
+  color: var(--muted);
+}
+
+.fidelity-summary dd {
+  margin: 0;
+}
+
+.fidelity-question {
+  margin: 8px 0 16px;
+}
+
+.incidents-grid .incident-open,
+.incidents-grid .incident-remodel_requested {
+  color: var(--warn-ink);
+}
+
+.incidents-grid .incident-failed {
+  color: var(--error-ink);
+}
+
+.incident-detail {
+  margin: 8px 0 16px;
+}
+
+.notice.remodel {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+}
+
+/* The actions tab. */
+.records-grid .record-rejected,
+.records-grid .record-blocked,
+.records-grid .record-failed {
+  color: var(--error-ink);
+}
+
+.records-grid .record-mismatch {
+  background: var(--warn-bg);
+}
+
+.record-detail {
+  margin: 8px 0 16px;
+}
+
+.record-part h5 {
+  margin: 8px 0 2px;
+}
+
+.record-part ul {
+  margin: 0;
+  padding-left: 18px;
+}

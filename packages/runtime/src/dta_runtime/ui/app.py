@@ -19,8 +19,12 @@ from flask import jsonify
 
 from ..settings import UiSettings
 from . import (
+    actions,
     answers,
+    badge,
     branches,
+    features,
+    fidelity,
     graph,
     guard,
     header,
@@ -55,6 +59,21 @@ def layout() -> html.Div:
                     ),
                     dcc.Tab(
                         label=T.SCENARIOS_TAB, value=scenarios.TAB, children=scenarios.layout()
+                    ),
+                    # Hidden until the twin is known to have them (`features`).
+                    dcc.Tab(
+                        label=T.FIDELITY_TAB,
+                        value=fidelity.TAB,
+                        id=ids.FIDELITY_TAB,
+                        children=fidelity.layout(),
+                        style=features.HIDDEN,
+                    ),
+                    dcc.Tab(
+                        label=T.ACTIONS_TAB,
+                        value=actions.TAB,
+                        id=ids.ACTIONS_TAB,
+                        children=actions.layout(),
+                        style=features.HIDDEN,
                     ),
                 ],
                 className="tabs",
@@ -91,6 +110,10 @@ def create_app(settings: UiSettings) -> Dash:
     questions.register(app, backend)
     answers.register(app, backend)
     scenarios.register(app, backend)
+    badge.register(app, backend)
+    features.register(app, backend)
+    fidelity.register(app, backend)
+    actions.register(app, backend)
 
     @app.server.route("/healthz")
     def healthz():  # type: ignore[no-untyped-def]
