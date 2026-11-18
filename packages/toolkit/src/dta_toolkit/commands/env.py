@@ -175,11 +175,14 @@ def template(ctx: typer.Context) -> None:
 
 @command
 def check(ctx: typer.Context) -> None:
-    """Exit 0 when `.env` sets every variable the stack requires; 1 naming those it lacks."""
+    """Exit 0 when `.env` sets every variable `dta env template` asks for; 1 naming those it
+    lacks."""
     workspace = session(ctx).workspace
     manifest = workspace.load_manifest()
     stack = Stack(workspace, manifest)
-    required = list(stack.plan.required_env())
+    # The same names `template` lists to fill: the stack's, and the API's address that the
+    # twin's clients and its operator skill read.
+    required = [entry.name for entry in planned_names(manifest, stack)]
     values = read_env(workspace.env_path)
     absent = [name for name in required if not values.get(name)]
     warnings: list[dict[str, str]] = []

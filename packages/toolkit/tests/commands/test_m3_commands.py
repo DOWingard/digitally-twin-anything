@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 
@@ -50,17 +51,40 @@ def test_env_template_adds_only_the_names_env_lacks(make_twin) -> None:
     assert stat.S_IMODE(twin.env_file.stat().st_mode) == 0o600
 
 
+def test_env_template_creates_env_private_whatever_the_umask(make_twin) -> None:
+    twin = make_twin()
+    twin.write()
+    previous = os.umask(0)
+    try:
+        twin.ok("env", "template")
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(twin.env_file.stat().st_mode) == 0o600
+
+
+def test_env_template_never_loosens_the_mode_of_an_existing_env(make_twin) -> None:
+    twin = make_twin()
+    twin.write()
+    twin.env_file.write_text("DTA_API_TOKEN=chosen-by-the-user\n", encoding="utf-8")
+    twin.env_file.chmod(0o400)
+    twin.ok("env", "template")
+    assert stat.S_IMODE(twin.env_file.stat().st_mode) == 0o400
+    assert "DTA_STORE_PASSWORD" in _env(twin)
+
+
 def test_env_check_names_each_missing_variable(make_twin) -> None:
     twin = make_twin()
     twin.write()
     error = twin.failed("env.missing", "env", "check")
     assert sorted(error["detail"]["missing"]) == sorted(
-        ["DTA_STORE_PASSWORD", "DTA_API_TOKEN", "DTA_API_PORT", kit.DATA_ENV]
+        ["DTA_STORE_PASSWORD", "DTA_API_TOKEN", "DTA_API_PORT", "DTA_BASE_URL", kit.DATA_ENV]
     )
 
-    twin.ok("env", "template")
+    # check asks for exactly what template leaves to fill.
+    to_fill = twin.ok("env", "template")["to_fill"]
     error = twin.failed("env.missing", "env", "check")
-    assert sorted(error["detail"]["missing"]) == ["DTA_API_PORT", kit.DATA_ENV]
+    assert sorted(error["detail"]["missing"]) == sorted(to_fill)
+    assert sorted(to_fill) == ["DTA_API_PORT", "DTA_BASE_URL", kit.DATA_ENV]
 
     twin.fill_env()
     result = twin.ok("env", "check")
