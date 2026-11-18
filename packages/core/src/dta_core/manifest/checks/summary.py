@@ -17,12 +17,13 @@ from pathlib import Path
 from ...errors import DtaError
 from ...log import Log
 from ..io import contract_hash, manifest_hash
-from ..models import Bounds, Manifest, Tolerance
+from ..models import Bounds, Manifest, Tier, Tolerance
 from .view import fmt_duration
 
 log = Log("manifest.summary")
 
 _UNSET = "not set"
+_ONCE = "none: read once"
 _LINK_ANNOTATIONS = ("link_source", "link_target")
 
 
@@ -95,7 +96,8 @@ def _tolerance(tolerance: Tolerance | None) -> str | None:
     if tolerance is None or tolerance.value is None:
         return None
     metric = tolerance.metric.value if tolerance.metric else "error"
-    unit = f" {tolerance.unit}" if tolerance.unit else ""
+    # UCUM's `1` is a plain number; written after the value it reads as a digit.
+    unit = f" {tolerance.unit}" if tolerance.unit and tolerance.unit != "1" else ""
     return f"{metric} <= {tolerance.value:g}{unit}"
 
 
@@ -159,9 +161,15 @@ def render_summary(manifest: Manifest, ontology: OntologyTypes | None = None) ->
     lines += ["", "## Delegated controls", ""]
     if controls:
         lines += _table(
-            ("Id", "Target", "Bounds", "Autonomy"),
+            ("Id", "Description", "Target", "Bounds", "Autonomy"),
             [
-                (cid, control.target, _bounds(control.bounds), _enum(control.autonomy))
+                (
+                    cid,
+                    control.description,
+                    control.target,
+                    _bounds(control.bounds),
+                    _enum(control.autonomy),
+                )
                 for cid, control in sorted(controls.items())
             ],
         )
@@ -186,6 +194,8 @@ def render_summary(manifest: Manifest, ontology: OntologyTypes | None = None) ->
     else:
         lines.append("None.")
 
+    # A static twin reads its sources once; what they would hand over later is never read.
+    static = contract is not None and contract.tier == Tier.static
     sources = manifest.sources or {}
     lines += ["", "## Sources", ""]
     if sources:
@@ -196,15 +206,18 @@ def render_summary(manifest: Manifest, ontology: OntologyTypes | None = None) ->
                     sid,
                     source.description,
                     _enum(source.connector),
-                    _duration(source.refresh_period),
+                    _ONCE if static else _duration(source.refresh_period),
                 )
                 for sid, source in sorted(sources.items())
             ],
         )
     else:
         lines.append("None.")
-    sync_interval = manifest.sync.interval if manifest.sync else None
-    lines += ["", f"Sync interval: {_duration(sync_interval) or _UNSET}"]
+    sync_interval = _duration(manifest.sync.interval if manifest.sync else None) or _UNSET
+    if static:
+        lines += ["", f"Time step of forecasts (sync.interval): {sync_interval}"]
+    else:
+        lines += ["", f"Sync interval: {sync_interval}"]
 
     lines += ["", "## Ontology", ""]
     path = manifest.ontology.path if manifest.ontology else None

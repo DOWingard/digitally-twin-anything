@@ -6,6 +6,10 @@ Gate `design` is recorded by `dta manifest validate`. It passes when the manifes
 
 Work in this order. If you work with other agents, `dta tasks plan --stage 4` lists one mapping task per source and one task per question; see [delegation](delegation.md). Steps 1 and 2 are always yours.
 
+`dta` commands rewrite `manifest.yaml` when they write to it (`dta ontology check --write`, `dta manifest confirm`, `dta sync derive --write`, `dta profile`): lines are reflowed and defaults filled in. Read the file again before each edit you make after any such command; an edit made from an older copy fails or undoes what the command wrote.
+
+When the design names a variable that is not yet in `.env` (an executor's address or key, a webhook, a new source's password), add it under `env`, then run `dta env template` again (it adds the new names to `.env` and leaves every line already there as it is), have the user fill in the new names as [stage 2](stage-2-access.md), step 4, says, and run `dta env check`.
+
 ## 1. Write the ontology
 
 Write one LinkML file, `<workspace>/ontology/<id>.yaml`, as [ontology](ontology.md) says: one class per kind of object the questions talk about, a reference property for each "belongs to" relation, and a property for every value a question or control names. Use exactly the `Type.property` names the contract already uses (control targets). Then set `ontology.path` to `ontology/<id>.yaml`.
@@ -55,7 +59,7 @@ For each question, as [functions](functions.md) and [models](models.md) say:
 1. `contract.questions.<question>.targets`: the properties the answer depends on.
 2. `contract.questions.<question>.function`: the id of the function that answers it, declared under `functions`.
 3. `contract.questions.<question>.example`: arguments the twin is asked with when it checks it can answer (an empty mapping `{}` when the function's fixed parameters say everything).
-4. For a `predictive` or `prescriptive` question: `contract.questions.<question>.horizon`, `contract.questions.<question>.model`, the model under `models.<question>` and the function `functions.<question>` with entry `forecast`.
+4. For a `predictive` or `prescriptive` question: `contract.questions.<question>.horizon`, `contract.questions.<question>.model`, the model under `models.<question>` and the function `functions.<question>` with entry `forecast`. Take the backtest `step` equal to the horizon (or a whole multiple of it): step 7 fits the time step to the horizons, and the step must be a whole multiple of it ([models](models.md), "The time step").
 
 ## 6. Controls, actions and the objective
 
@@ -65,22 +69,22 @@ Only when the contract has controls or a prescriptive question; see [live twins]
 - `contract.objective.kpi`: the id of a function that computes the objective;
 - optionally, control loops under `control_loops`.
 
-## 7. Live settings
+## 7. The time step and live settings
 
-Only for a live twin; see [live twins](live.md):
+For a live twin, and for a static twin with a `predictive` or `prescriptive` question, derive the time step `sync.interval` after the horizons are written (step 5); see [live twins](live.md), "The sync interval". Never write it by hand, in either tier.
 
 ```sh
 dta sync derive --write
 ```
 
-- Exit 0: `sync.interval` and `sync.derivation` are written, marked derived.
-- Exit 1, code `sync.infeasible`: no interval meets every question's staleness; `error.detail.problems` says which. Tell the user the question, its staleness and the source's delivery period; propose a longer staleness. After the user decides, run it again.
-- Exit 1, code `sync.underivable`: profiling has not measured any delivery period; check stage 3.
+- Exit 0: `sync.interval` and `sync.derivation` are written, marked derived. `result.binding` says which term decided it; `horizon` means it was shortened from `result.before_fitting` so that it divides every horizon.
+- Exit 1, code `sync.infeasible`: no interval meets every question's staleness and horizon; `error.detail.problems` says which. For a staleness: tell the user the question, its staleness and the source's delivery period; propose a longer staleness. For a horizon: propose to the user a horizon that is a whole multiple of the delivery period the message names. After the user decides, run it again.
+- Exit 1, code `sync.underivable`: profiling has not measured any delivery period, and no forecast states a horizon; check stage 3.
 - Exit 1, code `sync.interval_confirmed`: `sync.interval` was written by hand; delete the `interval` line under `sync` and run it again.
 
-Then write `fidelity.interval` and `fidelity.window`, and `sync.backfill_interval` ([live twins](live.md)).
+For a live twin, then write `fidelity.interval` and `fidelity.window`, and `sync.backfill_interval` ([live twins](live.md)).
 
-For a static twin with timed data, write `sync.backfill_interval` only ([live twins](live.md), "Loading history").
+For a static twin with timed data, write `sync.backfill_interval` ([live twins](live.md), "Loading history"); a static twin writes no `fidelity` and no `control_loops` (`tier.static_extras`).
 
 ## 8. Validate
 

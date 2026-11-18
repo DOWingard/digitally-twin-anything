@@ -67,6 +67,16 @@ class HttpConnector(BaseConnector):
         # Attempts of the request in flight, and of the last one finished.
         self._failed_attempts = 0
         self._attempts = 0
+        # Per dataset, the fields of the rows last read that its declared columns left out.
+        self._dropped: dict[str, tuple[str, ...]] = {}
+
+    def dropped_columns(self, dataset: str) -> tuple[str, ...]:
+        """Fields the rows last read from `dataset` held that its declared `columns` left out.
+
+        A declared columns list is the list of columns kept, so a field it does not
+        name is never read; this says which ones that was, for the probe to report.
+        """
+        return self._dropped.get(dataset, ())
 
     # -- connecting ----------------------------------------------------------
 
@@ -176,6 +186,14 @@ class HttpConnector(BaseConnector):
                     raise self._rows_failed(exc, spec, spec.path, None) from None
         finally:
             pages.close()
+            self._dropped[spec.name] = tuple(tables.dropped)
+            if tables.dropped:
+                self._log.info(
+                    "fields left out by the declared columns",
+                    source=self.source_id,
+                    dataset=spec.name,
+                    dropped=list(tables.dropped),
+                )
 
     def _params(self, spec: HttpDataset, request: ReadRequest) -> dict[str, Any]:
         # A fresh dict per read: the paginators write their own parameters into it.

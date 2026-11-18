@@ -36,6 +36,10 @@ EXPECTED_CODES = {
     "feasible.noise",
     "feasible.history",
     "feasible.acceptance",
+    "grid.no_interval",
+    "grid.horizon",
+    "grid.backtest_step",
+    "sync.mapping_invalid",
 }
 WARNINGS = {
     "ref.env_unused",

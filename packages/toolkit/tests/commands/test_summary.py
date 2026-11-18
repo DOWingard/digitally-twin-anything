@@ -42,7 +42,10 @@ def test_summary_is_byte_identical_across_runs(workspace, complete):
     assert "| Object types | Pump, Tank |" in text
     assert "| Link types | Feeds |" in text
     assert "| q_forecast | What will each tank level be in six hours? | predictive |" in text
-    assert "| c_pump_speed | Pump.speed | 0 to 1500; step <= 100 | supervised |" in text
+    assert (
+        "| c_pump_speed | Speed of the main pump | Pump.speed | 0 to 1500; step <= 100 | "
+        "supervised |"
+    ) in text
     assert "Sync interval: 5 min" in text
 
 

@@ -32,6 +32,30 @@ The built-ins and every parameter they take are listed in [manifest](manifest.md
 
 A version is `head` (the newest), `#<n>` (the n-th version), a version id, or a time in ISO 8601 (`2025-06-01T00:00:00Z`).
 
+### Filters: `where` and `edge_where`
+
+`latest`, `above`, `below` and `aggregate` take `where`: a list of texts, each `<property>:<op>:<value>`, over properties of the class of `property`. An object counts only if it passes every clause. `paths` takes `edge_where` in the same form with the link class in front: `Pipe.diameter:ge:0.2`.
+
+| `op` | Meaning | Example |
+|---|---|---|
+| `eq`, `ne` | equal, not equal | `status:eq:open` |
+| `lt`, `le`, `gt`, `ge` | below, at most, above, at least | `mean_demand:gt:0` |
+| `in` | one of the values, separated by commas | `zone:in:north,south` |
+| `like` | a text property matches an SQL pattern (`%` any text, `_` one character) | `name:like:PMP-%` |
+| `null`, `notnull` | has no value, has a value; no value is written | `closed_at:null` |
+
+The value is read as the property's kind: a number for a numeric property, `true` or `false`, a time with its offset (`2026-01-05T00:00:00Z`). Write `uid` as the property to filter on the object's uid. A property that holds a list cannot be filtered on. `["mean_demand > 0"]` or `{mean_demand: {gt: 0}}` are refused: `dta manifest validate` checks each clause (`ref.function_entry`, `ontology.unknown_property`, `ontology.function_param`).
+
+### What the built-ins cannot do
+
+| The question needs | Built-ins | What to do |
+|---|---|---|
+| The top N, or any order | No built-in sorts or cuts its result. | A registered function that computes the counts and returns the first N in order; or, when the user only needs the counts, `aggregate`, saying in the handover that the caller sorts. |
+| Groups by two properties (pairs of stations) | `aggregate.group_by` takes one property. | Map a property that holds the pair, with an `expression` in the mapping (`start_station \|\| '>' \|\| end_station`), and group by it; or a registered function. |
+| Two properties in one answer (bikes and free docks) | Each built-in reads one `property`. | A registered function that reads both (`columns="bikes,docks"`); or leave `property` out of `params` and name it in each call, with the question's `example` naming one of them. |
+
+The twin can compare a question answered by a function with the noise of its data only when the function is a built-in whose `params` fix `property`. A registered function, or a built-in that leaves `property` to the call, is validated on latency alone (see [stage 8](stage-8-handover.md), "Gather the numbers").
+
 Rules the checks enforce:
 
 - `ref.function_entry`: a built-in entry must be one of the built-ins; a fixed parameter must be one it takes, in the right shape.

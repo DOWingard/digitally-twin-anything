@@ -55,9 +55,13 @@ Never change a tolerance yourself, and never call a failing question passed. Tel
 >
 > Which do you choose?
 
-Record the answer in `discussion.md`. Then: option 1 is a contract revision ([stage 8](stage-8-handover.md), "Revise the contract"); option 2 is a design revision; option 3 sets `contract.questions.<question>.provisional: true` and rebuilds from `models`; option 4 removes the question, its model and its function, and is a contract revision.
+Record the answer in `discussion.md`. Then: option 1 is a contract revision ([stage 8](stage-8-handover.md), "Revise the contract"); option 2 is a design revision ([stage 8](stage-8-handover.md), "Revise the design", which also says how it is done before handover); option 3 sets `contract.questions.<question>.provisional: true` and rebuilds from `models`; option 4 removes the question, its model and its function, and is a contract revision.
 
-## 4. Check the gate
+## 4. What `validated` rests on
+
+`questions.error` passes for a question that is `validated` whatever its `basis`. A question answered by a function alone, whose data has no noise figure, is validated on `basis: latency` with `measured_error` null: it answered within its latency budget, and its error against the tolerance was never measured. That is not a failure and needs no fix, but the handover report must say it ([stage 8](stage-8-handover.md), "Gather the numbers").
+
+## 5. Check the gate
 
 ```sh
 dta status

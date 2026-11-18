@@ -18,7 +18,7 @@ Ask for each missing item with the questions of the [question bank](question-ban
 
 What the user points at decides where the data comes from:
 
-- A database, an HTTP API or a folder of files: that is a source. Write it as in step 5.
+- A database, an HTTP API or a folder of files: that is a source. Write it as in step 5. An interface the twin would only send commands to is not a source, and a feed no question needs is left out ([sources](sources.md), "Which services are sources").
 - A code repository: look in it (read only, never run its code) for data files, database schemas, connection settings and API descriptions. Propose a source for each data store you find, by kind and address, and ask the user to confirm each one. Never take a password or token from the repository: name the variable instead (step 5).
 - Only a description, with no data anywhere: a twin is filled from data, so ask the user for files that list the system's objects (one CSV file per kind of object, one row per object). You may draft those files with the user from their description, in a folder the user names outside the workspace; map them with `kind: assumed` (see [sources](sources.md)) so the twin says they are assumptions.
 
@@ -61,7 +61,7 @@ Open `<workspace>/manifest.yaml` with your file tools. `dta init` wrote `twin`, 
    - `sources.<source>.env`: the list of every variable the source's location and options name.
 3. For every variable you named, an entry under `env`:
    - `env.<NAME>.description`: what the value is, so the user knows what to write. Example: `Password of the asset register database`.
-   - `env.<NAME>.secret`: `false` only for values that are safe to show (a folder path, a public address, a port number); `true` (the default) for anything else.
+   - `env.<NAME>.secret`: `false` for every value that is safe to show (a folder path, a host name, a database name, a port number, an address issued per account), with the reason in its description; `true` (the default) for passwords, tokens and keys. A value left secret is masked as `***` wherever it appears in what `dta` relays, so a database named `registry` would blank that word everywhere ([sources](sources.md), "Locations").
 
 Never write a password, token, key or personal address into `manifest.yaml`: the check `secret.inline` refuses a location or header that carries one, and the manifest is meant to be shared.
 

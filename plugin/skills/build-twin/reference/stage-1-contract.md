@@ -39,7 +39,7 @@ Do not ask for these; you set them in stage 4: `contract.questions.<question>.ta
    dta manifest confirm contract.tier contract.purpose contract.questions.<question>.text contract.questions.<question>.kind contract.questions.<question>.priority
    ```
 
-   Exit 0: `result.confirmed` lists the paths now confirmed. Exit 2, code `confirm.refused`: `error.detail.refused` lists each path with its own code; nothing was changed. `confirm.no_value`: the field has no value yet, so write it first. `confirm.not_user_field`: the field is the agent's; leave it out. `confirm.not_required`: the path is wrong or the field does not apply (for example `bounds`, which has no confirmation of its own; the signature in stage 5 covers it); leave it out.
+   Exit 0: `result.confirmed` lists the paths now confirmed. Exit 2, code `confirm.refused`: `error.detail.refused` lists each path with its own code; nothing was changed. `confirm.no_value`: the field has no value yet, so write it first. `confirm.not_user_field`: the field is the agent's; leave it out. `confirm.not_required`: the path is wrong or the field has no confirmation of its own; leave it out. Two fields you ask about are like that: a control's `bounds` and `contract.addons.executors`. Do not confirm them; record the user's answer in `discussion.md`. Both are shown in the summary the user signs in stage 5, and the signature covers them.
 
 Never use `dta manifest confirm --all-user` in this stage: it would also confirm the tolerances, stalenesses and ontology types the user has not agreed to yet.
 

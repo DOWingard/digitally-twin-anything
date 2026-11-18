@@ -59,9 +59,9 @@ KEY_NAMES = {
 }
 
 # Fields the schema accepts and the build does not act on: the value is recorded in
-# the manifest and shown in the summary only. Kept here, not in the schema, because
-# the schema's own descriptions say what the field is meant for; the skill's tests
-# check that no code of the tool reads them, so this list fails loudly once one does.
+# the manifest and shown in the summary only. The schema's descriptions say so too;
+# the reference adds it to any description that does not. The skill's tests check that
+# no code of the tool reads them, so this list fails loudly once one does.
 RECORDED_ONLY = (
     "contract.cadence_preference",
     "contract.addons.sdk_python",
@@ -229,7 +229,7 @@ def _rows(model: type[BaseModel], prefix: str, written_by: str | None) -> Iterat
         description = info.description or ""
         if name in WRITTEN_BY and written_by is None:
             description += f"; written by {WRITTEN_BY[name]}"
-        if path in RECORDED_ONLY:
+        if path in RECORDED_ONLY and "recorded only" not in description:
             description += "; recorded only: the build does not act on it"
         inner = written_by or WRITTEN_BY.get(name)
         limits = _limits(info)

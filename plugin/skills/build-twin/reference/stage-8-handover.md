@@ -12,7 +12,7 @@ The build generated the operator skill into `<workspace>/skill/twin-<id>/` (the 
 dta install-skill
 ```
 
-It installs into the user's personal skills directory, read by their agent in every project. If the user said the twin belongs to one project only, use `dta install-skill --scope project` instead, run with the project's directory as the current directory.
+It installs into the user's personal skills directory, read by their agent in every project. If the user said the twin belongs to one project only, use `dta install-skill --scope project` instead, run with the project's directory as the current directory: it installs into the skills directory of the directory it is run in, not of the workspace. If the user named another skills directory, use `dta install-skill --target <directory>`: the skill goes into `<directory>/twin-<id>/`. `--target` and `--scope` cannot be given together (`install.options`).
 
 - Exit 0: `result.installed` is where it went; `result.handover` is `reports/handover.md` in the workspace.
 - Exit 1, code `handover.not_accepted`: a gate before handover has not passed; `error.detail.gates` lists them. Go back to that stage. Use `--provisional` only when the user asks for the skill before acceptance passes, and say so in the report: the handover gate then stays failed.
@@ -24,7 +24,17 @@ It installs into the user's personal skills directory, read by their agent in ev
 dta questions list
 ```
 
-`result.questions` holds, per question, `id`, `status` (`validated`, `provisional` or `failing`), `measured_error`, `tolerance`, `metric`, `unit` and `reason`. Read also `reports/acceptance.md` for anything the checks marked as a warning, and `reports/handover.md`, which the tool wrote.
+`result.questions` holds, per question, `id`, `status` (`validated`, `provisional` or `failing`), `basis`, `measured_error`, `tolerance`, `metric`, `unit` and `reason`. Read also `reports/acceptance.md` for anything the checks marked as a warning, and `reports/handover.md`, which the tool wrote.
+
+`basis` says what `validated` rests on:
+
+| `basis` | `measured_error` | What was shown |
+|---|---|---|
+| `backtest` | the selected model's backtest error | A forecast question: its model forecast the twin's own history within the tolerance. |
+| `noise_floor` | the largest noise of the source columns the function's `property` is read from | A question answered by a built-in that fixes `property`: the function answered, and the data's noise is within the tolerance. |
+| `latency` | none (`null`) | A question answered by a function alone, whose data has no noise figure: the function answered its `example` within its latency budget. Its error against the tolerance was never measured. |
+
+For a `latency` question, write in the report's "Measured error" column "not measured", in "Status" "validated on latency only: answered within its <budget> budget", and list it under "Not verified": its tolerance was agreed but nothing measured an error against it.
 
 ## 3. Report to the user
 
@@ -41,7 +51,7 @@ Write the report in this order, plainly, and give the same text to the user:
 ## Questions
 | Question | Measured error | Tolerance | Status |
 |---|---|---|---|
-| <id>: <text> | <measured_error> | <tolerance> (<metric>) | <status>: <reason> |
+| <id>: <text> | <measured_error, or "not measured"> | <tolerance> (<metric>) | <status> on <basis>: <reason> |
 
 ## Provisional
 <every question not validated, every model not accepted, every gate not passed, with the reason; or "Nothing is provisional.">
@@ -64,7 +74,9 @@ A revision of the contract changes anything under `contract`, or the ontology's 
 
 ## Revise the design
 
-A revision of the design changes mappings, functions, models, sync or fidelity settings, actions, loops or code, and nothing under `contract`. It needs no new signature.
+A revision of the design changes mappings, functions, models, sync or fidelity settings, actions, loops or code, and nothing under `contract`. It needs no new signature. The same steps apply before handover, when stage 7 sends you back to change the design (its option 2); then finish with stage 7 and this stage's steps 1 to 3 instead of step 4 below.
+
+`twin.revision` counts the manifest's revisions for the record: the twin writes it into the version that takes up a new manifest, and no check or gate requires it to change. Increase it once per revision the user asked for or agreed to, before or after handover; not for each fix while you build.
 
 1. Make the change; record why in `discussion.md` if the user asked for it.
 2. Increase `twin.revision` by 1.

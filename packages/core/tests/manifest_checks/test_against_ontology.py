@@ -255,7 +255,27 @@ CASES += [
         function("latest", property="Tank.level", where=["depth:gt:1"]),
         ("ontology.unknown_property", "error", "functions.f.params.where"),
     ),
+    (
+        "object filter whose value is not of the property's kind",
+        function("latest", property="Tank.level", where=["level:gt:high"]),
+        ("ontology.function_param", "error", "functions.f.params.where"),
+    ),
+    (
+        "object filter listing a value that is not of the property's kind",
+        function("latest", property="Tank.level", where=["level:in:1,2,x"]),
+        ("ontology.function_param", "error", "functions.f.params.where"),
+    ),
+    (
+        "link filter whose value is not of the property's kind",
+        function("paths", edge_where=["Pipe.length:lt:short"]),
+        ("ontology.function_param", "error", "functions.f.params.edge_where"),
+    ),
 ]
+
+
+def test_a_clause_the_twin_cannot_read_is_left_to_the_manifest_s_own_checks():
+    """Read as a property name, `mean_demand > 0` was reported as an unknown property."""
+    assert findings(function("latest", property="Tank.level", where=["level > 0"])) == []
 
 
 def test_functions_that_fit_the_ontology_have_no_findings():

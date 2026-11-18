@@ -63,6 +63,13 @@ def _text(reports: list[dict[str, Any]], failing: list[dict[str, Any]], recorded
         datasets = report.get("datasets") or []
         state = "ok  " if report.get("ok") else "FAIL"
         lines.append(f"{state} {report.get('source_id')} ({len(datasets)} dataset(s))")
+        for dataset in datasets:
+            dropped = dataset.get("dropped_columns") or []
+            if dropped:
+                lines.append(
+                    f"  {report.get('source_id')}.{dataset.get('dataset')}: the declared columns "
+                    f"leave out {', '.join(dropped)}; they are not read"
+                )
     for entry in failing:
         where = entry["source"] + (f".{entry['dataset']}" if entry["dataset"] else "")
         lines.append(f"  {where}: {entry['error_code']}: {entry['error']}")

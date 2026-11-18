@@ -131,3 +131,85 @@ def test_the_derived_interval_passes_the_check():
     assert found.feasible
     manifest.sync.interval = found.interval
     assert _interval_findings(manifest) == []
+
+
+def _forecasting(
+    horizons: dict[str, str],
+    change_time: str | None,
+    refresh: str | None,
+    tier: str = "live",
+    staleness: str | None = None,
+) -> Any:
+    """`_manifest` with forecast questions about the same tank level, one per horizon."""
+    sources = {"scada": {"refresh_period": refresh}} if refresh is not None else {}
+    manifest = _manifest(staleness, change_time=change_time, **sources)
+    document = manifest.model_dump(mode="json", exclude_none=True)
+    document["contract"]["tier"] = tier
+    for qid, horizon in horizons.items():
+        document["contract"]["questions"][qid] = {
+            "kind": "predictive",
+            "targets": ["Tank.level"],
+            "horizon": horizon,
+        }
+    return parse_manifest(document)
+
+
+def test_the_bike_export_derives_the_hour_its_forecast_looks_ahead():
+    """Rule 3 h 7 min 30 s from a change time of 6 h 15 min; the horizon of 1 h is the grid."""
+    found = derive_interval(
+        _forecasting({"q_ahead": "PT1H"}, change_time="PT6H15M", refresh="PT18S", tier="static")
+    )
+    assert found.unfitted == timedelta(hours=3, minutes=7, seconds=30)
+    assert (found.interval, found.binding, found.feasible) == (60 * MIN, "horizon", True)
+    assert found.horizon == found.term("horizon") == 60 * MIN
+    assert found.questions == ("q_ahead",)
+    # Recorded under sync.derivation are the rule's own inputs only: a field the
+    # manifest schema did not have would be refused by a runtime built before it.
+    assert "horizon" not in found.inputs.model_dump()
+
+
+def test_the_water_utility_keeps_its_quarter_hour():
+    """Staleness 30 min, source every 15 min: the rule's 15 min divides the 1 h horizon."""
+    found = derive_interval(
+        _forecasting({"q_ahead": "PT1H"}, change_time="PT4H30M", refresh="PT15M", staleness="PT30M")
+    )
+    # The freshness bound and the source period are both 15 min; the source is named.
+    assert (found.interval, found.binding, found.feasible) == (15 * MIN, "source_period", True)
+    assert found.unfitted == found.interval
+
+
+def test_an_interval_that_does_not_divide_the_horizon_is_shortened_until_it_does():
+    """25 min: 60 / ceil(60 / 25) = 20 min."""
+    found = derive_interval(_forecasting({"q_ahead": "PT1H"}, change_time="PT50M", refresh="PT1M"))
+    assert found.unfitted == 25 * MIN
+    assert (found.interval, found.binding, found.feasible) == (20 * MIN, "horizon", True)
+
+
+def test_several_horizons_are_divided_by_their_greatest_common_divisor():
+    found = derive_interval(
+        _forecasting({"q_a": "PT1H", "q_b": "PT1H30M"}, change_time="PT2H", refresh="PT1M")
+    )
+    # gcd(60, 90) = 30 min; the rule's 1 h is fitted to it.
+    assert (found.interval, found.binding) == (30 * MIN, "horizon")
+    assert found.horizon == 30 * MIN and found.questions == ("q_a", "q_b")
+
+
+def test_a_fit_that_leaves_whole_milliseconds_only_takes_the_next_divisor():
+    found = derive_interval(_forecasting({"q_ahead": "PT1H"}, change_time="PT18M", refresh="PT1M"))
+    # 9 min: 7 steps do not divide the hour in whole milliseconds; 8 steps do.
+    assert found.unfitted == 9 * MIN
+    assert found.interval == timedelta(minutes=7, seconds=30)
+
+
+def test_a_horizon_shorter_than_the_source_period_cannot_be_met():
+    found = derive_interval(
+        _forecasting({"q_ahead": "PT30M"}, change_time="PT6H", refresh="PT1H", tier="static")
+    )
+    assert (found.interval, found.binding, found.feasible) == (30 * MIN, "horizon", False)
+    (problem,) = found.problems
+    assert "'q_ahead' (30 min)" in problem and "source_period 1 h" in problem
+
+
+def test_horizons_alone_give_an_interval():
+    found = derive_interval(_forecasting({"q_ahead": "PT6H"}, change_time=None, refresh=None))
+    assert (found.interval, found.binding, found.feasible) == (360 * MIN, "horizon", True)

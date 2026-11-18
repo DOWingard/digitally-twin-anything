@@ -12,8 +12,9 @@ from collections.abc import Iterator
 
 from ...functions import BUILTINS, Builtin, ParamKind, shape_problem
 from ...log import Log
-from ...schema import Kind, Ontology, Role
+from ...schema import UID_FIELD, Kind, Ontology, Role
 from ..models import Manifest
+from .filters import clause_problem, edge_clause_problem, value_problem
 from .findings import Finding, Severity
 from .view import ManifestView, is_property_ref, split_ref
 
@@ -132,22 +133,27 @@ def _function_findings(
 
     for clause in given.get("edge_where") or ():  # type: ignore[union-attr]
         path = f"{base}.params.edge_where"
+        if edge_clause_problem(str(clause)) is not None:
+            continue  # a clause the twin cannot read is reported by ref.function_entry
         head = str(clause).split(":", 1)[0]
         type_name, _, prop = head.partition(".")
-        if not type_name or not prop:
-            yield (
-                FUNCTION_PARAM,
-                path,
-                f"'{clause}' is not written <LinkType>.<property>:<op>:<value>",
-            )
-            continue
-        links = _link_types(ontology, type_name)
+        prop = prop.strip()
+        links = _link_types(ontology, type_name.strip())
         if links is None:
             yield UNKNOWN_TYPE, path, f"'{clause}': the ontology has no type {type_name}"
         elif not links:
             yield FUNCTION_PARAM, path, f"'{clause}': {type_name} is not a link type"
-        elif not all(ontology.type(member).has_field(prop) for member in links):
+        elif prop != UID_FIELD and not all(
+            ontology.type(member).has_field(prop) for member in links
+        ):
             yield UNKNOWN_PROPERTY, path, f"'{clause}': {type_name} has no property {prop}"
+        elif prop != UID_FIELD:
+            rest = str(clause)[str(clause).index(".") + 1 :]
+            for member in links:
+                problem = value_problem(rest, ontology.type(member).field(prop))
+                if problem is not None:
+                    yield FUNCTION_PARAM, path, f"'{clause}': {problem}"
+                    break
 
     weight = given.get("weight")
     if weight is not None and followed:
@@ -170,15 +176,23 @@ def _function_findings(
                 f"{', '.join(holders)} has no property {group_by}",
             )
         for clause in given.get("where") or ():  # type: ignore[union-attr]
+            if clause_problem(str(clause)) is not None:
+                continue  # a clause the twin cannot read is reported by ref.function_entry
             prop = str(clause).split(":", 1)[0].strip()
-            if prop != "uid" and not all(
-                ontology.type(member).has_field(prop) for member in holders
-            ):
+            if prop == UID_FIELD:
+                continue
+            if not all(ontology.type(member).has_field(prop) for member in holders):
                 yield (
                     UNKNOWN_PROPERTY,
                     f"{base}.params.where",
                     f"'{clause}': {', '.join(holders)} has no property {prop}",
                 )
+                continue
+            for member in holders:
+                problem = value_problem(str(clause), ontology.type(member).field(prop))
+                if problem is not None:
+                    yield FUNCTION_PARAM, f"{base}.params.where", f"'{clause}': {problem}"
+                    break
 
 
 def ontology_findings(manifest: Manifest, ontology: Ontology, signature: str) -> list[Finding]:

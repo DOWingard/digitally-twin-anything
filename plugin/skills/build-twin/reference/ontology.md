@@ -79,7 +79,7 @@ classes:
 ## Roles and time
 
 - A property that a source reports with a time (a reading, a status that changes) has `dta_role: state`, and its mapping names a `valid_time` column. The check `ontology.role` warns when a state property is mapped without a time, or a static one with a time.
-- A property set once (a name, a size, a model number) keeps the default role, and its mapping has no `valid_time`.
+- A property set once (a name, a size, a model number) keeps the default role, and its mapping has no `valid_time`, even when the source keeps an `updated_at` for it. Its value is in force from the first version of the loaded history; a later change is written at the version of the sync that finds it.
 - An append-only record of something that happened (a delivery, an alarm, a meter reading the source later corrects) is a class with `annotations: {dta_event: true}`; its properties may be mapped with a `valid_time` whatever their role.
 
 ## Link classes
@@ -109,6 +109,8 @@ A link between two objects that carries values of its own is a class with the an
 ```
 
 A link class is mapped like any class: its identity columns, and a column for each of the two references.
+
+A link class may hold further reference properties besides the two it links (a trip links two stations and also names its bike); they are ordinary references. A link that records something that happened (a trip, a delivery) may also be an event class: give it `dta_event: true` beside `link_source` and `link_target`.
 
 ## Enums
 

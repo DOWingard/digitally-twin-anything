@@ -34,7 +34,7 @@ What the twin must do and within which limits.
 | `contract` | section | yes | user |  | What the twin must do and within which limits |
 | `contract.purpose` | text | yes | user |  | What the twin is for |
 | `contract.tier` | one of `static`, `live` | yes | user |  | Static (one load) or live (recurring sync) |
-| `contract.cadence_preference` | duration (ISO 8601, such as `PT15M`) | no | user |  | Sync interval the user asked for; recorded only: the build does not act on it |
+| `contract.cadence_preference` | duration (ISO 8601, such as `PT15M`) | no | user |  | Sync interval the user asked for; recorded only, the interval is derived |
 | `contract.questions` | map of `<question>` to a section | yes | user |  | What the twin must answer or decide |
 | `contract.questions.<question>.text` | text | yes | user |  | The information or decision wanted |
 | `contract.questions.<question>.kind` | one of `descriptive`, `diagnostic`, `predictive`, `prescriptive` | yes | user |  | Descriptive, diagnostic, predictive or prescriptive |
@@ -76,12 +76,12 @@ What the twin must do and within which limits.
 | `contract.notification.kind` | one of `webhook`, `log` | yes | user |  | Where failures are raised |
 | `contract.notification.webhook_env` | text | yes, when `kind` is `webhook` | user |  | Name of the variable holding the webhook address |
 | `contract.addons` | section | no | user |  | Optional parts of the build |
-| `contract.addons.sdk_python` | true or false | no | user | `false` | Generate a typed Python client; recorded only: the build does not act on it |
-| `contract.addons.mcp` | true or false | no | user | `false` | Generate an MCP adapter from the API description; recorded only: the build does not act on it |
+| `contract.addons.sdk_python` | true or false | no | user | `false` | Wish for a typed Python client; recorded only, nothing is built |
+| `contract.addons.mcp` | true or false | no | user | `false` | Wish for an MCP adapter; recorded only, nothing is built |
 | `contract.addons.executors` | true or false | no | user | `false` | Let actions call external systems |
-| `contract.addons.llm_extraction` | true or false | no | user | `false` | Run a language model inside the twin to re-read documents; recorded only: the build does not act on it |
-| `contract.addons.readonly_sql` | true or false | no | user | `false` | Expose read-only SQL over the history; recorded only: the build does not act on it |
-| `contract.hosting` | one of `local`, `cloud` | no | user | `local` | Where the twin is meant to run; recorded only: the build does not act on it |
+| `contract.addons.llm_extraction` | true or false | no | user | `false` | Wish for documents re-read by a language model; recorded only, nothing is built |
+| `contract.addons.readonly_sql` | true or false | no | user | `false` | Wish for read-only SQL over the history; recorded only, nothing is built |
+| `contract.hosting` | one of `local`, `cloud` | no | user | `local` | Where the twin is meant to run; recorded only, it runs on this machine |
 
 ## ontology
 
