@@ -90,8 +90,14 @@ def test_the_schedule_holds_sync_fidelity_reconcile_enabled_loops_and_interval_f
     assert "reconcile" not in expected_entries(
         manifest, loops=[], actions=[ACTION], executor_configured=False
     )
-    static = parse_manifest(kit.manifest("m3tk-00000000"))
-    assert expected_entries(static, loops=[], actions=[], executor_configured=False) == {}
+    static = kit.manifest("m3tk-00000000")
+    unsynced = parse_manifest(static)
+    assert expected_entries(unsynced, loops=[], actions=[], executor_configured=False) == {}
+    # A static twin that keeps a sync interval for its models' grid is synced on it.
+    gridded = parse_manifest({**static, "sync": {"backfill_interval": "PT1H", "interval": "PT1H"}})
+    assert expected_entries(gridded, loops=[], actions=[], executor_configured=False) == {
+        "sync": "sync.interval"
+    }
 
 
 def test_the_registry_is_compared_with_the_manifest_for_its_own_reasons() -> None:

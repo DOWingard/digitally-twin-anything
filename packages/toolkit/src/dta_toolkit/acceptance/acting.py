@@ -79,14 +79,17 @@ def _read(
     return body if isinstance(body, dict) else {}
 
 
-def _checks_fidelity(manifest: Manifest) -> bool:
+def _sets_fidelity(manifest: Manifest) -> bool:
     fidelity = manifest.fidelity
-    return (
-        is_live(manifest)
-        and fidelity is not None
-        and fidelity.interval is not None
-        and fidelity.window is not None
-    )
+    return fidelity is not None and fidelity.interval is not None and fidelity.window is not None
+
+
+def _checks_fidelity(manifest: Manifest) -> bool:
+    return is_live(manifest) and _sets_fidelity(manifest)
+
+
+def has_sync_interval(manifest: Manifest) -> bool:
+    return manifest.sync is not None and manifest.sync.interval is not None
 
 
 # -- fidelity.state -----------------------------------------------------------------
@@ -195,17 +198,16 @@ def expected_entries(
 ) -> dict[str, str]:
     """Entry id -> why the schedule must hold it, from the manifest and the twin's records.
 
-    A live twin's sync and fidelity check; the reconciliation of executed actions when
-    the API makes calls and an active action is bound to an executor; every enabled,
-    active loop; every function the manifest triggers on an interval. A static twin
-    has none.
+    The sync and the fidelity check; the reconciliation of executed actions when the API
+    makes calls and an active action is bound to an executor; every enabled, active
+    loop; every function the manifest triggers on an interval. The API schedules all of
+    them by the sync interval, whatever the tier: a twin without one has none, and a
+    static twin that keeps one for the grid of its models is still synced on it.
     """
-    if not is_live(manifest):
+    if not has_sync_interval(manifest):
         return {}
-    expected: dict[str, str] = {}
-    if manifest.sync is not None and manifest.sync.interval is not None:
-        expected["sync"] = "sync.interval"
-    if _checks_fidelity(manifest):
+    expected: dict[str, str] = {"sync": "sync.interval"}
+    if _sets_fidelity(manifest):
         expected["fidelity"] = "fidelity.interval"
     if executor_configured and any(
         action.get("binding") == EXECUTOR and action.get("status") == ACTIVE for action in actions
@@ -267,8 +269,8 @@ def fidelity_schedule(ctx: Context) -> CheckResult:
     if reasons:
         evidence["reason"] = "; ".join(reasons)
         log.warn("schedule check failed", reason=evidence["reason"])
-    if not is_live(ctx.manifest):
-        evidence["note"] = "a static twin's schedule is empty"
+    if not has_sync_interval(ctx.manifest):
+        evidence["note"] = "the manifest sets no sync interval, so nothing is scheduled"
     return CheckResult(ident, examined, not reasons, evidence, SCHEDULE_REMEDY)
 
 
