@@ -697,13 +697,20 @@ class Build:
             never = sorted(q["id"] for q in before if q.get("measured_at") is None)
             # A question registered anew or changed (its tolerance, say) is measured again.
             changed = sorted(computeops.touched_questions(self.registered))
-            if not never and not self.evaluated and not changed:
+            # So is every question when a function was registered anew or changed (a
+            # question rests on its function), and a question that was failing: a build
+            # is where a mended twin is judged again.
+            functions = sorted(computeops.touched_functions(self.registered))
+            failing_before = sorted(q["id"] for q in before if q.get("status") == "failing")
+            if not (never or self.evaluated or changed or functions or failing_before):
                 log.info("every question was measured and nothing they rest on changed")
                 return {"measured": [], "questions": before}
             head = str(computeops.head_of(client).get("id") or "")
             why = {
                 "never_measured": never,
                 "registered_or_changed": changed,
+                "functions_registered_or_changed": functions,
+                "failing_before": failing_before,
                 "models_evaluated": self.evaluated,
             }
             log.info("measuring the questions", **why)

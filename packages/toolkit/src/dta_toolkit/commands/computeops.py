@@ -225,6 +225,13 @@ def touched_questions(registered: Mapping[str, Any] | None) -> set[str]:
     return {uid.split(":", 1)[-1] for uid in uids}
 
 
+def touched_functions(registered: Mapping[str, Any] | None) -> set[str]:
+    """ids of the functions a registration created or changed."""
+    changes = ((registered or {}).get("changes") or {}).get("functions") or {}
+    uids = list(changes.get("created") or []) + list(changes.get("changed") or [])
+    return {uid.split(":", 1)[-1] for uid in uids}
+
+
 # -- which specifications need evaluating ----------------------------------------------
 
 
