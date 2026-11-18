@@ -264,7 +264,7 @@ The owner chose these besides the HTTP API. Each reads the same twin and the sam
 
 The typed Python package `{{ addons.sdk.package }}` is in `{{ addons.sdk.dir }}/` of the twin's workspace. Prefer it to composing requests when you work in Python.
 
-- Install it: `uv pip install <workspace>/{{ addons.sdk.dir }}` (Python 3.12 or later).
+- Install it: `uv pip install <workspace>/{{ addons.sdk.dir }}` (Python {{ addons.sdk.python }} or later).
 - `Twin()` reads `{{ base_url_env }}` and `{{ token_env }}` from the environment and raises `TwinConfigError` naming each one that is unset.
 - One attribute per object and link type, named after the type in snake_case (`twin.objects("<Type>")` finds one by its schema name), with `get(uid)`, `list(where=, sort=, limit=)`, `history(uid, since=)`, `links(uid, direction=, edge_types=)` and `table(columns=, where=)`. Each takes `at` and `branch` as the API does. Objects come back as Pydantic models of their type; `table` gives a `pyarrow.Table`.
 - `twin.questions.ask("<id>")` asks a question; each question also has a method of its own. `twin.head()` gives the newest version's id.

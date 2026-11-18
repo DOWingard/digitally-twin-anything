@@ -24,7 +24,7 @@ from dta_core.manifest import Manifest
 from jinja2 import Environment, StrictUndefined
 
 from . import addons
-from .sdk import package_name
+from .sdk import REQUIRES_PYTHON, package_name
 from .stack import database_name
 
 log = Log("skill")
@@ -331,7 +331,11 @@ def _addons(manifest: Manifest, twin_id: str) -> dict[str, Any]:
     chosen = addons.selected(manifest)
     sdk = mcp = sql = None
     if chosen.sdk_python:
-        sdk = {"package": package_name(twin_id), "dir": "/".join(addons.SDK_DIR)}
+        sdk = {
+            "package": package_name(twin_id),
+            "dir": "/".join(addons.SDK_DIR),
+            "python": REQUIRES_PYTHON.removeprefix(">="),
+        }
     if chosen.mcp:
         mcp = {
             "server": skill_name(twin_id),

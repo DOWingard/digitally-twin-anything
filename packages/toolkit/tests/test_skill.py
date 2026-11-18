@@ -17,7 +17,7 @@ from dta_runtime.mcp import api_document
 from dta_runtime.mcp import operations as mcp_operations
 from dta_runtime.mcp import tool_names as mcp_tool_names
 from dta_toolkit import addons
-from dta_toolkit.sdk import render_sdk
+from dta_toolkit.sdk import REQUIRES_PYTHON, render_sdk
 from dta_toolkit.skill import (
     MARKER_FILE,
     SKILL_FILE,
@@ -565,6 +565,7 @@ def test_what_the_skill_says_of_the_client_is_what_the_package_offers(sdk_code):
     body = render(addon_manifest(sdk_python=True)).files[SKILL_FILE]
     section = _section(body, "### Python client")
     assert "`twin_pump_station`" in section and f"`{'/'.join(addons.SDK_DIR)}/`" in section
+    assert f"(Python {REQUIRES_PYTHON.removeprefix('>=')} or later)" in section
     # Every call the section names, with the keywords it names, is in the generated code.
     classes = {name: _methods(cls) for name, cls in sdk_code.items()}
     owners = {"objects": "Twin", "head": "Twin", "ask": "Questions"}

@@ -49,7 +49,7 @@ TEMPLATES = "templates/sdk"
 TEMPLATE_VERSION = 1
 # Dependencies of the types and the glue; the HTTP client's come from its generator.
 OWN_DEPENDENCIES = ("pydantic>=2.11,<3", "pyarrow>=17")
-REQUIRES_PYTHON = ">=3.11"
+REQUIRES_PYTHON = ">=3.12"
 # Media types the generator does not know, read as text so their operations keep an answer.
 CONTENT_TYPE_OVERRIDES = {"application/yaml": "text/plain"}
 # What the glue calls, by method and path of the API.
