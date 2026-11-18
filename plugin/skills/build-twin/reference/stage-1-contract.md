@@ -15,7 +15,8 @@ Use the [question bank](question-bank.md): it gives, per field, the question to 
 3. Only if the user wants the twin to set something in the real system: the controls, under `contract.controls.<control>`: `description`, `target`, `bounds`, `autonomy`.
 4. Only if a question is `prescriptive` or a control exists: the objective, `contract.objective.description` and `contract.objective.direction`, and any constraints under `contract.objective.constraints.<constraint>.description`.
 5. Only if the tier is `live`: `contract.notification.kind`, and `contract.notification.webhook_env` when the kind is `webhook`.
-6. Only if a control's autonomy is `supervised` or `autonomous`: `contract.addons.executors`. The other optional fields are not asked; the [question bank](question-bank.md), "Optional contract fields", says when to write them.
+6. Only if a control's autonomy is `supervised` or `autonomous`: `contract.addons.executors`.
+7. The add-ons, in one question: `contract.addons.sdk_python`, `contract.addons.mcp` and `contract.addons.readonly_sql` ([add-ons](addons.md) says what each builds). The other optional fields are not asked; the [question bank](question-bank.md), "Optional contract fields", says when to write them.
 
 Propose questions from the purpose: for a purpose like "show the moisture of each bed and which beds ran dry", propose one descriptive question ("What was the moisture of each bed at a given time?") and one diagnostic one ("Which beds were below 20 %?"). Each question must be answerable from data the sources hold; if it is not, say which data is missing and ask whether a source for it exists.
 

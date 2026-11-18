@@ -164,7 +164,7 @@ The last column says whether the user must be asked. "No" means fix it yourself 
 |---|---|---|---|
 | `scaffold` | `.env` lacks a variable; the message names it. | Ask the user to fill it. | Yes. |
 | `image` | See the `image.*` codes. | As the code says. | Per code. |
-| `store` | The store container did not become healthy: a port in use or no disk space. | `dta logs store --tail 100`; tell the user what it says. | Yes. |
+| `store` | The store container did not become healthy: a port in use (with read-only SQL, `DTA_SQL_PORT` too) or no disk space; or the reader of read-only SQL could not be granted (`evidence.code` `addons.*`). | `dta logs store --tail 100`; tell the user what it says. An `addons.*` code: as "Add-ons" below. | Yes. |
 | `install` | The ontology and the manifest were not accepted by the store. | Read `evidence.message`; `dta ontology check`; `dta manifest validate`. | No. |
 | `load` | The load run did not succeed or wrote no data. `evidence` holds `rows_read`, `rows_rejected` and each source's outcome. | A source error: as its code. All rows rejected: compare the mappings' identity, required properties and units with the profile. No rows read: check the dataset names and filters. Then `dta build --from load`. | If a source fails. |
 | `api` | The API container did not start. | `dta logs api --tail 200`. | If a port is in use. |
@@ -175,7 +175,24 @@ The last column says whether the user must be asked. "No" means fix it yourself 
 | `models` | An evaluation failed or timed out. | `dta models list`; `dta logs worker --tail 200`; a long history may need `--models-timeout`. | No. |
 | `questions` | The measurement of the questions failed. | `dta questions measure`; read its error code. | No. |
 | `ui` | The UI did not answer. | `dta logs ui --tail 100`. | If a port is in use. |
+| `mcp` | The MCP adapter did not answer on `DTA_MCP_PORT`. | `dta logs mcp --tail 100`; a port in use: ask the user for another `DTA_MCP_PORT`. | If a port is in use. |
 | `skill` | The operator skill could not be generated. | Read `evidence.message`. | No. |
+| `sdk` | The Python client could not be generated; `evidence.code` is an `sdk.*` code. | As the code says ("Add-ons" below). | Per code. |
+
+## Add-ons
+
+What each add-on builds, and the variables it needs: [add-ons](addons.md).
+
+| Code | Meaning | What to do | Ask the user? |
+|---|---|---|---|
+| addons.env_undeclared | A selected add-on needs a variable that `env` does not declare; the finding's message names it. | Declare it ([add-ons](addons.md)); `dta manifest validate`. | No. |
+| addons.reader_password_missing | `.env` has no `DTA_SQL_READER_PASSWORD`. | `dta env template` generates it. | No. |
+| addons.reader_password_unusable | The reader's password in `.env` is shorter than 16 characters, or holds a quote, a backslash or a blank. | Ask the user to delete that line of `.env`, then `dta env template`. | Yes. |
+| sdk.not_selected | `dta generate sdk` while `contract.addons.sdk_python` is `false`. | Nothing, unless the user wants the client: stage 1 and stage 5 again. | Yes, whether they want it. |
+| sdk.api_unavailable | `dta generate sdk` could not read the API's description. | `dta up`, then run it again. | No. |
+| sdk.api_unexpected | The API's description lacks an operation or parameter the client needs. | Show the message to the user and stop; the twin works without the client. | Yes. |
+| sdk.client_failed | The client's generator failed. | As `sdk.api_unexpected`. | Yes. |
+| mcp.tools_mismatch | The MCP adapter's tools differ from the API's operations; it does not start (`dta logs mcp`). | Show the message to the user: the runtime image is inconsistent. | Yes. |
 
 ## Acceptance and handover
 
