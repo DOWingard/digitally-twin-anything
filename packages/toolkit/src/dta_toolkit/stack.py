@@ -8,6 +8,7 @@ manifest gives the same stack on any machine. What differs between machines
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -27,6 +28,7 @@ from dta_core.manifest.models import ConnectorKind, Tier
 from dta_core.sources import PLACEHOLDER, placeholders
 from jinja2 import Environment, StrictUndefined
 
+from . import addons
 from .envfile import missing, read_env, scrub
 from .workerimage import recorded_tag
 from .workspace import Workspace
@@ -40,6 +42,7 @@ API_SERVICE = "api"
 UI_SERVICE = "ui"
 SCHEDULER_SERVICE = "scheduler"
 WORKER_SERVICE = "worker"
+MCP_SERVICE = addons.MCP_SERVICE
 RUNTIME_COMMAND = "dta-runtime"
 UP_TIMEOUT_S = 300.0
 _COMMAND_TIMEOUT_S = 120.0
@@ -116,6 +119,17 @@ class StackPlan:
     # Digest of everything the API sets up once, at its start, from the manifest; it is a
     # label of the API's container, so a change of it makes compose start the API anew.
     api_start: str = ""
+    # The add-ons that change the stack: an `mcp` service with a port of its own, and the
+    # store's port published for a user who may only read.
+    mcp: bool = False
+    readonly_sql: bool = False
+    mcp_port_env: str = addons.MCP_PORT_ENV
+    sql_port_env: str = addons.SQL_PORT_ENV
+    sql_reader_password_env: str = addons.SQL_READER_PASSWORD_ENV
+
+    def addon_env(self) -> tuple[str, ...]:
+        """The variables of the selected add-ons that change the stack."""
+        return addons.Selected(False, self.mcp, self.readonly_sql).env()
 
     def required_env(self) -> tuple[str, ...]:
         """Every variable the compose file refuses to start without, in a stable order."""
@@ -126,6 +140,7 @@ class StackPlan:
             *self.source_env,
             *self.api_env,
             *(self.worker_env if self.worker else ()),
+            *self.addon_env(),
         ):
             if name not in names:
                 names.append(name)
@@ -211,6 +226,11 @@ def _digest(config: dict[str, Any]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def database_name(twin_id: str) -> str:
+    """The name of the twin's database in its store."""
+    return ("twin_" + re.sub(r"[^A-Za-z0-9_]", "_", twin_id))[:_DATABASE_MAX]
+
+
 def plan_stack(manifest: Manifest, worker_image: str | None = None) -> StackPlan:
     """What the stack of this manifest consists of.
 
@@ -220,7 +240,7 @@ def plan_stack(manifest: Manifest, worker_image: str | None = None) -> StackPlan
     if manifest.twin is None or not manifest.twin.id:
         raise StackError("the manifest names no twin id")
     twin_id = manifest.twin.id
-    database = ("twin_" + re.sub(r"[^A-Za-z0-9_]", "_", twin_id))[:_DATABASE_MAX]
+    database = database_name(twin_id)
     env: dict[str, None] = {}
     mounts: dict[Mount, None] = {}
     for source_id, source in sorted((manifest.sources or {}).items()):
@@ -237,6 +257,7 @@ def plan_stack(manifest: Manifest, worker_image: str | None = None) -> StackPlan
     worker_env = sorted({name for found in code.values() for name in found.env})
     start_config = api_start_config(manifest)
     interfaces = manifest.interfaces
+    chosen = addons.selected(manifest)
     plan = StackPlan(
         twin_id=twin_id,
         project=f"dta-{twin_id}",
@@ -260,6 +281,8 @@ def plan_stack(manifest: Manifest, worker_image: str | None = None) -> StackPlan
         worker_env=tuple(worker_env),
         api_env=_api_env(start_config),
         api_start=_digest(start_config),
+        mcp=chosen.mcp,
+        readonly_sql=chosen.readonly_sql,
     )
     log.debug(
         "stack planned",
@@ -272,6 +295,8 @@ def plan_stack(manifest: Manifest, worker_image: str | None = None) -> StackPlan
         ui=plan.ui,
         live=plan.live,
         worker=plan.worker,
+        mcp=plan.mcp,
+        readonly_sql=plan.readonly_sql,
     )
     return plan
 
@@ -305,6 +330,11 @@ def render_compose(plan: StackPlan) -> str:
         worker_env=plan.worker_env,
         api_env=plan.api_env,
         api_start=plan.api_start,
+        mcp=plan.mcp,
+        readonly_sql=plan.readonly_sql,
+        mcp_port_env=plan.mcp_port_env,
+        mcp_container_port=addons.MCP_CONTAINER_PORT,
+        sql_port_env=plan.sql_port_env,
     )
 
 
@@ -336,11 +366,17 @@ class Stack:
         self.compose_path = workspace.stack_dir / COMPOSE_FILE
         self.env_file = workspace.env_path
         # Names whose values may be shown: what the manifest declares as not secret, and
-        # the ports and the API address. The store's password and the token never are.
+        # the ports and the API address. The store's password, the token and the store
+        # reader's password never are.
         interfaces = manifest.interfaces
         shown = {name for name, entry in manifest.env.items() if not entry.secret}
         shown |= {interfaces.api_port_env, interfaces.ui_port_env, interfaces.base_url_env}
-        self._shown_env = shown - {self.plan.store_password_env, self.plan.token_env}
+        shown |= set(addons.selected(manifest).ports())
+        self._shown_env = shown - {
+            self.plan.store_password_env,
+            self.plan.token_env,
+            self.plan.sql_reader_password_env,
+        }
 
     def secret_values(self) -> dict[str, str]:
         """The values of `.env` to mask in anything shown: all but the declared non-secrets.
@@ -449,11 +485,22 @@ class Stack:
         log.debug("compose command finished", args=list(args), elapsed_ms=elapsed_ms)
         return done
 
-    def up(self, *services: str, timeout: float = UP_TIMEOUT_S) -> None:
-        """Start the named services (all of them when none is named) and wait until healthy."""
+    def up(
+        self, *services: str, timeout: float = UP_TIMEOUT_S, remove_orphans: bool = False
+    ) -> None:
+        """Start the named services (all of them when none is named) and wait until healthy.
+
+        With `remove_orphans`, containers of services the compose file no longer has
+        (an add-on switched off) are stopped and removed; one-off containers are not.
+        """
         self.write()
-        self.compose("up", "--detach", "--wait", *services, timeout=timeout)
-        log.info("stack services are up", services=list(services) or "all")
+        extra = ["--remove-orphans"] if remove_orphans else []
+        self.compose("up", "--detach", "--wait", *extra, *services, timeout=timeout)
+        log.info(
+            "stack services are up",
+            services=list(services) or "all",
+            orphans_removed=remove_orphans,
+        )
 
     def stop(self, *services: str, timeout: float = UP_TIMEOUT_S) -> None:
         """Stop the named services; their containers and the stack's data stay.
@@ -498,6 +545,98 @@ class Stack:
         names = [service] if service else []
         done = self.compose("logs", "--no-color", "--tail", str(tail), *names)
         return scrub(done.stdout, self.secret_values())
+
+    def store_sql(
+        self, statements: str, *, timeout: float | None = _COMMAND_TIMEOUT_S
+    ) -> list[Any]:
+        """Run SQL as the store's root user with the store's own client, inside its container.
+
+        The statements go on standard input and the password by the container's own
+        environment, so neither shows in a process list. Each statement's rows come
+        back in order; a statement without rows gives an empty object.
+        """
+        script = (
+            'DOLT_CLI_PASSWORD="$DOLT_ROOT_PASSWORD" exec dolt --host 127.0.0.1 --port 3306 '
+            "--user root --no-tls sql -r json"
+        )
+        done = self.compose(
+            "exec", "-T", STORE_SERVICE, "sh", "-c", script, input=statements, timeout=timeout
+        )
+        results: list[Any] = []
+        for line in done.stdout.splitlines():
+            line = line.strip()
+            if line:
+                with contextlib.suppress(json.JSONDecodeError):
+                    results.append(json.loads(line))
+        return results
+
+    def run_image(
+        self,
+        image: str,
+        *args: str,
+        input: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float | None = _COMMAND_TIMEOUT_S,
+    ) -> dict[str, Any]:
+        """Run `image` once on this machine's network, where a client of the twin stands,
+        and return the JSON document it printed last.
+
+        The values of `env` are handed over by the environment of the docker command,
+        never on its command line, which names them only.
+        """
+        if shutil.which("docker") is None:
+            log.error("docker is not installed or not on the PATH")
+            raise StackError("the docker command is not available", code="stack.docker_unavailable")
+        given = dict(env or {})
+        command = ["docker", "run", "--rm", "-i", "--network", "host"]
+        for name in given:
+            command += ["--env", name]
+        command += [image, *args]
+        environment = {name: os.environ[name] for name in _PASSED_ENV if name in os.environ}
+        environment.update(given)
+        started = time.perf_counter()
+        try:
+            done = subprocess.run(
+                command,
+                input=input,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=environment,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            log.error("a one-off container timed out", image=image, timeout_s=timeout)
+            raise StackError(
+                f"a one-off container of {image} did not finish within {timeout:g} s",
+                code="stack.timeout",
+                detail={"image": image, "timeout_s": timeout},
+            ) from exc
+        except OSError as exc:
+            log.error("docker could not be started", exc=exc)
+            raise StackError(
+                f"docker could not be started: {type(exc).__name__}",
+                code="stack.docker_unavailable",
+            ) from exc
+        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
+        document = _last_document(done.stdout)
+        if document is None:
+            tail = scrub(done.stderr[-_STDERR_TAIL:], {**self.secret_values(), **given})
+            log.error(
+                "a one-off container printed no document",
+                image=image,
+                exit_code=done.returncode,
+                stderr=tail,
+                elapsed_ms=elapsed_ms,
+            )
+            raise StackError(
+                f"a one-off container of {image} printed no JSON document "
+                f"(exit code {done.returncode})",
+                code="stack.bad_output",
+                detail={"image": image, "exit_code": done.returncode, "stderr": tail},
+            )
+        log.debug("one-off container finished", image=image, elapsed_ms=elapsed_ms)
+        return document
 
     # -- the twin's own commands --------------------------------------------
 

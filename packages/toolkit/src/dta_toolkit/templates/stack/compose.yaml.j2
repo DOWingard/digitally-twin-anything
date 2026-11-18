@@ -26,6 +26,11 @@ services:
       DOLT_ROOT_HOST: "%"
     volumes:
       - store-data:/var/lib/dolt
+{%- if readonly_sql %}
+    # Read-only SQL: the user who may read only this twin's database signs in here.
+    ports:
+      - "127.0.0.1:${{ '{' }}{{ sql_port_env }}:?{{ sql_port_env }} is required}:3306"
+{%- endif %}
     healthcheck:
       test:
         - CMD-SHELL
@@ -110,6 +115,30 @@ services:
       - "127.0.0.1:${{ '{' }}{{ ui_port_env }}:?{{ ui_port_env }} is required}:8050"
     healthcheck:
       test: ["CMD", "dta-runtime", "health", "ui"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+{%- endif %}
+{%- if mcp %}
+
+  # Offers the API to agents as MCP tools. It holds no token: every call carries the
+  # token the agent sent. It reaches the API and nothing else.
+  mcp:
+    <<: *runtime
+    command: ["dta-runtime", "mcp"]
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DTA_API_URL: http://api:8000
+      DTA_LOGS_DIR: /var/log/dta
+    volumes:
+      - logs:/var/log/dta
+    ports:
+      - "127.0.0.1:${{ '{' }}{{ mcp_port_env }}:?{{ mcp_port_env }} is required}:{{ mcp_container_port }}"
+    healthcheck:
+      test: ["CMD", "dta-runtime", "health", "mcp"]
       interval: 10s
       timeout: 10s
       retries: 12

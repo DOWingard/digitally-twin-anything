@@ -386,3 +386,87 @@ def test_only_secret_values_are_masked(tmp_path) -> None:
     )
     secret = Stack(workspace, twin).secret_values()
     assert set(secret) == {"DTA_STORE_PASSWORD", "DTA_API_TOKEN", "REG_PASSWORD", "REG_USER"}
+
+
+def _addons(**chosen: bool) -> Manifest:
+    return manifest(contract={"addons": chosen})
+
+
+def test_without_add_ons_the_stack_has_no_adapter_and_publishes_no_store_port():
+    plan = plan_stack(manifest())
+    document = yaml.safe_load(render_compose(plan))
+    assert "mcp" not in document["services"]
+    assert "ports" not in document["services"]["store"]
+    assert not {"DTA_MCP_PORT", "DTA_SQL_PORT", "DTA_SQL_READER_PASSWORD"} & set(
+        plan.required_env()
+    )
+
+
+def test_the_mcp_add_on_is_a_service_that_reaches_the_api_and_holds_no_token():
+    plan = plan_stack(_addons(mcp=True))
+    assert plan.required_env()[-1] == "DTA_MCP_PORT"
+    document = yaml.safe_load(render_compose(plan))
+    adapter = document["services"]["mcp"]
+    assert adapter["command"] == ["dta-runtime", "mcp"]
+    assert adapter["image"] == document["services"]["api"]["image"]
+    assert adapter["ports"] == ["127.0.0.1:${DTA_MCP_PORT:?DTA_MCP_PORT is required}:8200"]
+    assert adapter["environment"] == {
+        "DTA_API_URL": "http://api:8000",
+        "DTA_LOGS_DIR": "/var/log/dta",
+    }
+    assert adapter["volumes"] == ["logs:/var/log/dta"]
+    assert adapter["depends_on"] == {"api": {"condition": "service_healthy"}}
+    assert adapter["healthcheck"]["test"] == ["CMD", "dta-runtime", "health", "mcp"]
+    assert "networks" not in adapter
+    assert "ports" not in document["services"]["store"]
+
+
+def test_the_sql_add_on_publishes_the_store_on_the_loopback_interface_only():
+    plan = plan_stack(_addons(readonly_sql=True))
+    assert plan.required_env()[-2:] == ("DTA_SQL_PORT", "DTA_SQL_READER_PASSWORD")
+    document = yaml.safe_load(render_compose(plan))
+    store = document["services"]["store"]
+    assert store["ports"] == ["127.0.0.1:${DTA_SQL_PORT:?DTA_SQL_PORT is required}:3306"]
+    # The reader's password reaches no container: the toolkit hands it to the store's client.
+    for service in document["services"].values():
+        assert "DTA_SQL_READER_PASSWORD" not in str(service)
+    assert "mcp" not in document["services"]
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="needs the docker command")
+def test_compose_refuses_a_selected_add_on_without_its_port(tmp_path: Path):
+    plan = plan_stack(_addons(mcp=True, readonly_sql=True))
+    (tmp_path / "compose.yaml").write_text(render_compose(plan), encoding="utf-8")
+    env_file = tmp_path / ".env"
+    values = {**ENV, "DTA_MCP_PORT": "18702", "DTA_SQL_PORT": "18703"}
+
+    def config(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        env_file.write_text("".join(f"{name}={value}\n" for name, value in env.items()))
+        return subprocess.run(
+            [*compose_command(plan, tmp_path, env_file), "config", "--quiet"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path)},
+        )
+
+    accepted = config(values)
+    assert accepted.returncode == 0, accepted.stderr
+    for name in ("DTA_MCP_PORT", "DTA_SQL_PORT"):
+        refused = config({k: v for k, v in values.items() if k != name})
+        assert refused.returncode != 0 and name in refused.stderr
+
+
+def test_the_reader_password_is_masked_and_the_add_on_ports_are_not(tmp_path) -> None:
+    from dta_toolkit.stack import Stack
+    from dta_toolkit.workspace import Workspace
+
+    workspace = Workspace(tmp_path)
+    workspace.env_path.write_text(
+        "DTA_STORE_PASSWORD=store-secret-value\nDTA_API_TOKEN=token-secret-value\n"
+        "DTA_MCP_PORT=18720\nDTA_SQL_PORT=18721\nDTA_SQL_READER_PASSWORD=reader-secret-value\n",
+        encoding="utf-8",
+    )
+    secret = Stack(workspace, _addons(mcp=True, readonly_sql=True)).secret_values()
+    assert {"DTA_SQL_READER_PASSWORD", "DTA_STORE_PASSWORD", "DTA_API_TOKEN"} <= set(secret)
+    assert not {"DTA_MCP_PORT", "DTA_SQL_PORT"} & set(secret)
