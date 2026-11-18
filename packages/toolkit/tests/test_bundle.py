@@ -297,3 +297,23 @@ def test_a_staging_folder_with_a_link_is_not_written(tmp_path: Path) -> None:
         bundles.scan(staging)
     assert caught.value.code == bundles.UNSAFE_MEMBER
     assert caught.value.detail["member"] == "artifacts/link"
+
+
+def test_the_toolkit_imports_no_store_driver_and_names_the_store_as_the_store_does():
+    # The toolkit's image holds no store driver: importing the store package there fails.
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, dta_toolkit.cli; "
+        "sys.exit(1 if any(m == 'pymysql' or m.startswith('dta_core.store') for m in sys.modules) "
+        "else 0)"
+    )
+    assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
+
+    from dta_core.store.model import LIVE_BRANCH
+    from dta_core.store.settings import DATABASE_NAME
+    from dta_toolkit.commands import portability
+
+    assert portability.LIVE_BRANCH == LIVE_BRANCH
+    assert portability.DATABASE_NAME.pattern == DATABASE_NAME.pattern

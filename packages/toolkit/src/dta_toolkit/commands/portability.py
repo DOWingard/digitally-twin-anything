@@ -49,8 +49,6 @@ from dta_core.errors import CheckFailed, DtaError
 from dta_core.log import Log, configure
 from dta_core.manifest import Manifest, contract_hash, manifest_hash, parse_manifest
 from dta_core.manifest.models import ConnectorKind
-from dta_core.store.model import LIVE_BRANCH
-from dta_core.store.settings import DATABASE_NAME
 
 from .. import bundle as bundles
 from .. import codepack, workerimage
@@ -78,6 +76,10 @@ IMPORT_DIR = "/tmp/dta-import-"
 BACKUP_TRIES = 5
 # Backups, restores and copies of a large twin take long; nothing here is interactive.
 LONG_S = 3600.0
+# The store's own names, kept here because the toolkit runs without the store's driver and so
+# cannot import the store package; a test holds them equal to the store's.
+LIVE_BRANCH = "main"
+DATABASE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 IMPORT_RECORD = "import.json"
 # The gates the new machine has to pass itself.
 NOT_CARRIED = frozenset({STAGES[2], STAGES[6], STAGES[7], STAGES[8]})
