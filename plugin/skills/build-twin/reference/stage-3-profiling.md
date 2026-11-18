@@ -40,7 +40,7 @@ For each source, under `sources.<source>.profile.datasets.<dataset>`, note:
 
 The user stated each question's tolerance and staleness in stage 1, before anything was measured. Now compare, for each question:
 
-- Tolerance against noise: if `contract.questions.<question>.tolerance.value` is below the `noise_sigma` of a column its targets are read from, the twin cannot meet it: the check `feasible.noise` will refuse it in stage 4.
+- Tolerance against noise: if `contract.questions.<question>.tolerance.value` is below the `noise_sigma` of a column its targets are read from, the twin cannot meet it: the check `feasible.noise` will refuse it in stage 4. A column holding readings of many sensors and quantities in one (long format) has one pooled `noise_sigma`, which says nothing about one signal; do not raise a tolerance to it ([sources](sources.md), "Readings in long format").
 - Staleness against delivery (live twins): if `contract.questions.<question>.staleness` is shorter than the `refresh_period` of a source its targets come from, no sync can meet it: the check `feasible.staleness` will refuse it.
 
 For each conflict, tell the user the stated value, the measured one and what it means, and propose a value that can be met (at least the noise floor; at least twice the delivery period). Example: "You asked for answers within 0.1 °C, but the sensors themselves scatter by 0.3 °C. I propose a tolerance of 0.5 °C. Shall I use that?" Write what the user decides, record it in `discussion.md`, and leave it unconfirmed until stage 5.
