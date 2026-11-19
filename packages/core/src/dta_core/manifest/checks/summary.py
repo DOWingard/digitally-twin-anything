@@ -147,6 +147,8 @@ def failure_text(control: Control) -> str:
         text = f"release: `{action}`{with_constants} hands each object the twin commanded back"
     else:
         text = f"safe value: `{action}`{with_constants} is sent to each object the twin commanded"
+        if control.bounds is not None and control.bounds.max_step is not None:
+            text += " (the step limit does not apply to it)"
     text += ", once, when its fidelity becomes failed"
     if found.after_stale is not None:
         text += f", or once data has been too old for {fmt_duration(found.after_stale)}"

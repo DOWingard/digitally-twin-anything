@@ -491,7 +491,12 @@ def propose_with(
             store.get(object_uid, at=head) if isinstance(object_uid, str) and object_uid else None
         )
         judged = judge(
-            twin.ontology, document, object_uid=str(object_uid), stored=stored, params=params
+            twin.ontology,
+            document,
+            object_uid=str(object_uid),
+            stored=stored,
+            params=params,
+            step_limit=interlock,
         )
         if stored is not None and not judged.reasons:
             judged.reasons.extend(_unmet_precondition(twin, document, stored, head))

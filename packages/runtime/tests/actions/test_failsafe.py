@@ -8,11 +8,13 @@ import copy
 from collections.abc import Callable
 from typing import Any
 
+import pytest
 from actions_testkit import BARE_VALVE, PUMP, VALVE, Plant, World, at, executor, manifest_of
 from actions_testkit import register as register_manifest
 from dta_core.manifest import Manifest
 from dta_runtime import actions
-from dta_runtime.actions import HttpExecutor, failsafe
+from dta_runtime.actions import ActionError, HttpExecutor, failsafe
+from dta_runtime.actions.proposals import propose_with
 from dta_runtime.actions.records import RECORD_TYPE, keyed_id
 
 EPISODE = at(3)
@@ -271,3 +273,39 @@ def test_a_fail_safe_that_cannot_be_sent_as_the_control_says_is_recorded_with_wh
     # The valves were never commanded under their control.
     assert failsafe.commanded(world.twin, "valve_setting") == []
     assert {VALVE, BARE_VALVE}.isdisjoint(failsafe.commanded(world.twin, "pump_running"))
+
+
+def _past_the_interlock(world: World, obj: str, value: float, step: float) -> dict:
+    return propose_with(
+        world.twin,
+        "set_valve",
+        object_uid=obj,
+        params={"value": value},
+        reason_text="the twin failed",
+        source=failsafe.source_of("valve_setting"),
+        state="failed",
+        incidents=[STALE],
+        now=at(step),
+        executor=failsafe._unable("no call is made in this test"),
+        key=None,
+        tail=None,
+        interlock=False,
+    )
+
+
+def test_a_fail_safe_value_is_not_held_to_the_step_limit_but_to_every_other_bound(
+    make_world: Callable[[], World],
+):
+    world = make_world()
+    # VLV-1's setting in force is 5.0 and the control's max_step is 50: a proposal of 150
+    # is refused for its step, and the same constant as a fail-safe is judged sendable.
+    far = _past_the_interlock(world, VALVE, 150.0, 2)
+    assert far["status"] == "failed" and far["reasons"] == []
+    # Nor does it need a value in force to be measured from.
+    bare = _past_the_interlock(world, BARE_VALVE, 150.0, 3)
+    assert bare["status"] == "failed" and bare["reasons"] == []
+    # The control's maximum still holds.
+    with pytest.raises(ActionError) as refused:
+        _past_the_interlock(world, VALVE, 250.0, 4)
+    messages = [found["message"] for found in refused.value.detail["reasons"]]
+    assert len(messages) == 1 and "above the control's maximum 200" in messages[0]

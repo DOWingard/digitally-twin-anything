@@ -144,9 +144,15 @@ def judge(
     object_uid: str,
     stored: StoredObject | None,
     params: Any,
+    step_limit: bool = True,
 ) -> Judged:
     """Every problem of a proposal of `action` (its document) on the object `stored`
-    (as the head holds it, None when there is none) with `params`."""
+    (as the head holds it, None when there is none) with `params`.
+
+    `step_limit` false leaves the control's max_step out: it bounds what a model may
+    change in one action, measured from the value in force, and a fail-safe sends a
+    constant the user signed, at a moment when the value in force may be unknown or far
+    away. Every other bound of the control still applies."""
     found = Judged()
     object_type = action.get("object_type")
     if stored is None:
@@ -204,7 +210,7 @@ def judge(
     bounds = action.get("bounds") or {}
     found.reasons.extend(_limited("params.value", value, bounds, "the control's"))
     step = bounds.get("max_step")
-    if step is None or stored is None:
+    if step is None or stored is None or not step_limit:
         return found
     name = target.partition(".")[2] if target else ""
     found.in_force = stored.values.get(name)
