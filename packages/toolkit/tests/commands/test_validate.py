@@ -91,6 +91,8 @@ CASES = [
      lambda data: (drop("runtime.code")(data),
                    put("functions.f_schedule.kind", "builtin")(data),
                    put("functions.f_schedule.entry", "latest")(data))),
+    ("reads_undeclared", "model.reads_undeclared", "warning", "models.m_schedule.reads",
+     drop("models.m_schedule.reads")),
     ("question_model_missing", "ref.question_model", "error", f"{Q}.q_forecast.model",
      put(f"{Q}.q_forecast.model", "m_missing")),
     ("question_model_other", "ref.question_model", "error", f"{Q}.q_forecast.model",
