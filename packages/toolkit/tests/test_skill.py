@@ -29,6 +29,16 @@ from dta_toolkit.skill import (
 from dta_toolkit.stack import plan_stack
 
 _ONTOLOGY = Path(__file__).parents[3] / "testbed" / "twin" / "ontology" / "water_utility.yaml"
+
+
+def _water() -> Path:
+    """The water utility's ontology of the internal testbed, which is not part of the
+    repository; a test that needs it is skipped without it."""
+    if not _ONTOLOGY.is_file():
+        pytest.skip("the internal testbed is not in this tree")
+    return _ONTOLOGY
+
+
 SECRET_LOCATION = "postgresql://${ERP_USER}:${ERP_PASSWORD}@erp.internal:5432/erp"
 
 
@@ -526,7 +536,7 @@ def _block(text: str, language: str) -> str:
 @pytest.fixture(scope="module")
 def sdk_code() -> dict[str, ast.ClassDef]:
     """The classes of the client package as it is generated for the skill's twin."""
-    rendered = render_sdk(addon_manifest(sdk_python=True), load_ontology(_ONTOLOGY), api_document())
+    rendered = render_sdk(addon_manifest(sdk_python=True), load_ontology(_water()), api_document())
     tree = ast.parse(rendered.files[f"{rendered.package}/twin.py"].decode("utf-8"))
     return {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
 
@@ -620,6 +630,6 @@ def test_what_the_skill_says_of_read_only_sql_is_what_the_stack_grants():
     granted = addons.grant_reader_sql(database, "a-good-password-0123")
     assert f"GRANT SELECT ON `{database}`.* TO '{addons.READER_USER}'@'%';" in granted
     # "Each type is a table named after it in snake_case".
-    assert all(t.table == snake_case(t.name) for t in load_ontology(_ONTOLOGY).domain_types())
+    assert all(t.table == snake_case(t.name) for t in load_ontology(_water()).domain_types())
     statements = _block(section, "sql").strip().splitlines()
     assert any("AS OF" in s for s in statements) and any("dolt_diff_" in s for s in statements)

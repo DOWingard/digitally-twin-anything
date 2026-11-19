@@ -7,3 +7,4 @@ spikes/storage/results/*.log
 .claude/worktrees/
 .ruff_cache/
 .pytest_cache/
+testbed/

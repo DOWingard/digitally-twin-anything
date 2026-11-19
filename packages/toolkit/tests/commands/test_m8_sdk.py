@@ -24,6 +24,12 @@ SAMPLES = {
     "water-live": TESTBED / "twin-live" / "manifest.yaml",
 }
 GENERATION_LIMIT_S = 60.0
+
+# The sample twins are those of the internal testbed, which is not part of the repository.
+pytestmark = pytest.mark.skipif(
+    not ONTOLOGY.is_file(),
+    reason="the internal testbed is not in this tree",
+)
 TOKEN = "sentinel-token-that-must-appear-nowhere-0123456789"
 
 # Run in the fresh environment: what a user of the package can rely on without a twin.

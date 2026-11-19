@@ -20,6 +20,10 @@ IMPORT_LIMIT_S = 60.0
 
 @needs_stack
 @pytest.mark.scale
+@pytest.mark.skipif(
+    not REQUIREMENTS.is_file(),
+    reason="the internal testbed is not in this tree",
+)
 def test_the_reference_twins_worker_image_imports_its_packages() -> None:
     requirements = REQUIREMENTS.read_bytes()
     runtime_id = workerimage.image_id(RUNTIME_IMAGE)

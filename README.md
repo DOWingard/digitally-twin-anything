@@ -206,7 +206,6 @@ options shows the summary and asks for your name instead.
 | `docker/toolkit.Dockerfile` | Image of the toolkit, with a docker client and its compose and buildx plugins |
 | `docker/runtime.Dockerfile` | Image of the twin's services: one image, one command per service |
 | `examples/bike-share` | A data generator and the manifest of a static twin of what it writes |
-| `testbed` | Internal test fixture: a simulated system that the project's own tests and checks run against |
 | `spikes/storage` | Benchmark that selected Dolt as the versioned store |
 
 ## The store
@@ -639,10 +638,10 @@ docker compose -p dta-store-dev --env-file .env -f packages/core/tests/store/com
   run copies of the plugin with versions of their own, build
   `dta-toolkit:0.0.0-firstuse-<random>` and `dta-runtime:0.0.0-firstuse-<random>`
   with docker's layer cache, and remove exactly those tags.
-
-`testbed/` is an internal test fixture (a simulated system the project's own
-tests and checks run against), with its own environment. It is not part of the
-plugin and nothing a user does needs it.
+- A few tests (the generated client package of two sample twins, one worker
+  image, two checks of a sync plan, one connector test against a live system)
+  use a simulated system that is not part of this repository. Without it they
+  are skipped.
 
 ### Releasing a version
 
