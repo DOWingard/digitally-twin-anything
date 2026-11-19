@@ -4,14 +4,25 @@ Stuck: over the lookback, split into sync intervals, each interval in which the 
 delivered is C (the value changed) or N (it did not). The signal is called stuck when the
 run of N since its last change is improbable under the signal's own history:
 
-1. A smooth signal is not tested. A level, say, is flat for a while around each of its
-   turning points, longer at the turning point of a slow swing than at a daily one, and
-   a lookback seldom holds the slowest: no length of run tells such a flat from a stuck
-   sensor without calling good readings stuck. Smooth is read off the signs of its
-   changes: of the m pairs of consecutive changes in the lookback, s keep their sign;
-   with m >= 10 it is smooth when a one-sided binomial test of s against m/2 gives
-   p < 0.01. A stuck smooth signal is left to the bias test and to the questions'
-   errors.
+1. A smooth signal is not tested by the length of its run. A level, say, is flat for a
+   while around each of its turning points, longer at the turning point of a slow swing
+   than at a daily one, and a lookback seldom holds the slowest: no length of run tells
+   such a flat from a stuck sensor without calling good readings stuck. Smooth is read
+   off the signs of its changes: of the m pairs of consecutive changes in the lookback,
+   s keep their sign; with m >= 10 it is smooth when a one-sided binomial test of s
+   against m/2 gives p < 0.01.
+   What tells them apart is the twin's own forecast. Once a smooth signal has gone
+   n >= 3 delivering intervals without a change, the question that would infer it (the
+   predictive question on its property with an active model and the shortest horizon)
+   forecasts it once for the run, from the end O of the interval of its last change and
+   never from an inferred value; at each check of the run the forecast is read at the
+   lead L (intervals since O). It is stuck when |f(O, L) - r| > m, r the unchanged
+   reading and m half the question's tolerance: eps/2 for a metric in the property's
+   units (mae, rmse, max_abs), eps/2 * |r| for a relative one (mape). Half, so that a
+   frozen reading is flagged before it is wrong by the tolerance. Without a question, a
+   metric of either kind, a forecast, a lead within the horizon, or a finite value at
+   that lead, it is not tested (`forecast.refused` says why): never flagged without
+   that evidence.
 2. Otherwise the history up to and including the last change is taken as a two-state
    chain and its transitions are counted (between intervals that both delivered):
    n_CC, n_CN, n_NC, n_NN. With p0 = (u + 1)/(k + 2), u of the k history intervals
@@ -26,6 +37,7 @@ run of N since its last change is improbable under the signal's own history:
    when a G-test of independence on the 2x2 table of transitions gives p < 0.01 and
    a > b.
 3. It is stuck when n >= 3 and P < 1e-7, the false-alarm rate per series and check.
+   (Steps 2 and 3 are for a signal that is not smooth.)
 
 It is tested only when it changed in at least 20 intervals, so a signal that seldom
 changes is never called stuck. The lookback is the fidelity window, and never fewer
@@ -55,7 +67,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -82,7 +94,13 @@ CLUSTER_LEVEL = 0.01
 NEVER_CHANGED = "never_changed"
 FEW_CHANGES = "few_changes"
 SMOOTH = "smooth"
-INDEPENDENT, MARKOV = "independent", "markov"
+INDEPENDENT, MARKOV, FORECAST = "independent", "markov", "forecast"
+# The share of the inferring question's tolerance a smooth signal's frozen reading may lie
+# from the forecast before it is called stuck; and the metrics whose tolerance is in the
+# property's units, or relative to the true value.
+FORECAST_MARGIN = 0.5
+ABSOLUTE_METRICS = frozenset({"mae", "rmse", "max_abs"})
+RELATIVE_METRICS = frozenset({"mape"})
 
 BIAS_MIN_ORIGINS = 8
 BIAS_HELD_OUT = 3
@@ -187,6 +205,9 @@ class StuckTest:
     # P of the run in progress, and the shortest run that would be called stuck.
     p: float | None = None
     needed: int | None = None
+    # A smooth signal's test against the inferring question's forecast: {question,
+    # origin, lead, value, reading, margin, refused}; None when there was no run to test.
+    forecast: Mapping[str, Any] | None = None
 
     def document(self) -> dict[str, Any]:
         return {
@@ -206,6 +227,7 @@ class StuckTest:
             "p": self.p,
             "alpha": STUCK_ALPHA,
             "needed": self.needed,
+            "forecast": None if self.forecast is None else dict(self.forecast),
         }
 
 
@@ -325,6 +347,46 @@ def stuck_test(
         p=p,
         needed=needed_run(b, a),
     )
+
+
+def wants_forecast(test: StuckTest) -> bool:
+    """Whether a signal is to be tested against the forecast: skipped as smooth, with a
+    run of at least `STUCK_MIN_INTERVALS` delivering intervals since its last change."""
+    return test.skipped == SMOOTH and test.last is not None and test.n >= STUCK_MIN_INTERVALS
+
+
+def forecast_margin(metric: str | None, tolerance: float | None, reading: float) -> float | None:
+    """How far a frozen reading may lie from the forecast before it is called stuck: half
+    the tolerance, in the property's units or relative to the reading. None when the
+    metric is of neither kind, there is no tolerance, or a relative margin would be
+    nothing (a reading of zero, where a relative error is not defined)."""
+    if tolerance is None or not math.isfinite(tolerance) or tolerance <= 0:
+        return None
+    if metric in ABSOLUTE_METRICS:
+        return FORECAST_MARGIN * tolerance
+    if metric in RELATIVE_METRICS and reading != 0:
+        return FORECAST_MARGIN * tolerance * abs(reading)
+    return None
+
+
+def against_forecast(
+    test: StuckTest, *, value: float, reading: float, margin: float, document: Mapping[str, Any]
+) -> StuckTest:
+    """A smooth signal's test (`wants_forecast`) decided by the forecast: stuck when the
+    unchanged reading lies more than `margin` from the forecast value."""
+    return replace(
+        test,
+        tested=True,
+        stuck=test.n >= STUCK_MIN_INTERVALS and abs(value - reading) > margin,
+        skipped=None,
+        model=FORECAST,
+        forecast=dict(document),
+    )
+
+
+def without_forecast(test: StuckTest, document: Mapping[str, Any]) -> StuckTest:
+    """A smooth signal's test left untested, with why there was no forecast to test it."""
+    return replace(test, tested=False, stuck=False, forecast=dict(document))
 
 
 # -- biased ------------------------------------------------------------------------------

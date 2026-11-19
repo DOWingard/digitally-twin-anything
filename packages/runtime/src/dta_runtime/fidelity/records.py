@@ -72,6 +72,15 @@ written with sorted keys and no spaces.
                the inferring `question` called, not flagged because question `by`
                did not bear it out; `why` is `not_tested` (too few scored origins, or
                not scored), `no_alarm` or `other_side`
+    forecasts  [{"signal", "property", "object", "question", "origin", "lead", "value",
+               "reading", "margin", "refused", "stuck", "inference"}]: each smooth
+               signal in a run of at least 3 delivering intervals without a change,
+               tested against the inferring question's forecast from `origin` (the end
+               of the interval of its last change) read `lead` intervals ahead: stuck
+               when |value - reading| > margin; `refused` {code, message} says why it
+               was not tested (no_question, not_a_number, no_margin, the inference's
+               refusal codes, horizon_passed, not_finite); `inference` is
+               the forecast itself, which the next check of the same run reads again
     skipped    [{"signal", "reason"}]: inferred values that could not be written
 
 `TwinFidelityCheck.coverage`: {"validated": [ids], "provisional": [ids], "failing": [ids],
@@ -120,10 +129,14 @@ a refused correction are {"metric", "threshold", "candidates": [{"uid", "error",
 "baseline_error", "skill", "accepted", "reasons"}]}, or null when nothing was judged.
 
 `TwinSignal.value_at_flag` and `reading` hold the value as JSON. `TwinSignal.detail`:
-{"test": the numbers of the test that flagged it, "question": the question whose
+{"test": the numbers of the test that flagged it (a smooth signal called stuck has
+"model": "forecast" and "forecast": {"question", "origin", "lead", "value", "reading",
+"margin", "refused"}), "question": the question whose
 residuals did (biased), "episodes": [{"since", "until", "reason", "cleared_by",
 "unknown_since"}]: every time it was suspect, "inference": the forecast made when it
-was flagged, {"question", "model", "tolerance", "origin", "origin_version",
+was flagged (for a smooth signal called stuck, the forecast that called it, from the
+end of the interval of its last change), {"question", "model", "tolerance", "origin",
+"origin_version",
 "horizon_steps", "values": {time: mean}, "range": {"low", "high", "declared": {"low",
 "high"}, "observed", "margin"}} or {"refused": {"code", "message"}}, "estimate":
 {"value", "t", "question", "model", "tolerance", "origin", "lead_steps"}: the inferred

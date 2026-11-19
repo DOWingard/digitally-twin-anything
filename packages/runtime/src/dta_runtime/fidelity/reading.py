@@ -295,6 +295,32 @@ def first_version(twin: Twin) -> VersionRef:
 # -- fidelity's own records ----------------------------------------------------------------
 
 
+def kept_forecasts(
+    twin: Twin, at: VersionRef, now: datetime
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """The forecasts the latest check before `now` kept for the stuck test of smooth
+    signals, per (signal uid, origin): a run carries its forecast from check to check."""
+    rows = twin.store.table(
+        CHECK_TYPE,
+        columns=["at", "signals"],
+        filter=[("at", "<", now)],
+        order_by=[("at", "desc")],
+        limit=1,
+        at=at,
+    ).to_pylist()
+    if not rows:
+        return {}
+    document = records.loads(rows[0]["signals"], {})
+    entries = document.get("forecasts") if isinstance(document, dict) else None
+    found = {
+        (entry["signal"], entry["origin"]): entry
+        for entry in entries or []
+        if isinstance(entry, dict) and entry.get("signal") and entry.get("origin")
+    }
+    log.debug("forecasts kept by the latest check read", check=rows[0]["uid"], forecasts=len(found))
+    return found
+
+
 def latest_check_time(twin: Twin, at: VersionRef) -> datetime | None:
     rows = twin.store.table(
         CHECK_TYPE, columns=["at"], order_by=[("at", "desc")], limit=1, at=at

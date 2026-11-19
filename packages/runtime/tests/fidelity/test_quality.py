@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from dta_runtime.fidelity.quality import (
     FEW_CHANGES,
+    FORECAST,
     INDEPENDENT,
     MARKOV,
     NEVER_CHANGED,
@@ -17,14 +18,19 @@ from dta_runtime.fidelity.quality import (
     SMOOTH,
     STUCK_ALPHA,
     BiasTest,
+    StuckTest,
+    against_forecast,
     bias_test,
     biased,
     changes_per_interval,
+    forecast_margin,
     needed_run,
     run_probability,
     steps_per_interval,
     stuck_test,
     uncorroborated,
+    wants_forecast,
+    without_forecast,
 )
 
 T0 = datetime(2026, 1, 5, tzinfo=UTC)
@@ -105,13 +111,15 @@ def test_no_change_intervals_that_cluster_need_a_run_as_long_as_their_clusters_s
 
 def test_a_smooth_signal_is_not_tested_and_a_sawtooth_is():
     # A level rising by one step of resolution every other interval: every change keeps
-    # its sign. However long it stays flat, it is not called stuck.
+    # its sign. However long it stays flat, the length of its run does not call it stuck:
+    # it is left to the forecast.
     values = [round(10 + 0.005 * index, 2) for index in range(96)]
     steps = [None] + [None if b == a else b - a for a, b in zip(values, values[1:], strict=False)]
     changed = [found is not None for found in steps]
     found = stuck_test(changed + [False] * 30, [True] * 126, steps + [None] * 30)
     assert not found.tested and not found.stuck and found.skipped == SMOOTH
     assert (found.pairs, found.kept) == (46, 46) and found.smooth_p < 0.01
+    assert wants_forecast(found) and found.n == 31
     # Without the steps nothing is taken for smooth.
     assert stuck_test(changed + [False] * 30, [True] * 126).tested
     # Three steps up and one down keep the sign half the time: tested.
@@ -119,6 +127,29 @@ def test_a_smooth_signal_is_not_tested_and_a_sawtooth_is():
     steps = [b - a for a, b in zip(saw, saw[1:], strict=False)][:93] + [None] * 3
     found = stuck_test([True] * 93 + [False] * 3, [True] * 96, steps)
     assert found.tested and found.skipped is None and found.smooth_p > 0.5
+
+
+def test_a_smooth_signal_in_a_run_is_stuck_when_its_reading_lies_off_the_forecast():
+    smooth = StuckTest(False, False, 3, 40, 2, 0.07, 39, skipped=SMOOTH)
+    assert wants_forecast(smooth)
+    assert not wants_forecast(StuckTest(False, False, 2, 40, 2, 0.07, 39, skipped=SMOOTH))
+    assert not wants_forecast(StuckTest(False, False, 9, 10, 2, None, 9, skipped=FEW_CHANGES))
+    # Half the tolerance, in the property's units or relative to the reading.
+    assert forecast_margin("mae", 0.5, 11.41) == 0.25
+    assert forecast_margin("rmse", 0.5, 11.41) == forecast_margin("max_abs", 0.5, 11.41) == 0.25
+    assert forecast_margin("mape", 0.05, -11.41) == pytest.approx(0.28525)
+    assert forecast_margin("mape", 0.05, 0.0) is None
+    assert forecast_margin("error_rate", 0.1, 3.0) is None
+    assert forecast_margin("mae", None, 3.0) is None
+    document = {"question": "level", "lead": 3, "value": 10.3, "reading": 10.0}
+    found = against_forecast(smooth, value=10.3, reading=10.0, margin=0.25, document=document)
+    assert (found.tested, found.stuck, found.skipped, found.model) == (True, True, None, FORECAST)
+    assert found.document()["forecast"] == document
+    # On the margin is not past it.
+    assert not against_forecast(smooth, value=10.25, reading=10.0, margin=0.25, document={}).stuck
+    untested = without_forecast(smooth, {"refused": {"code": "no_question"}})
+    assert (untested.tested, untested.stuck, untested.skipped) == (False, False, SMOOTH)
+    assert untested.document()["forecast"]["refused"]["code"] == "no_question"
 
 
 def test_only_signals_that_changed_in_twenty_intervals_are_tested():
