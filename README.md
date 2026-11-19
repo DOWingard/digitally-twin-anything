@@ -395,8 +395,10 @@ then observed, and is in one state: `unknown` (no check yet), `healthy`,
   than its staleness opens an incident. An observed signal that used to change
   and stopped while its source kept delivering is called stuck when a run
   without a change that long has probability below 1e-7 under its own history
-  (a smooth signal, whose changes keep their sign, is left to the next test);
-  one whose residual shifts by at least ε against every model of its property
+  (a smooth signal, whose changes keep their sign, is not judged by its run:
+  after 3 intervals without a change it is stuck when its reading lies more
+  than half the tolerance from the forecast of the question that infers it,
+  made once from its last change); one whose residual shifts by at least ε against every model of its property
   is called biased. A suspect signal's readings are kept on its record and not
   written to the object; the value in force is the twin's own estimate,
   forecast once from what was observed before the flag and marked as inferred.
