@@ -29,7 +29,7 @@ from dta_core.log import Log
 log = Log("tests.launcher")
 
 REPO = Path(__file__).resolve().parents[3]
-LAUNCHER = REPO / "plugin" / "bin" / "dta"
+LAUNCHER = REPO / "bin" / "dta"
 VERSION_FILE = LAUNCHER.with_name("VERSION")
 SAMPLE = Path(__file__).with_name("sample")
 # What `uv run dta` runs: the entry point installed in this environment.

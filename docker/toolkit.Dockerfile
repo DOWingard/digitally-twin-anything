@@ -1,6 +1,6 @@
 # The command line tool `dta` and the docker client it drives.
 #
-# The plugin's launcher (plugin/bin/dta) runs this image on a workspace: the
+# The plugin's launcher (bin/dta) runs this image on a workspace: the
 # workspace mounted at its own path, the host's docker socket, the host's
 # network, the calling user's uid and gid. Compose files and build contexts
 # the toolkit hands to docker are therefore resolved by the host's daemon at
