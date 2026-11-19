@@ -76,6 +76,7 @@ CONDITIONS = {
     "objective": "when a question is prescriptive or the contract has controls",
     "webhook": "when `kind` is `webhook`",
     "executor": "when `binding` is `executor`",
+    "autonomous_executor": "for an autonomous control whose action has `binding: executor`",
 }
 
 # Sections the tool writes itself; their fields carry no ownership metadata.

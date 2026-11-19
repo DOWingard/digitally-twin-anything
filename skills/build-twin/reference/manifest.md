@@ -10,9 +10,11 @@ Every field of `manifest.yaml`, as the tool's schema defines it. A path holds a 
 
 ## manifest_version
 
+Version of the manifest's format it is written in; a field newer than it is refused. Absent, it reads as the newest version this software reads.
+
 | Field | Type | Required | Owner | Default | Description |
 |---|---|---|---|---|---|
-| `manifest_version` | one of `1` | no | fixed | `1` |  |
+| `manifest_version` | integer, at least 1, at most 2 | no | fixed |  | Version of the manifest's format it is written in; a field newer than it is refused. Absent, it reads as the newest version this software reads |
 
 ## twin
 
@@ -60,6 +62,11 @@ What the twin must do and within which limits.
 | `contract.controls.<control>.bounds.max_step` | number | no | user |  | Largest change in one action |
 | `contract.controls.<control>.autonomy` | one of `advisory`, `supervised`, `autonomous` | yes | user |  | Advisory, supervised or autonomous |
 | `contract.controls.<control>.action` | text | yes | agent |  | Id of the action type that carries it out |
+| `contract.controls.<control>.on_failure` | section | yes, for an autonomous control whose action has `binding: executor` | user |  | What is sent, once per failure, to each object the twin commanded under this control when the twin's fidelity state becomes failed. This is not a safety function: a twin that is not running sends nothing |
+| `contract.controls.<control>.on_failure.mode` | one of `hold`, `release`, `safe_value` | yes | user |  | hold: nothing is sent and the real system keeps the twin's last command; release: an action that hands the object back is sent; safe_value: a fixed value is sent |
+| `contract.controls.<control>.on_failure.action` | text | no | user |  | Id of the action type sent: for release, one that hands the object back (required); for safe_value, the control's own action when absent |
+| `contract.controls.<control>.on_failure.parameters` | map of name to any value | no | user |  | Constants the action is sent with, every parameter it takes; for safe_value, `value` is the value sent |
+| `contract.controls.<control>.on_failure.after_stale` | duration (ISO 8601, such as `PT15M`), above PT0S | no | user |  | Also send it once an incident of data too old for a question has been open this long |
 | `contract.objective` | section | yes, when a question is prescriptive or the contract has controls | user |  | What control and advice optimise |
 | `contract.objective.description` | text | yes | user |  | The outcome to improve |
 | `contract.objective.direction` | one of `minimize`, `maximize` | yes | user |  | Which way is better |
@@ -264,8 +271,9 @@ How error is measured and corrected.
 | `fidelity.correction.recalibrate_attempts` | integer, at least 0 | no | agent | `2` | Tries of re-fitting parameters before escalating |
 | `fidelity.correction.reselect` | true or false | no | agent | `true` | May switch among the declared candidates |
 | `fidelity.correction.agent_remodel` | true or false | no | agent | `true` | May ask the managing agent to re-model |
-| `fidelity.correction.retry_budget` | integer, at least 1 | no | agent | `3` | Correction cycles before the twin is declared failed |
+| `fidelity.correction.retry_budget` | integer, at least 1 | no | agent | `3` | Correction cycles an incident is given; once they are spent it fails, unless a request to re-model is pending |
 | `fidelity.correction.remodel_timeout` | duration (ISO 8601, such as `PT15M`) | no | agent | `P1D` | How long a request to re-model may stay unanswered before the twin is declared failed |
+| `fidelity.correction.retry_backoff` | duration (ISO 8601, such as `PT15M`), above PT0S | no | agent |  | Wait after a correction cycle before the next one, doubled after each further cycle; the fidelity interval when absent |
 
 ## interfaces
 

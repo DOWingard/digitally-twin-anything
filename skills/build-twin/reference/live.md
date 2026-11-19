@@ -29,7 +29,7 @@ A live twin checks itself every `fidelity.interval`: it scores each forecast que
 - `fidelity.interval`: the sync interval rounded up to a whole hour, and at least `PT1H`.
 - `fidelity.window`: the history each check measures over. At least the longest forecast horizon plus five fidelity intervals (a breach needs three scored forecasts inside the window), at least `P1D`, and no longer than the history the sources held when profiled.
 
-`fidelity.correction` sets what the twin may try by itself before it asks for help; keep its defaults (two re-fits, re-selection among candidates, then a request to you to re-model, with a budget of three cycles and 24 hours to answer). [operate](operate.md) says what to do when it asks.
+`fidelity.correction` sets what the twin may try by itself before it asks for help; keep its defaults: two re-fits, re-selection among candidates, then a request to you to re-model with 24 hours to answer. While that request is open the twin keeps trying on newer data: up to `retry_budget` cycles (three), each starting after a wait that doubles from `retry_backoff` (the fidelity interval when not set). Only the 24 hours running out fails it. [operate](operate.md) says what to do when it asks.
 
 ## Notifications
 
@@ -64,6 +64,24 @@ Rules the checks enforce:
 - `action.executor_addon`: `binding: executor` needs `contract.addons.executors: true`, which the user decides ([question bank](question-bank.md)).
 - `tier.static_control`: a static twin's controls are `advisory`.
 - `control.bounds`: each control's bounds give a minimum, a maximum or allowed values.
+- `control.on_failure_missing`: an autonomous control whose action has `binding: executor` needs `contract.controls.<control>.on_failure`, which the user decides.
+- `control.on_failure_invalid`: what `on_failure` names cannot be sent as written (below).
+
+### When the twin fails
+
+A twin whose fidelity state is `failed` executes nothing, so the real system keeps the last thing the twin set. `contract.controls.<control>.on_failure` says what happens then; the user decides it ([question bank](question-bank.md)) and signs it.
+
+| `mode` | What is sent | What to declare |
+|---|---|---|
+| `hold` | Nothing. | Nothing more. |
+| `release` | An action that hands the object back to the real system's own control. | `on_failure.action`: an action of its own with `binding: executor` on the control's class, not the control's own action; `on_failure.parameters`: a constant for each of its parameters. |
+| `safe_value` | The control's own action with a constant. | `on_failure.parameters`: `value: <constant>` inside the control's bounds (the step limit `max_step` does not apply to it). |
+
+- It is sent once per failure, to each object the twin has commanded under that control and to no other, past the interlock and the control's autonomy; the action's `precondition` and its parameters are still judged.
+- `on_failure.after_stale: <duration>` sends it as well when the twin's data has been too old for that long.
+- It is recorded like any action, with origin `failsafe`: `dta actions records --origin failsafe`. The twin notifies when it was sent and, with severity `critical`, when it could not be.
+- Tell the user plainly: this is not a safety function. A twin that is stopped, or cut off from the real system, sends nothing; protection against that belongs in the real system (a watchdog that returns to local control when the twin has been silent).
+- These fields need `manifest_version: 2`.
 
 ### The executor
 

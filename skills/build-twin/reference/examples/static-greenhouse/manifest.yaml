@@ -1,7 +1,7 @@
 # A static twin over files: a data logger's CSV exports of one growing season.
 # Profiles, sources.logger.refresh_period and field_status are written by dta
 # (dta profile, dta manifest confirm); everything else was written by hand.
-manifest_version: 1
+manifest_version: 2
 twin:
   id: greenhouse
   name: Greenhouse soil moisture

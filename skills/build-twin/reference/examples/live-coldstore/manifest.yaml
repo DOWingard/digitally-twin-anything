@@ -4,7 +4,7 @@
 # Profiles, refresh periods, sync.interval, sync.derivation and field_status are
 # written by dta (dta profile, dta sync derive --write, dta manifest confirm);
 # everything else was written by hand.
-manifest_version: 1
+manifest_version: 2
 twin:
   id: coldstore
   name: Cold store
