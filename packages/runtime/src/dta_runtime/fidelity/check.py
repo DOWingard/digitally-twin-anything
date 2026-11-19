@@ -255,6 +255,10 @@ class _Context:
     started: float
     deadline_s: float
     spans: dict[tuple[str, str], list[tuple]]
+    # The forecasts of flagged and smooth signals asked at this check, per (model, origin
+    # version, steps): every series of a model comes from one call, whichever signals
+    # need it. Holds the table, or the exception the call raised.
+    forecasts: dict[tuple[str, str, int], Any] = field(default_factory=dict)
 
 
 def _measure(context: _Context, question: QuestionSetup, earlier: list[Scored]) -> Measured:
@@ -582,6 +586,10 @@ class _Measurement:
     # Per signal flagged as the measurement found it: the forecast that stands in for its
     # readings, made before the lock (`_infer`).
     inference: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Per smooth signal in a run long enough to be tested against the forecast
+    # (`_forecast_tests`): the entry the check keeps, with the forecast itself, which the
+    # next check of the same run reads again instead of asking for it.
+    forecasts: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -781,14 +789,22 @@ def _observed_range(
     }
 
 
-def _infer(context: _Context, measurement: _Measurement, property_text: str, uid: str) -> dict:
+def _infer(
+    context: _Context,
+    measurement: _Measurement,
+    property_text: str,
+    uid: str,
+    origin: datetime | None = None,
+) -> dict:
     """The forecast that stands in for a signal's readings while it is suspect, made once
     when it is flagged: by the inferring question's active model, from the version in
-    force one step before the check (the readings up to the one before the flagged one;
-    every other input as it was in force then), for the question's horizon. Never from a
-    version that holds an inferred value of this signal. `refused` says why there is
-    none."""
+    force at `origin` (by default one step before the check: the readings up to the one
+    before the flagged one; every other input as it was in force then), for the
+    question's horizon. Never from a version that holds an inferred value of this
+    signal. `refused` says why there is none. The stuck test of a smooth signal asks the
+    same forecast from the end of the interval of its last change."""
     setup, now = context.setup, context.now
+    signal = records.signal_uid(property_text, uid)
     chosen = _inferring(measurement, property_text)
     if chosen is None or chosen.setup.model is None or chosen.setup.steps is None:
         return {
@@ -797,9 +813,15 @@ def _infer(context: _Context, measurement: _Measurement, property_text: str, uid
             )
         }
     question, model = chosen.setup, chosen.setup.model
-    origin = reading.floor_to(now - setup.step, setup.interval)
+    if origin is None:
+        origin = reading.floor_to(now - setup.step, setup.interval)
     version = reading.version_at(context.twin, origin)
     if version is None:
+        log.warn(
+            "no version at the origin of a signal's forecast; none is made",
+            signal=signal,
+            origin=iso_utc(origin),
+        )
         return {"refused": _reason("no_version", "the live line has no version at the origin")}
     inputs = _feature_inputs(setup, question)
     withheld = sorted(
@@ -809,9 +831,10 @@ def _infer(context: _Context, measurement: _Measurement, property_text: str, uid
     )
     if withheld:
         log.warn(
-            "an input of the inferring question is unknown at the origin; the flagged "
-            "signal's value is unknown",
-            signal=records.signal_uid(property_text, uid),
+            "an input of the inferring question is unknown at the origin; the signal is "
+            "not forecast",
+            signal=signal,
+            origin=iso_utc(origin),
             question=question.id,
             signals=withheld,
         )
@@ -825,46 +848,68 @@ def _infer(context: _Context, measurement: _Measurement, property_text: str, uid
     grid = [origin + j * setup.step for j in range(1, question.steps + 1)]
     left = context.deadline_s - (time.monotonic() - context.started)
     if left <= 0:
+        log.warn(
+            "the check's budget ran out before a signal's forecast was asked; none is made",
+            signal=signal,
+            origin=iso_utc(origin),
+            deadline_s=context.deadline_s,
+        )
         return {"refused": _reason("deadline", "the check's budget ran out before it was asked")}
     interventions = (
         reading.interventions(context.twin, setup.head, origin, grid[-1])
         if question.interventional
         else []
     )
+    key = (str(model["uid"]), version.id, question.steps)
     try:
-        table = context.predictor(
-            model,
-            origin=version,
-            horizon=question.steps,
-            step=setup.step,
-            interventions=interventions,
-            deadline_s=left,
-        )
-        path = _prediction(table, grid).get(uid) or {}
+        if key not in context.forecasts:
+            started = time.perf_counter()
+            try:
+                context.forecasts[key] = context.predictor(
+                    model,
+                    origin=version,
+                    horizon=question.steps,
+                    step=setup.step,
+                    interventions=interventions,
+                    deadline_s=left,
+                )
+            except Exception as exc:
+                context.forecasts[key] = exc
+            log.debug(
+                "signal forecast asked",
+                model=model["uid"],
+                origin=iso_utc(origin),
+                steps=question.steps,
+                elapsed_ms=_ms(started),
+            )
+        found = context.forecasts[key]
+        if isinstance(found, Exception):
+            raise found
+        path = _prediction(found, grid).get(uid) or {}
     except DtaError as exc:
         log.warn(
-            "the predictor refused the forecast of a flagged signal; its value is unknown",
-            property=property_text,
-            object=uid,
+            "the predictor refused a signal's forecast; none is made",
+            signal=signal,
+            origin=iso_utc(origin),
             model=model["uid"],
             code=exc.code,
         )
         return {"refused": _reason("predictor_refused", f"{exc.code}: {exc.message}")}
     except _Bad as exc:
         log.warn(
-            "the forecast of a flagged signal cannot be read; its value is unknown",
-            property=property_text,
-            object=uid,
+            "a signal's forecast cannot be read; none is made",
+            signal=signal,
+            origin=iso_utc(origin),
             model=model["uid"],
             reason=str(exc),
         )
         return {"refused": _reason("bad_prediction", str(exc))}
     except Exception as exc:
         log.error(
-            "the predictor failed on the forecast of a flagged signal; its value is unknown",
+            "the predictor failed on a signal's forecast; none is made",
             exc=exc,
-            property=property_text,
-            object=uid,
+            signal=signal,
+            origin=iso_utc(origin),
             model=model["uid"],
         )
         return {
@@ -897,6 +942,140 @@ def _infer(context: _Context, measurement: _Measurement, property_text: str, uid
         "values": values,
         "range": _observed_range(context, property_text, uid, question.tolerance),
     }
+
+
+def _forecast_tests(
+    context: _Context,
+    measurement: _Measurement,
+    suspect: set[str],
+    kept: Mapping[tuple[str, str], Mapping[str, Any]],
+) -> None:
+    """The stuck test of every smooth signal, not suspect, in a run of at least
+    `quality.STUCK_MIN_INTERVALS` delivering intervals, decided against the forecast of
+    the question that would infer it, from the end of the interval of its last change
+    (see `quality`). The forecast is asked once per run: `kept` holds those earlier
+    checks kept, per (signal, origin); a refusal for want of time is asked again."""
+    setup, now = context.setup, context.now
+    for key, result in sorted(measurement.stuck.items()):
+        test = result.test
+        property_text, uid = key
+        signal = records.signal_uid(property_text, uid)
+        if (
+            signal in suspect
+            or not quality.wants_forecast(test)
+            or test.last is None
+            or result.start is None
+            or result.step is None
+        ):
+            continue
+        origin = result.start + (test.last + 1) * result.step
+        lead = (reading.floor_to(now, setup.step) - origin) // setup.step
+        raw = _number(result.value)
+        found: dict[str, Any] = {
+            "question": None,
+            "origin": iso_utc(origin),
+            "lead": lead,
+            "value": None,
+            "reading": raw,
+            "margin": None,
+            "refused": None,
+        }
+        inference: dict[str, Any] | None = None
+        chosen = _inferring(measurement, property_text)
+        if chosen is None or chosen.setup.model is None or chosen.setup.steps is None:
+            found["refused"] = _reason(
+                "no_question", "no predictive question with an active model targets the property"
+            )
+        elif raw is None or not math.isfinite(raw):
+            found["question"] = chosen.setup.id
+            found["refused"] = _reason("not_a_number", "the reading is not a finite number")
+        else:
+            question = chosen.setup
+            found["question"] = question.id
+            margin = quality.forecast_margin(question.metric, question.tolerance, raw)
+            if margin is None:
+                found["refused"] = _reason(
+                    "no_margin",
+                    f"the question's tolerance ({question.metric} {question.tolerance}) gives "
+                    "no margin in the property's units or relative to a reading other than 0",
+                )
+            else:
+                found["margin"] = margin
+                inference = _kept_forecast(kept.get((signal, iso_utc(origin))))
+                if inference is None:
+                    inference = _infer(context, measurement, property_text, uid, origin=origin)
+                found["refused"] = _against_forecast(found, inference, setup, origin, lead)
+        if found["refused"] is None:
+            decided = quality.against_forecast(
+                test,
+                value=found["value"],
+                reading=raw if raw is not None else math.nan,
+                margin=found["margin"],
+                document=found,
+            )
+            log.debug(
+                "smooth signal tested against the forecast",
+                signal=signal,
+                origin=found["origin"],
+                lead=lead,
+                displacement=abs(found["value"] - (raw or 0.0)),
+                margin=found["margin"],
+                stuck=decided.stuck,
+            )
+        else:
+            decided = quality.without_forecast(test, found)
+            log.info(
+                "smooth signal in a run not tested against the forecast",
+                signal=signal,
+                origin=found["origin"],
+                lead=lead,
+                reason=found["refused"]["code"],
+            )
+        measurement.stuck[key] = replace(result, test=decided)
+        measurement.forecasts[signal] = {
+            "signal": signal,
+            "property": property_text,
+            "object": uid,
+            **found,
+            "stuck": decided.stuck,
+            "inference": inference,
+        }
+
+
+def _kept_forecast(entry: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The forecast an earlier check of the run kept, unless it was refused for want of
+    time (asked again then)."""
+    inference = (entry or {}).get("inference")
+    if not isinstance(inference, Mapping):
+        return None
+    if ((inference.get("refused") or {}).get("code")) == "deadline":
+        return None
+    return dict(inference)
+
+
+def _against_forecast(
+    found: dict[str, Any],
+    inference: Mapping[str, Any],
+    setup: Setup,
+    origin: datetime,
+    lead: int,
+) -> dict[str, str] | None:
+    """Reads the forecast at the lead into `found`; why it cannot be tested against it,
+    or None when it can."""
+    if inference.get("refused"):
+        return dict(inference["refused"])
+    steps = inference.get("horizon_steps")
+    if not isinstance(steps, int) or lead > steps:
+        return _reason(
+            records.HORIZON_PASSED,
+            f"the lead of {lead} steps is past the {steps} steps of the inferring question",
+        )
+    moment = origin + lead * setup.step
+    value = _number((inference.get("values") or {}).get(iso_utc(moment)))
+    if value is None or not math.isfinite(value):
+        return _reason(records.NOT_FINITE, f"the forecast has no finite value at {iso_utc(moment)}")
+    found["value"] = value
+    return None
 
 
 @dataclass(frozen=True)
@@ -1590,6 +1769,7 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
         "unknown": unknown_entries,
         "alarming": alarming,
         "uncorroborated": uncorroborated,
+        "forecasts": [measurement.forecasts[signal] for signal in sorted(measurement.forecasts)],
         "skipped": [],
     }
     freshness_document = {
@@ -1857,7 +2037,13 @@ def _check(
     # it flags from the same measurement, and a signal it flags that was not forecast here
     # (another writer changed the signals in between) has no value inferred.
     suspect_now = {uid for uid, document in signals.items() if document["status"] == SUSPECT}
+    _forecast_tests(context, measurement, suspect_now, reading.kept_forecasts(twin, head, now))
     for signal, flag in sorted(_flags(measurement, suspect_now).flags.items()):
+        # A smooth signal called stuck by the forecast keeps that forecast as its value.
+        tested = measurement.forecasts.get(signal) or {}
+        if tested.get("stuck") and isinstance(tested.get("inference"), Mapping):
+            measurement.inference[signal] = dict(tested["inference"])
+            continue
         measurement.inference[signal] = _infer(
             context, measurement, flag["property"], flag["object"]
         )

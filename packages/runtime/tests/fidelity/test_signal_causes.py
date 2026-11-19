@@ -3,7 +3,8 @@ holds now.
 
 1. A level moving normally was called stuck: it is flat for a few intervals at each
    turning point, and taken as independent draws such a flat is improbable. A smooth
-   signal is not tested for being stuck any more.
+   signal is not tested by the length of its run any more, only against the forecast of
+   a question that infers it (none here).
 2. A stuck signal whose readings moved again was never cleared: clearing compared the
    raw reading with an estimate that had drifted away. It clears now when its raw
    readings change again.
