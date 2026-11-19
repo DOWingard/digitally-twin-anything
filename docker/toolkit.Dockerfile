@@ -14,8 +14,8 @@
 # What the build may read is limited by docker/toolkit.Dockerfile.dockerignore;
 # it needs only committed files. What it pulls: the two base images, by
 # digest; the third-party packages, by the lock file's versions and hashes;
-# the installer, by version; the build backend of the project's own packages
-# (hatchling) at its newest version, the one thing not pinned. The image
+# the installer, by version and hash; the build backend of the project's own
+# packages (hatchling) and what it needs, by version. The image
 # holds no secret and no store or source driver: the toolkit reaches a twin's
 # store and sources only through the twin's own containers, and reads a
 # workspace's .env from the mounted workspace when it runs.
@@ -24,6 +24,13 @@
 FROM docker:29.9.3-cli@sha256:5a7af0dcb0e46c803efe9b45371dd21cb500e5b4453250394ac6f06d49b6e6f1 AS docker-cli
 
 FROM python:3.12.16-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+
+# The installer, by version and by the hashes of its wheels for the two machine types
+# the base image exists for; pip refuses any other file.
+ARG UV_REQUIREMENT="uv==0.9.18 \
+    --hash=sha256:3332188fd8d96a68e5001409a52156dced910bf1bc41ec3066534cffcd46eb68 \
+    --hash=sha256:b7295e6d505f1fd61c54b1219e3b18e11907396333a9fa61cefe489c08fc7995 \
+    --hash=sha256:edf965e9a5c55f74020ac82285eb0dfe7fac4f325ad0a7afc816290269ecfec1"
 
 # The container runs as whoever calls the launcher, a uid this image does not
 # know, with nothing writable but the mounted workspace and /tmp; the home
@@ -53,7 +60,8 @@ RUN --mount=type=bind,source=uv.lock,target=/src/uv.lock \
     --mount=type=bind,source=packages/core/pyproject.toml,target=/src/packages/core/pyproject.toml \
     --mount=type=bind,source=packages/runtime/pyproject.toml,target=/src/packages/runtime/pyproject.toml \
     --mount=type=bind,source=packages/toolkit/pyproject.toml,target=/src/packages/toolkit/pyproject.toml \
-    pip install --no-cache-dir --root-user-action=ignore uv==0.9.18 \
+    echo "$UV_REQUIREMENT" > /tmp/uv.txt \
+    && pip install --no-cache-dir --root-user-action=ignore --require-hashes -r /tmp/uv.txt \
     && cd /src \
     && UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy \
        uv sync --frozen --no-dev --no-install-workspace --no-cache --package dta-toolkit \
@@ -67,7 +75,8 @@ RUN --mount=type=bind,source=uv.lock,target=/src/uv.lock \
     && useradd --no-create-home --shell /usr/sbin/nologin --uid 10001 dta
 
 RUN --mount=type=bind,source=.,target=/src,rw \
-    pip install --no-cache-dir --root-user-action=ignore uv==0.9.18 \
+    echo "$UV_REQUIREMENT" > /tmp/uv.txt \
+    && pip install --no-cache-dir --root-user-action=ignore --require-hashes -r /tmp/uv.txt \
     && cd /src \
     && UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy \
        uv sync --frozen --no-dev --no-editable --no-cache --package dta-toolkit \

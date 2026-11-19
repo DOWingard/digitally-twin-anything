@@ -106,9 +106,9 @@ Measured on one machine:
 
 The builds need only the repository's committed files; local files of a clone
 (`.env`, environments, caches, notes, tests) never enter the build. Base
-images are pinned by digest and Python packages by the lock file; the one
-thing fetched at its newest version is the build backend of the project's own
-packages.
+images are pinned by digest, Python packages by the lock file's versions and
+hashes, the installer by version and hash, and the build backend of the
+project's own packages by version.
 
 To build both images again, after changing the sources or to start over:
 
@@ -331,11 +331,17 @@ then observed, and is in one state: `unknown` (no check yet), `healthy`,
   only on new evidence within ε.
 - **Stale data, stuck and biased signals.** A question whose data is older
   than its staleness opens an incident. An observed signal that used to change
-  and stopped while its source kept delivering is called stuck; one whose
-  residual shifts by at least ε against every model of its property is called
-  biased. A suspect signal's readings are kept on its record and not written
-  to the object; the value in force is the twin's own estimate, marked as
-  inferred, until the signal is sound again.
+  and stopped while its source kept delivering is called stuck when a run
+  without a change that long has probability below 1e-7 under its own history
+  (a smooth signal, whose changes keep their sign, is left to the next test);
+  one whose residual shifts by at least ε against every model of its property
+  is called biased. A suspect signal's readings are kept on its record and not
+  written to the object; the value in force is the twin's own estimate,
+  forecast once from what was observed before the flag and marked as inferred.
+  Past the horizon of the question that infers it, or when the estimate is not
+  finite or outside the signal's range, the value is unknown: an answer that
+  needs it is refused with `fidelity.input_unknown`, naming the signal, until
+  the signal is sound again.
 - **Actions.** The manifest declares what may be done to the real system: an
   action type with typed parameters, the control it carries out with its
   bounds and autonomy (`advisory`, `supervised`, `autonomous`), and an HTTP
@@ -344,8 +350,8 @@ then observed, and is in one state: `unknown` (no check yet), `healthy`,
   settle time, and a mismatch is an incident.
 - **Interlock.** An autonomous action is executed while the twin is healthy,
   or correcting with no stale-data or mismatch incident open; a supervised one
-  on a recorded approval, unless the twin failed. A failed twin executes
-  nothing.
+  on a recorded approval, unless the twin failed. An autonomous action on a
+  value that is unknown is blocked. A failed twin executes nothing.
 - **Control loops** run a policy function of the twin on an interval and
   propose what it returns. A loop is registered disabled; enabling it is a
   decision recorded with a name.

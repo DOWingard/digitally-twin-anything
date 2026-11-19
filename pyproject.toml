@@ -7,6 +7,20 @@ dependencies = []
 
 [tool.uv]
 package = false
+# rfc3987 (GPL-3.0-or-later) arrives through jsonschema's `format` extra and is never
+# installed: the marker below is true on no platform. URI formats are checked by
+# rfc3986-validator instead, which jsonschema uses when rfc3987 is absent.
+override-dependencies = ["rfc3987 ; sys_platform == 'never'"]
+# The build backend of the workspace's own packages and what it needs, by version: a
+# build fetches these outside the lock file.
+build-constraint-dependencies = [
+    "hatchling==1.33.0",
+    "packaging==26.3",
+    "pathspec==1.1.1",
+    "pluggy==1.7.0",
+    "tomlkit==0.15.2",
+    "trove-classifiers==2026.9.21.13",
+]
 
 [tool.uv.workspace]
 members = ["packages/*"]

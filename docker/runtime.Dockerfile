@@ -13,14 +13,21 @@
 # What the build may read is limited by docker/runtime.Dockerfile.dockerignore;
 # it needs only committed files. What it pulls: the base image, by digest; the
 # third-party packages, by the lock file's versions and hashes; the installer,
-# by version; the build backend of the project's own packages (hatchling) at
-# its newest version, the one thing not pinned. Every setting, and every
+# by version and hash; the build backend of the project's own packages
+# (hatchling) and what it needs, by version. Every setting, and every
 # secret, reaches a container through its environment; nothing is baked into
 # the image.
 
 # The same base as the toolkit's image, by digest, so that a build next year
 # starts from the same files.
 FROM python:3.12.16-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+
+# The installer, by version and by the hashes of its wheels for the two machine types
+# the base image exists for; pip refuses any other file.
+ARG UV_REQUIREMENT="uv==0.9.18 \
+    --hash=sha256:3332188fd8d96a68e5001409a52156dced910bf1bc41ec3066534cffcd46eb68 \
+    --hash=sha256:b7295e6d505f1fd61c54b1219e3b18e11907396333a9fa61cefe489c08fc7995 \
+    --hash=sha256:edf965e9a5c55f74020ac82285eb0dfe7fac4f325ad0a7afc816290269ecfec1"
 
 # dlt reports usage unless told not to; a twin never reports anything.
 ENV PYTHONUNBUFFERED=1 \
@@ -42,7 +49,8 @@ RUN --mount=type=bind,source=uv.lock,target=/src/uv.lock \
     --mount=type=bind,source=packages/core/pyproject.toml,target=/src/packages/core/pyproject.toml \
     --mount=type=bind,source=packages/runtime/pyproject.toml,target=/src/packages/runtime/pyproject.toml \
     --mount=type=bind,source=packages/toolkit/pyproject.toml,target=/src/packages/toolkit/pyproject.toml \
-    pip install --no-cache-dir --root-user-action=ignore uv==0.9.18 \
+    echo "$UV_REQUIREMENT" > /tmp/uv.txt \
+    && pip install --no-cache-dir --root-user-action=ignore --require-hashes -r /tmp/uv.txt \
     && cd /src \
     && UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy \
        uv sync --frozen --no-dev --no-install-workspace --no-cache --package dta-runtime \
@@ -60,7 +68,8 @@ RUN --mount=type=bind,source=uv.lock,target=/src/uv.lock \
     && chown -R twin:twin /var/lib/dta /var/log/dta
 
 RUN --mount=type=bind,source=.,target=/src,rw \
-    pip install --no-cache-dir --root-user-action=ignore uv==0.9.18 \
+    echo "$UV_REQUIREMENT" > /tmp/uv.txt \
+    && pip install --no-cache-dir --root-user-action=ignore --require-hashes -r /tmp/uv.txt \
     && cd /src \
     && UV_PROJECT_ENVIRONMENT=/opt/venv UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy \
        uv sync --frozen --no-dev --no-editable --no-cache --package dta-runtime \
