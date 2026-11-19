@@ -6,6 +6,7 @@ and minute; profiling measures that, and the derived interval is one minute.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -114,7 +115,22 @@ def test_live_flow_from_manifest_to_handover_and_on(make_twin, tmp_path: Path) -
                 break
             time.sleep(2.0)
         pickup_s = time.perf_counter() - waited_from
-        assert taken is not None, f"the appended readings were not taken in {pickup_s:.0f} s"
+        seen = {}
+        if taken is None:
+            # What the twin did meanwhile, so that a miss can be told from a slow machine.
+            jobs = client.get("/api/v1/lifecycle/jobs").json()["data"]
+            seen = {
+                "stamp": stamp,
+                "sources": sources,
+                "sync": client.get("/api/v1/meta/health").json().get("sync"),
+                "runs": client.get("/api/v1/sync/runs", params={"limit": 4}).json()["data"],
+                "new_jobs": [job for job in jobs if job["id"] not in known][:8],
+                "schedule": client.get("/api/v1/lifecycle/schedule").json().get("data"),
+            }
+        assert taken is not None, (
+            f"the appended readings were not taken in {pickup_s:.0f} s: "
+            f"{json.dumps(seen, default=str)}"
+        )
         health = client.get("/api/v1/meta/health").json()
         jobs = client.get("/api/v1/lifecycle/jobs").json()["data"]
     last_run = health["sync"]["last_run"]
