@@ -144,7 +144,7 @@ runs an image of your choosing instead, which is then never built.
 | `packages/runtime` | What runs inside a twin's stack: installing and opening a twin, reading its sources, loading them into the graph and keeping it in step with them, the HTTP API, the scheduler, the worker that runs functions and models, training frames, the shipped model families, scenarios and the browser UI |
 | `docker/toolkit.Dockerfile` | Image of the toolkit, with a docker client and its compose and buildx plugins |
 | `docker/runtime.Dockerfile` | Image of the twin's services: one image, one command per service |
-| `testbed` | A simulated water utility used as the standing test target, with the definitions of two reference twins: `testbed/twin` (static) and `testbed/twin-live` (live, with forecasts and a hydraulic model of its own in `testbed/twin-live/code`) |
+| `testbed`, `testbed-b` | Internal test fixtures: a simulated system and a data generator that the project's own tests and checks run against |
 | `spikes/storage` | Benchmark that selected Dolt as the versioned store |
 
 ## The store
@@ -289,7 +289,7 @@ twin, where it is versioned like everything else.
 - A model specification names a question, a target property, candidate
   families and a backtest. Shipped families: `persistence`, `seasonal_naive`,
   `theta`, `ets`, `arima`, `mstl`, `ridge_lags`, `gbm_lags`; a twin can bring
-  families of its own (the live reference twin brings a hydraulic simulation).
+  families of its own (a hydraulic simulation of a pipe network, say).
   The build backtests every candidate over the twin's history, on a rolling
   origin, and makes the best one that is within the question's tolerance and
   better than the baseline the question's active model.
@@ -562,8 +562,10 @@ docker compose -p dta-store-dev --env-file .env -f packages/core/tests/store/com
   `dta-toolkit:0.0.0-firstuse-<random>` and `dta-runtime:0.0.0-firstuse-<random>`
   with docker's layer cache, and remove exactly those tags.
 
-The testbed is a separate project with its own environment; see
-`testbed/README.md`.
+`testbed/` and `testbed-b/` are internal test fixtures (a simulated system and a
+data generator the project's own tests and checks run against), each with its
+own environment. They are not part of the plugin and nothing a user does
+needs them.
 
 ### Releasing a version
 
@@ -580,12 +582,6 @@ variable that is missing stops at startup and names it.
 ## Known limits
 
 - Linux only (see Install).
-- The reference twin in `testbed/` does not meet two of its own questions
-  under stress, and says so: it names the zone of a 20 L/s leak six hours
-  after it began in about three cases of five (the leak is as large as the
-  demand's own variation over that time), and its hydraulic calibration does
-  not follow a 40 % change of pipe roughness within the time its correction
-  allows, after which the twin declares itself failed.
 - A control's `on_failure` is not a safety function: a twin that is stopped or
   cut off sends nothing.
 - No continuous integration is set up: the whole suite needs Docker, a Dolt
