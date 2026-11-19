@@ -53,8 +53,7 @@ def test_an_unknown_value_and_a_clearing_say_what_they_rest_on():
     )
     stuck = {"action": "cleared", "by": "check", "changes": 3, "run": 0}
     assert step_outcome(stuck) == (
-        "cleared by check: 3 changes of the raw readings since the flag, 0 intervals "
-        "without one"
+        "cleared by check: 3 changes of the raw readings since the flag, 0 intervals without one"
     )
     biased = {
         "action": "cleared",

@@ -606,11 +606,13 @@ def counts_text(counts: dict[str, int]) -> str:
 
 
 def signals_text(signals: list[dict[str, Any]]) -> str:
-    """`2: Gauge.level of gauge:G1 (stuck); …`."""
+    """`2: Gauge.level of gauge:G1 (stuck, value unknown); …`: what stands for each
+    suspect signal's value, the forecast made at its flag or nothing."""
     if not signals:
         return NO_INCIDENT
     told = "; ".join(
-        f"{found.get('property')} of {found.get('object')} ({found.get('reason')})"
+        f"{found.get('property')} of {found.get('object')} ({found.get('reason')}"
+        + (f", value {found['value']})" if found.get("value") else ")")
         for found in signals
     )
     return f"{len(signals)}: {told}"

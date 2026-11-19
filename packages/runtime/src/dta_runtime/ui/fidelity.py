@@ -321,11 +321,15 @@ def incident_row(incident: dict[str, Any]) -> dict[str, Any]:
 
 
 def inferred_text(signal: dict[str, Any]) -> str:
-    """The value in force of a suspect signal: the estimate written in place of its
-    readings, or the value it had when it was flagged, which stays when nothing estimates
-    it. A signal sound again has its readings in force, and none is inferred."""
+    """The value in force of a suspect signal: the inferred value written in place of
+    its readings, or `unknown` and why once nothing is inferred any more (a record
+    written before values could be unknown shows the value at its flag). A signal sound
+    again has its readings in force, and none is inferred."""
     if signal.get("status") != "suspect":
         return ""
+    unknown = (signal.get("detail") or {}).get("unknown")
+    if isinstance(unknown, dict):
+        return f"unknown ({unknown.get('why')})"
     estimate = (signal.get("detail") or {}).get("estimate") or {}
     if estimate.get("value") is not None:
         by = estimate.get("model") or estimate.get("question")

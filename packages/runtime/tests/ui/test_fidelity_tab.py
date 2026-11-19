@@ -123,7 +123,7 @@ def test_the_summary_and_every_grid_are_what_the_api_says(fidelity_world, browse
     counts = Counter(found["status"] for found in every)
     assert counts == {"open": 1, "remodel_requested": 1, "resolved": 1}
     assert summary_field(browser, "incidents") == "1 open, 1 remodel_requested, 1 resolved"
-    assert summary_field(browser, "signals") == "1: Gauge.flow of gauge:G2 (stuck)"
+    assert summary_field(browser, "signals") == "1: Gauge.flow of gauge:G2 (biased, value unknown)"
 
     # Incidents, newest first, as the API lists them.
     shown = wait_grid(browser, ids.INCIDENTS_GRID, lambda rows: len(rows) == 3, "the incidents")
@@ -135,8 +135,15 @@ def test_the_summary_and_every_grid_are_what_the_api_says(fidelity_world, browse
     expected = []
     for signal in signals:
         estimate = signal["detail"].get("estimate") or {}
+        unknown = signal["detail"].get("unknown")
         suspect = signal["status"] == "suspect"
         reading = T.value_text(signal["reading"])
+        if not suspect:
+            inferred = ""
+        elif unknown:
+            inferred = f"unknown ({unknown['why']})"
+        else:
+            inferred = f"{T.number_text(estimate['value'])} ({estimate['model']})"
         expected.append(
             {
                 "object": signal["object"],
@@ -145,16 +152,15 @@ def test_the_summary_and_every_grid_are_what_the_api_says(fidelity_world, browse
                 "reason": signal["reason"],
                 "since": T.time_text(signal["since"]),
                 "reading": f"{reading} ({T.time_text(signal['reading_at'])})",
-                "inferred": (
-                    f"{T.number_text(estimate['value'])} ({estimate['model']})" if suspect else ""
-                ),
+                "inferred": inferred,
                 "clear_checks": signal["clear_checks"],
             }
         )
     assert [{name: row[name] for name in expected[0]} for row in shown] == expected
-    # The suspect flow of G2 is in force as the flow model estimated it; the level of G1
-    # is sound again.
-    assert shown[0]["inferred"] == "5 (twin_model:flow/naive)"
+    # The suspect flow of G2 was inferred from the flow model's forecast made at its flag
+    # until the lead passed the flow question's horizon of one step: it is unknown now.
+    # The level of G1 is sound again.
+    assert shown[0]["inferred"] == "unknown (horizon_passed)"
     assert shown[1]["inferred"] == ""
 
     checks = served.get("/fidelity/checks", limit=50)["data"]
@@ -296,9 +302,13 @@ def test_an_incident_shows_its_steps_and_what_a_remodel_request_waits_for(fideli
         T.measure_text(opened, "m"),
         "",
     ]
-    assert steps[2][2:4] == ["recalibrate", "not accepted"]
+    # A correction not accepted says why, as the evaluation gave it (there is no worker).
+    for index, rung in ((2, "recalibrate"), (4, "reselect")):
+        reason = found["steps"][index]["reason"]
+        assert reason["code"] and reason["message"]
+        assert steps[index][2] == rung
+        assert steps[index][3] == f"not accepted ({reason['code']}): {reason['message']}"
     assert steps[3][2] == "reselect, attempt 0, cycle 1"
-    assert steps[4][2:4] == ["reselect", "not accepted"]
     assert steps[5][2:4] == ["asked the managing agent to re-model", "waits at most 2 h"]
     # The cycle of each step and when the next cycle is due, as the record says.
     assert [row[6:8] for row in steps] == [
@@ -313,11 +323,14 @@ def test_an_incident_shows_its_steps_and_what_a_remodel_request_waits_for(fideli
     click_row(browser, ids.INCIDENTS_GRID, resolved["uid"], "kind")
     wait_for(
         browser,
-        lambda: "resolved 2026-01-05 07:00:00 UTC" in text_of(browser, ids.INCIDENT_DETAIL),
+        lambda: "resolved 2026-01-05 08:00:00 UTC" in text_of(browser, ids.INCIDENT_DETAIL),
         "the resolved incident",
     )
-    assert [row[1] for row in steps_shown(browser)] == ["flagged", "cleared"]
-    assert steps_shown(browser)[1][3] == "cleared by check"
+    assert [row[1] for row in steps_shown(browser)] == ["flagged", "unknown", "cleared"]
+    assert steps_shown(browser)[1][3].startswith("value unknown (horizon_passed): ")
+    assert steps_shown(browser)[2][3] == (
+        "cleared by check: 3 changes of the raw readings since the flag, 0 intervals without one"
+    )
 
 
 def test_the_incidents_filter_by_status(fidelity_world, browser):

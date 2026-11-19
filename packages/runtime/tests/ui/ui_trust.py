@@ -3,8 +3,10 @@
 The fidelity world: a plant of four gauges (fidelity_testkit) with two predictive
 questions, `level` (two steps ahead, ε 0.5 m) and `flow` (one step ahead, ε 0.5 m3/h).
 Synced and checked by the fidelity library from step 1 to 29: the level of G1 reads
-stuck from step 22 to 25 (flagged at 24, cleared by the check at 28: a resolved
-incident) and the flow of G2 from 22 on (still suspect). From step 30 the checks are
+stuck from step 22 to 29 (flagged at 27, unknown at 29 past the level's horizon,
+cleared by the check at 32 once its readings moved again: a resolved incident) and the
+flow of G2 from 22 on (biased against the flow question before it is stuck long enough to
+be called stuck; still suspect, its value unknown). From step 30 the checks are
 asked for through the API, as the scheduler would ask, so that their notices reach the
 API's notifications: the level is predicted 2.0 too high from origin 30, the window
 breaches, recalibration and reselection are refused (there is no worker) and the
@@ -77,7 +79,8 @@ LEVEL_UNIT, FLOW_UNIT = "m", "m3/h"
 SHIFT = 2.0
 SHIFT_FROM = 30
 STUCK_FROM = 22
-CLEARED_AT = 28
+STUCK_STEPS = 8
+CLEARED_AT = 32
 JOB_S = 120.0
 CORRECTION = {"recalibrate_attempts": 1, "retry_budget": 2, "remodel_timeout": 7200}
 # The plant and the twin's executors share this secret; the page must never show it.
@@ -258,7 +261,7 @@ def build_fidelity(settings: StoreSettings, root: Path, logs: Path) -> FidelityW
     plant = install_plant(
         settings, questions=FIDELITY_QUESTIONS, models=FIDELITY_MODELS, correction=CORRECTION
     )
-    stuck = range(STUCK_FROM, STUCK_FROM + 4)
+    stuck = range(STUCK_FROM, STUCK_FROM + STUCK_STEPS)
     plant.readings[("level", G1)] = lambda i: (
         true_level(G1, STUCK_FROM - 1) if i in stuck else true_level(G1, i)
     )
