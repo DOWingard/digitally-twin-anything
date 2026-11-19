@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 from dta_core.bundle import Bundle
-from dta_core.errors import DtaError
+from dta_core.errors import DtaError, ManifestTooNew
 from dta_core.log import Log
 from dta_core.manifest import (
     Manifest,
@@ -93,6 +93,24 @@ class Twin:
             return known
         try:
             parsed = parse_manifest(yaml.safe_load(record["content"]), origin="the stored manifest")
+        except ManifestTooNew as exc:
+            # A newer runtime installed this manifest; this one is older than the twin.
+            log.error(
+                "the stored manifest is newer than this runtime reads",
+                manifest_hash=key,
+                manifest_version=exc.detail.get("manifest_version"),
+                reads=exc.detail.get("reads"),
+            )
+            raise TwinError(
+                f"the twin's manifest is written in manifest version "
+                f"{exc.detail.get('manifest_version')}; this runtime reads versions up to "
+                f"{exc.detail.get('reads')}: run the twin from a newer runtime image",
+                code="runtime.too_old",
+                detail={
+                    "manifest_version": exc.detail.get("manifest_version"),
+                    "runtime_reads": exc.detail.get("reads"),
+                },
+            ) from exc
         except (yaml.YAMLError, DtaError) as exc:
             log.error("stored manifest cannot be read", exc=exc, manifest_hash=key)
             raise TwinError(
