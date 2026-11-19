@@ -66,7 +66,7 @@ The last column says whether the user must be asked. "No" means fix it yourself 
 | config.bad_value | A value in `.env` is not allowed, for example an API token shorter than 24 characters. | Ask the user to correct the named variable. | Yes. |
 | stack.docker_unavailable | Docker is not running or not reachable. | Ask the user to start Docker, then run the command again. | Yes. |
 | stack.env_missing | `.env` does not set a variable the stack needs. | As `env.missing`. | Yes. |
-| stack.command_failed | A `docker compose` command failed; `error.detail` ends with its error output. | Read it. A port already in use: ask the user to choose another port in `.env`. An image that cannot be pulled: see `image.runtime_missing`. | Depends on the output. |
+| stack.command_failed | A `docker compose` command failed; `error.detail` ends with its error output. | Read it. A port already in use: ask the user to choose another port in `.env`. An image that cannot be pulled: see `image.runtime_missing`. The store's container `is unhealthy` right after `.env` was made anew: the data of an earlier twin with the same `twin.id` is still on this machine, under the earlier password. Ask the user: bring back the earlier `.env`, or, if that data is not needed, `dta down --destroy-data` and build again. | Depends on the output. |
 | stack.timeout | A container command did not finish in time. | `dta logs --tail 100`; run the command again once. | If it repeats. |
 | image.runtime_missing | The twin's runtime image is not on this machine. | If `error.detail.runtime_image` is the default of `runtime.image` ([manifest](manifest.md)), the launcher builds it: run `dta status` once (a build of several minutes, see "The launcher" above), then the failed command again. Another image: tell the user it must be installed; continue once they say it is. | If it is not the default image. |
 | runtime.too_old | The image named by `runtime.image` reads a lower manifest version than the manifest states; `error.detail` gives both numbers and the image. | If `runtime.image` is an older default, set it to the current default ([manifest](manifest.md)) and run the command again; the launcher builds the image when it is absent. With an image of the user's own, they rebuild it. | Only for an image of their own. |
@@ -249,6 +249,7 @@ What each add-on builds, and the variables it needs: [add-ons](addons.md).
 | skill.missing | The operator skill has not been generated. | `dta build --from skill`. | No. |
 | skill.stale | The operator skill was generated from another manifest. | `dta build --from skill`, then `dta accept`. | No. |
 | install.options | `--scope` and `--target` were both given. | Give one. | No. |
+| fidelity.input_unknown | An answer, a forecast or an action of an accepted live twin needs a value that is unknown: its sensor is suspect and the twin's own estimate of it can no longer be trusted. The error names each signal. | Do not work around it. `dta fidelity signals`; tell the user which sensor it is. It ends when the sensor's readings are sound again, or by `dta fidelity clear <signal> --by "<user's name>"` on the user's word that it is mended. | Yes. |
 
 ## Delegation
 

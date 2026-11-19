@@ -131,6 +131,67 @@ them.
 `bin/dta` documents every variable it reads in its header; `DTA_TOOLKIT_IMAGE`
 runs an image of your choosing instead, which is then never built.
 
+### Try it
+
+`examples/bike-share` holds a data generator and the manifest of a static twin
+of what it writes: 21 days of a fictional bike-share operator (80 stations,
+40,275 trips, a status row per station every 15 minutes; 19 MB).
+
+With the agent, which is what the plugin is for: generate the data (step 1
+below), start Claude Code with the plugin in an empty folder and say what you
+want, for instance "Build a digital twin of the bike-share export in
+~/bikes/export; its description is in description.md there." The agent asks
+for the purpose, the questions and the error you accept for each, shows a
+summary to sign, builds the twin and reports whether it passed acceptance.
+
+By hand, with the example's manifest in place of the agent's work:
+
+```sh
+REPO=/path/to/digitally-twin-anything
+export PATH="$REPO/bin:$PATH"
+dta --help                      # the first command builds the two images
+
+# 1. the data
+mkdir -p ~/bikes/twin
+docker run --rm -u "$(id -u):$(id -g)" \
+  -v "$REPO/examples/bike-share:/example:ro" -v "$HOME/bikes:/out" \
+  --entrypoint python dta-runtime:0.1.0 /example/generate.py /out/export
+
+# 2. the workspace and the manifest
+cd ~/bikes/twin
+dta init
+cp "$REPO/examples/bike-share/manifest.yaml" manifest.yaml
+cp "$REPO/examples/bike-share/ontology/cykelbo.yaml" ontology/
+dta ontology check --write
+dta env template
+# in .env: CYKELBO_EXPORT_DIR=<absolute path of ~/bikes/export>, two free
+# ports as DTA_API_PORT and DTA_UI_PORT, DTA_BASE_URL=http://127.0.0.1:<API port>
+dta env check
+
+# 3. the stages
+dta source probe
+dta profile
+dta manifest validate
+dta manifest confirm --all-user
+dta manifest validate
+dta manifest sign --non-interactive --approved-by "<your name>"
+dta build
+dta accept
+
+# 4. the twin
+dta questions list
+dta questions answer q_forecast
+dta down                        # stop it; --destroy-data also removes its data
+```
+
+Run this way from an export of the committed files, on a machine that was busy
+with other work: every command before the build took 1 to 4 s; `dta build`
+8 min 25 s (loading the data 105 s, backtesting three candidate models for 80
+stations 364 s); `dta accept` 23 s, all 26 checks passing. The forecast one
+hour ahead was measured at 0.55 bikes (MAE) against the 2 the manifest accepts,
+and the UI answered on `DTA_UI_PORT`. `dta manifest sign` without the two
+options shows the summary and asks for your name instead.
+
 ## Layout
 
 | Path | What it is |
@@ -144,7 +205,8 @@ runs an image of your choosing instead, which is then never built.
 | `packages/runtime` | What runs inside a twin's stack: installing and opening a twin, reading its sources, loading them into the graph and keeping it in step with them, the HTTP API, the scheduler, the worker that runs functions and models, training frames, the shipped model families, scenarios and the browser UI |
 | `docker/toolkit.Dockerfile` | Image of the toolkit, with a docker client and its compose and buildx plugins |
 | `docker/runtime.Dockerfile` | Image of the twin's services: one image, one command per service |
-| `testbed`, `testbed-b` | Internal test fixtures: a simulated system and a data generator that the project's own tests and checks run against |
+| `examples/bike-share` | A data generator and the manifest of a static twin of what it writes |
+| `testbed` | Internal test fixture: a simulated system that the project's own tests and checks run against |
 | `spikes/storage` | Benchmark that selected Dolt as the versioned store |
 
 ## The store
@@ -568,10 +630,9 @@ docker compose -p dta-store-dev --env-file .env -f packages/core/tests/store/com
   `dta-toolkit:0.0.0-firstuse-<random>` and `dta-runtime:0.0.0-firstuse-<random>`
   with docker's layer cache, and remove exactly those tags.
 
-`testbed/` and `testbed-b/` are internal test fixtures (a simulated system and a
-data generator the project's own tests and checks run against), each with its
-own environment. They are not part of the plugin and nothing a user does
-needs them.
+`testbed/` is an internal test fixture (a simulated system the project's own
+tests and checks run against), with its own environment. It is not part of the
+plugin and nothing a user does needs it.
 
 ### Releasing a version
 
