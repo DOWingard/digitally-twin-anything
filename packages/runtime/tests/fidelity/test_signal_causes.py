@@ -25,11 +25,12 @@ import pyarrow as pa
 from dta_runtime import fidelity
 from dta_runtime.fidelity import reading
 from dta_runtime.fidelity.records import signal_uid
-from fidelity_testkit import TIME, Oracle, at, gauge, level, question
+from fidelity_testkit import TIME, Oracle, at, flow, gauge, level, question
 
-G1, G3 = gauge("G1"), gauge("G3")
+G1, G2, G3 = gauge("G1"), gauge("G2"), gauge("G3")
 LEVEL_G1 = signal_uid("Gauge.level", G1)
 LEVEL_G3 = signal_uid("Gauge.level", G3)
+FLOW_G2 = signal_uid("Gauge.flow", G2)
 SCHEMA = pa.schema(
     [
         ("unique_id", pa.string()),
@@ -263,3 +264,28 @@ def test_a_forecast_that_is_not_finite_leaves_the_value_unknown(make_plant):
     assert signal["detail"]["unknown"]["why"] == "not_finite"
     assert [entry["signal"] for entry in outcomes[16].check["signals"]["unknown"]] == [LEVEL_G3]
     assert all(value is None for value in held(plant, G3, {16: outcomes[16], 17: outcomes[17]}))
+
+
+def test_an_unknown_feature_keeps_every_series_of_an_origin_from_being_scored(make_plant):
+    # The level's model reads the flow as a feature; G2's flow sticks from step 22, is
+    # flagged at check 27 and, with no question to infer it, is unknown from then on.
+    plant = make_plant()
+    plant.readings[("flow", G2)] = lambda i: flow(G2, 21) if i >= 22 else flow(G2, i)
+    for i in range(1, 20):
+        plant.sync(i)
+    model = plant.activate("level", "Gauge.level", fitted_to=at(18))
+    plant.register({"TwinModel": [{"uid": model, "features": ["Gauge.flow"]}]})
+    outcomes = plant.run(range(19, 31), Oracle(plant))
+    assert [found["uid"] for found in outcomes[27].flagged] == [FLOW_G2]
+    assert fidelity.signal(plant.twin, FLOW_G2)["detail"]["unknown"]["why"] == "no_inference"
+    # Origin 26 (scored at 28) had the flow; origin 27 (scored at 29) did not.
+    assert outcomes[28].check["questions"]["level"]["scored"] is True
+    entry = outcomes[29].check["questions"]["level"]
+    assert (entry["scored"], entry["reason"]["code"], entry["withheld"]) == (
+        False,
+        "input_unknown",
+        [FLOW_G2],
+    )
+    assert fidelity.incidents(plant.twin, status="unresolved")[0]["detail"]["unanswered"] == [
+        "level"
+    ]

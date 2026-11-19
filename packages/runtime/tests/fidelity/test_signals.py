@@ -179,12 +179,14 @@ def test_stuck_signals_are_flagged_inferred_then_unknown_and_cleared(make_plant)
         fidelity.clear_signal(plant.twin, FLOW_G2, by="operator", note=None, now=at(29))
     assert refused.value.code == "fidelity.conflict"
 
-    # Unknown it stays, said once; nothing reading it is scored. The raw readings move
+    # Unknown it stays, said once; its series is not scored. The raw readings move
     # again from step 30: changes in 3 intervals since the flag by step 32.
     still = plant.run(range(30, 32), oracle)
     assert all(outcome.cleared == [] and outcome.events == [] for outcome in still.values())
-    assert still[31].check["questions"]["level"]["reason"]["code"] == "input_unknown"
-    assert still[31].check["questions"]["level"]["withheld"] == [LEVEL_G1]
+    # The level's other series are scored; G1's, suspect, is left out.
+    assert still[31].check["questions"]["level"]["scored"] is True
+    assert "withheld" not in still[31].check["questions"]["level"]
+    assert G1 in still[31].check["questions"]["level"]["left_out"]
     assert stored(plant, "Gauge", "level", G1, at=still[31].version)[0] is None
     cleared = plant.step(32, oracle)
     assert [found["uid"] for found in cleared.cleared] == [LEVEL_G1]

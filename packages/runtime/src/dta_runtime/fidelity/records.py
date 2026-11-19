@@ -30,8 +30,9 @@ written with sorted keys and no spaces.
                      already_scored, before_fit, no_version, ahead_of_data, deadline,
                      predictor_refused, predictor_failed, bad_prediction,
                      no_observations, metric_undefined, input_unknown
-    withheld         [signal uid]: the inputs whose value was unknown at the origin
-                     (with input_unknown)
+    withheld         [signal uid]: the model's features whose value was unknown at the
+                     origin, for any object (with input_unknown); a series whose own
+                     value was unknown is in `left_out`
     error, n         the origin's error and its number of points (when scored)
     series           {uid: d}: the mean signed residual (observed less predicted) per
                      series (when scored)

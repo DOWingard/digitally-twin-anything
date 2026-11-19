@@ -219,6 +219,17 @@ def _input_properties(setup: Setup, question: QuestionSetup) -> set[str]:
     return texts
 
 
+def _feature_inputs(setup: Setup, question: QuestionSetup) -> set[str]:
+    """The properties a question's active model reads as features, as concrete
+    `Type.property`. An unknown value of one, of whichever object, keeps every series of
+    an origin from being forecast; an unknown value of the target only its own series,
+    which is suspect and left out as every suspect series is."""
+    texts: set[str] = set()
+    for text in _feature_properties(question.model):
+        texts |= _concrete(setup, text)
+    return texts
+
+
 def _unanswered(setup: Setup, property_text: str) -> list[str]:
     """The questions of the contract that compute from a property: its targets, or its
     active model's target and features."""
@@ -282,7 +293,7 @@ def _measure(context: _Context, question: QuestionSetup, earlier: list[Scored]) 
     if version is None:
         entry["reason"] = _reason("no_version", "the live line has no version at the origin")
         return measured
-    inputs = _input_properties(setup, question)
+    inputs = _feature_inputs(setup, question)
     withheld = sorted(
         records.signal_uid(property_text, uid)
         for (property_text, uid), spans in context.spans.items()
@@ -790,7 +801,7 @@ def _infer(context: _Context, measurement: _Measurement, property_text: str, uid
     version = reading.version_at(context.twin, origin)
     if version is None:
         return {"refused": _reason("no_version", "the live line has no version at the origin")}
-    inputs = _input_properties(setup, question)
+    inputs = _feature_inputs(setup, question)
     withheld = sorted(
         records.signal_uid(text, found)
         for (text, found), spans in context.spans.items()
