@@ -126,24 +126,27 @@ def test_an_operator_retries_a_failed_incident(
     assert ("twin.fidelity.state", "correcting") in notified[failed + 1 :], notified
 
 
-# Both tanks stick from step 25 (T1 at 5.3, T2 at 3.3) and read anew once repaired at 30.
+# Both tanks stick from step 25 (T1 at 5.3, T2 at 3.3) and read anew once repaired.
 STUCK = {"T1": 5.0, "T2": 3.0}
+REPAIRED = BUILT + 9
 
 
 def stuck(key: str, step: int) -> float:
     if step <= BUILT:
         return STUCK[key] + 0.1 * (step % 2)
-    return STUCK[key] + (0.3 if step < BUILT + 6 else 0.4)
+    return STUCK[key] + (0.3 if step < REPAIRED else 0.4)
 
 
 def test_stuck_signals_are_flagged_withheld_by_sync_and_written_again_once_cleared(
     checked: Callable[..., Checked], log_lines: Path
 ) -> None:
     world = checked(levels=stuck, synced=True, window_steps=24)
-    steps = world.run(BUILT + 1, BUILT + 4)
+    steps = world.run(BUILT + 1, BUILT + 6)
     told = story(steps)
+    # Changed in each of the 24 intervals up to step 25, never otherwise: p0 = 1/26, and
+    # (1/26)^5 = 8.4e-8 is the first run below 1e-7.
     flagged_at = next(step for step, (job, _) in steps.items() if job["result"]["flagged"])
-    assert flagged_at == BUILT + 4, told
+    assert flagged_at == BUILT + 6, told
 
     signals = {
         found["object"]: found for found in world.ok("/fidelity/signals", status="suspect")["data"]
@@ -152,27 +155,48 @@ def test_stuck_signals_are_flagged_withheld_by_sync_and_written_again_once_clear
     for key, found in signals.items():
         assert (found["property"], found["reason"]) == (T1_LEVEL, "stuck")
         assert found["value_at_flag"] == STUCK[key.split(":")[1]] + 0.3
+        assert (found["value"], found["unknown"]) == ("inferred", None)
+        assert found["detail"]["test"]["n"] == 5
     briefs = world.fidelity()["suspect_signals"]
     assert {brief["uid"] for brief in briefs} == {found["uid"] for found in signals.values()}
+    assert {brief["value"] for brief in briefs} == {"inferred"}
     opened = {found["subject"]: found for found in world.incidents(kind="signal")}
     assert set(opened) == {found["uid"] for found in signals.values()}
     assert world.ok("/meta/health")["fidelity_detail"]["suspect_signals"] == 2
-    # What the model predicts stands in for the stuck readings.
+    # What the model forecast from the step before the flag stands in for the readings.
     tanks = world.store_rows("Tank")
     assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (5.0, 3.0)
 
     # The next run leaves the readings out of the graph and keeps them on the signals.
-    world.step(BUILT + 5)
+    world.step(BUILT + 7)
     kept = {
         found["object"]: found for found in world.ok("/fidelity/signals", status="suspect")["data"]
     }
     assert (kept["node:T1"]["reading"], kept["node:T1"]["reading_at"]) == (
         5.3,
-        iso(at(BUILT + 5)),
+        iso(at(BUILT + 7)),
     )
     assert kept["node:T2"]["reading"] == 3.3
     tanks = world.store_rows("Tank")
     assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (5.0, 3.0)
+
+    # Past the question's horizon of 2 steps the values are unknown, and what reads them
+    # is refused, naming the signals.
+    job, _ = world.step(BUILT + 8)
+    events = job["result"]["events"]
+    assert events.count("twin.fidelity.signal_unknown") == 2, events
+    tanks = world.store_rows("Tank")
+    assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (None, None)
+    withheld = world.ok("/fidelity/signals", status="suspect")["data"]
+    assert {found["value"] for found in withheld} == {"unknown"}
+    assert {found["unknown"]["why"] for found in withheld} == {"horizon_passed"}
+    assert {tuple(found["unknown"]["questions"]) for found in withheld} == {(QUESTION,)}
+    problem = world.refused(
+        world.post(f"/models/{HOLD}/predict", json={"horizon": 2}), 409, "fidelity.input_unknown"
+    )
+    assert sorted(found["object"] for found in problem["signals"]) == ["node:T1", "node:T2"]
+    assert {found["why"] for found in problem["signals"]} == {"horizon_passed"}
+    assert world.fidelity()["state"] == "correcting"
 
     # One signal cleared, the other's incident resolved, which clears its signal with it.
     first, second = signals["node:T1"], signals["node:T2"]
@@ -203,7 +227,7 @@ def test_stuck_signals_are_flagged_withheld_by_sync_and_written_again_once_clear
     assert world.fidelity()["state"] == "healthy"
 
     # Cleared, their readings are written again.
-    world.step(BUILT + 6)
+    world.step(REPAIRED)
     tanks = world.store_rows("Tank")
     assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (5.4, 3.4)
 

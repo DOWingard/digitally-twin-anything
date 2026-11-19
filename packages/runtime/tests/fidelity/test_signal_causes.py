@@ -239,3 +239,27 @@ def test_a_biased_signal_without_anything_to_compare_with_is_not_cleared(make_pl
         "observed": [13.0, 14.5],
         "margin": 0.75,
     }
+
+
+def test_a_forecast_that_is_not_finite_leaves_the_value_unknown(make_plant):
+    plant = make_plant()
+    for i in range(1, 6):
+        plant.sync(i)
+    plant.activate("level", "Gauge.level", fitted_to=at(4))
+
+    def offset(model, uid, origin):
+        # G3 is predicted 1.8 too high from origin 14 (flagged at check 16), and not at
+        # all from origin 15, the one its inferred value is forecast from.
+        if uid != G3:
+            return 0.0
+        if origin == at(15):
+            return math.nan
+        return 1.8 if origin >= at(14) else 0.0
+
+    outcomes = plant.run(range(6, 18), Oracle(plant, offset))
+    assert [found["object"] for found in outcomes[16].flagged] == [G3]
+    signal = fidelity.signal(plant.twin, LEVEL_G3)
+    assert signal["detail"]["inference"]["values"] == {}
+    assert signal["detail"]["unknown"]["why"] == "not_finite"
+    assert [entry["signal"] for entry in outcomes[16].check["signals"]["unknown"]] == [LEVEL_G3]
+    assert all(value is None for value in held(plant, G3, {16: outcomes[16], 17: outcomes[17]}))

@@ -790,6 +790,27 @@ def _infer(context: _Context, measurement: _Measurement, property_text: str, uid
     version = reading.version_at(context.twin, origin)
     if version is None:
         return {"refused": _reason("no_version", "the live line has no version at the origin")}
+    inputs = _input_properties(setup, question)
+    withheld = sorted(
+        records.signal_uid(text, found)
+        for (text, found), spans in context.spans.items()
+        if text in inputs and _unknown_at(spans, origin)
+    )
+    if withheld:
+        log.warn(
+            "an input of the inferring question is unknown at the origin; the flagged "
+            "signal's value is unknown",
+            signal=records.signal_uid(property_text, uid),
+            question=question.id,
+            signals=withheld,
+        )
+        return {
+            "refused": _reason(
+                "input_unknown",
+                f"the value of {', '.join(withheld)} was unknown at the origin; nothing is "
+                "computed from it",
+            )
+        }
     grid = [origin + j * setup.step for j in range(1, question.steps + 1)]
     left = context.deadline_s - (time.monotonic() - context.started)
     if left <= 0:

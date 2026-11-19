@@ -18,11 +18,11 @@ import pyarrow as pa
 from dta_core.log import Log
 from dta_core.store import VersionRef
 
-from .. import functions
+from .. import fidelity, functions
 from ..functions.errors import BAD_ENTRY, BAD_PARAM, PARAM_MISSING, TIMEOUT, refused
 from ..models import horizon_steps
 from ..protocol import Answer, FunctionRequest, Interval
-from . import derived, predicting, registry
+from . import derived, predicting, registry, withheld
 from .problems import ApiError
 
 if TYPE_CHECKING:
@@ -125,6 +125,13 @@ def _forecaster(
                 function=function_id,
                 parameter="horizon",
             )
+        withheld.refuse_unknown(
+            services,
+            version,
+            fidelity.model_properties(model),
+            uids=params.get("uids"),
+            subject={"function": function_id, "question": question_id, "model": model["uid"]},
+        )
         result, table = predicting.predict(
             services,
             model,
@@ -135,6 +142,7 @@ def _forecaster(
             step=services.interval(known),
             budget_s=context.deadline - time.monotonic(),
             known=known,
+            guard=False,
         )
         ran.model = model["uid"]
         ran.provisional, ran.reasons, notes = question_state(record)
@@ -251,6 +259,11 @@ def run(
     params = functions.resolve(function_id, spec, call)
     ran = Ran(function=function_id, answer=Answer(value=None))
     if spec.kind == "builtin":
+        # A forecast's inputs are its model's: judged when the model is known.
+        properties, uids = withheld.function_inputs(str(spec.entry), params)
+        withheld.refuse_unknown(
+            services, version, properties, uids=uids, subject={"function": function_id}
+        )
         deadline = time.monotonic() + registry.latency_s(record)
         context = functions.Context(
             store=services.store,

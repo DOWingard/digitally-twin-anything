@@ -989,12 +989,21 @@ class IncidentBrief(BaseModel):
     rung: int | None = Field(description="1 recalibrate, 2 reselect, 3 re-model")
 
 
+_SIGNAL_VALUE = (
+    "What is in force for the property while the signal is suspect: `inferred` (the "
+    "forecast made when it was flagged stands in) or `unknown` (that forecast ran out, "
+    "or was not finite or outside the property's range: no value, and whatever reads it "
+    "is refused with `fidelity.input_unknown`); null once cleared"
+)
+
+
 class SignalBrief(BaseModel):
     uid: str = Field(examples=[_SIGNAL_UID])
     property: str = Field(examples=["Gauge.level"])
     object: str = Field(examples=["gauge-1"])
     reason: str | None = Field(examples=["stuck"])
     since: datetime | None
+    value: Literal["inferred", "unknown"] | None = Field(default=None, description=_SIGNAL_VALUE)
 
 
 class FidelityOut(BaseModel):
@@ -1096,7 +1105,19 @@ class SignalOut(BaseModel):
     reading: Any = Field(description="The latest raw reading sync kept instead of the value")
     reading_at: datetime | None
     clear_checks: int
-    detail: dict[str, Any]
+    value: Literal["inferred", "unknown"] | None = Field(default=None, description=_SIGNAL_VALUE)
+    unknown: dict[str, Any] | None = Field(
+        default=None,
+        description="While the value is unknown: `since`, `why` (`horizon_passed`, "
+        "`not_finite`, `out_of_range`, `no_inference`), `message` and the `questions` left "
+        "without an answer",
+    )
+    detail: dict[str, Any] = Field(
+        description="The stuck or biased test's numbers; `inference`: the forecast made "
+        "when it was flagged (`question`, `model`, `origin`, `horizon_steps`, `values`, "
+        "`range`) or why there is none (`refused`); `estimate`: the inferred value in force "
+        "and its `lead_steps`; `episodes`: each time it was suspect"
+    )
 
 
 class SignalList(BaseModel):
