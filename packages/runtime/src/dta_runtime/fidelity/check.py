@@ -16,7 +16,7 @@ import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import pyarrow as pa
@@ -26,12 +26,13 @@ from dta_core.schema import FactKind, Kind
 from dta_core.store import Provenance, VersionRef, ViolationError
 from dta_core.store.model import iso_utc
 
+from .. import inforce
 from ..protocol.families import DS, MEAN, UNIQUE_ID, high, low
 from ..twin import Twin
 from . import ladder, measures, quality, reading, records
 from .errors import BAD_REQUEST, OUT_OF_ORDER, refused
 from .ladder import FAILED, OPEN, REMODEL_REQUESTED, RESOLVED, UNRESOLVED
-from .outcome import corrections_of, incident_events, state_event
+from .outcome import corrections_of, incident_events, state_event, unknown_events
 from .reading import QuestionSetup, Scored, Setup
 from .records import (
     BIASED,
@@ -55,11 +56,23 @@ log = Log("runtime.fidelity")
 
 TIME = pa.timestamp("us", tz="UTC")
 LEVEL = 80
-# A suspect signal is cleared after this many consecutive sound checks, a reading
-# within this many tolerances of the estimate.
+# A biased signal is cleared after this many consecutive sound checks, a reading within
+# this many tolerances of its inferred value; a check with no inferred value to compare
+# with neither counts nor resets.
 CLEAR_CHECKS = 3
 CLEAR_TOLERANCES = 2.0
+# A stuck signal is cleared at the first check at which its raw readings changed in at
+# least this many intervals since it was flagged, and the run without a change in
+# progress is shorter than the shortest run the stuck test can call stuck.
+STUCK_CLEAR_CHANGES = 3
+# When nothing is declared, the range an inferred value may lie in is the range observed
+# over the window, widened on each side by this share of its width and by no less than
+# the inferring question's tolerance.
+RANGE_MARGIN = 0.5
 _TEXT = (pa.string(), pa.large_string())
+
+# What becomes of a suspect signal's value at a check.
+INFERRED, UNKNOWN, TURN_UNKNOWN = "inferred", "unknown", "turn_unknown"
 
 
 def _ms(started: float) -> float:
@@ -141,7 +154,9 @@ def _prediction(table: Any, grid: Sequence[datetime]) -> dict[str, dict[int, tup
 
 
 def _spans(signals: Mapping[str, Mapping[str, Any]]) -> dict[tuple[str, str], list[tuple]]:
-    """Per (Type.property, uid): every time it was suspect, as (since, until)."""
+    """Per (Type.property, uid): every time it was suspect, as (since, until,
+    unknown_since): until is None while it still is, unknown_since None while its value
+    was inferred throughout."""
     spans: dict[tuple[str, str], list[tuple]] = {}
     for document in signals.values():
         key = (document["property"], document["object"])
@@ -149,15 +164,75 @@ def _spans(signals: Mapping[str, Mapping[str, Any]]) -> dict[tuple[str, str], li
         for episode in episodes:
             since = records.parse_time(episode.get("since"))
             if since is not None:
-                spans.setdefault(key, []).append((since, records.parse_time(episode.get("until"))))
+                spans.setdefault(key, []).append(
+                    (
+                        since,
+                        records.parse_time(episode.get("until")),
+                        records.parse_time(episode.get("unknown_since")),
+                    )
+                )
         if document.get("status") == SUSPECT and not episodes and document.get("since"):
-            spans.setdefault(key, []).append((document["since"], None))
+            spans.setdefault(key, []).append((document["since"], None, None))
     return spans
 
 
 def _suspect_in(spans: Sequence[tuple], start: datetime, end: datetime) -> bool:
     """Whether a signal was suspect at any time in (start, end]."""
-    return any(since <= end and (until is None or until > start) for since, until in spans)
+    return any(since <= end and (until is None or until > start) for since, until, *_ in spans)
+
+
+def _unknown_at(spans: Sequence[tuple], moment: datetime) -> bool:
+    """Whether a signal's value in force at `moment` was unknown."""
+    return any(
+        unknown is not None and unknown <= moment and (until is None or until > moment)
+        for _, until, unknown in spans
+    )
+
+
+def _concrete(setup: Setup, text: str) -> set[str]:
+    """`Type.property` as the concrete types hold it: an abstract type stands for each."""
+    type_name, _, name = str(text).partition(".")
+    if setup.ontology.has_type(type_name):
+        return {f"{type_name}.{name}"}
+    return {f"{found}.{name}" for found in setup.ontology.abstract.get(type_name, ())}
+
+
+def _feature_properties(model: Mapping[str, Any] | None) -> list[str]:
+    """The properties a model record reads as features: each a bare `Type.property` or
+    the JSON of a feature naming one."""
+    found = []
+    for text in (model or {}).get("features") or []:
+        text = str(text)
+        if text.lstrip().startswith("{"):
+            text = (records.loads(text, {}) or {}).get("property") or ""
+        if text:
+            found.append(text)
+    return found
+
+
+def _input_properties(setup: Setup, question: QuestionSetup) -> set[str]:
+    """What a predictive question computes from: its target's cells and its active
+    model's features, as concrete `Type.property`."""
+    texts = {f"{type_name}.{name}" for type_name, name in question.cells}
+    for text in _feature_properties(question.model):
+        texts |= _concrete(setup, text)
+    return texts
+
+
+def _unanswered(setup: Setup, property_text: str) -> list[str]:
+    """The questions of the contract that compute from a property: its targets, or its
+    active model's target and features."""
+    contract = setup.manifest.contract
+    found = set()
+    for qid, question in sorted(((contract.questions if contract else None) or {}).items()):
+        texts: set[str] = set()
+        for text in question.targets or []:
+            texts |= _concrete(setup, text)
+        if qid in setup.questions:
+            texts |= _input_properties(setup, setup.questions[qid])
+        if property_text in texts:
+            found.add(qid)
+    return sorted(found)
 
 
 @dataclass(frozen=True)
@@ -206,6 +281,26 @@ def _measure(context: _Context, question: QuestionSetup, earlier: list[Scored]) 
     version = reading.version_at(context.twin, origin)
     if version is None:
         entry["reason"] = _reason("no_version", "the live line has no version at the origin")
+        return measured
+    inputs = _input_properties(setup, question)
+    withheld = sorted(
+        records.signal_uid(property_text, uid)
+        for (property_text, uid), spans in context.spans.items()
+        if property_text in inputs and _unknown_at(spans, origin)
+    )
+    if withheld:
+        log.info(
+            "an input of the question was unknown at the origin; not scored",
+            question=question.id,
+            origin=iso_utc(origin),
+            signals=withheld,
+        )
+        entry["reason"] = _reason(
+            "input_unknown",
+            f"the value of {', '.join(withheld)} was unknown at the origin; nothing is "
+            "computed from it",
+        )
+        entry["withheld"] = withheld
         return measured
     grid = [origin + j * setup.step for j in range(1, question.steps + 1)]
     if grid[-1] > setup.head.t:
@@ -351,28 +446,90 @@ def _measure(context: _Context, question: QuestionSetup, earlier: list[Scored]) 
 class _Stuck:
     test: quality.StuckTest
     value: Any
+    # The intervals of the lookback with a change, and where the lookback begins.
+    changed: tuple[bool, ...] = ()
+    start: datetime | None = None
+    step: timedelta | None = None
+
+    def changes_since(self, moment: datetime) -> int:
+        """Intervals that began at or after `moment` and had a change."""
+        if self.start is None or self.step is None:
+            return 0
+        first = max(0, -((self.start - moment) // self.step))
+        return sum(1 for flag in self.changed[first:] if flag)
 
 
-def _lookbacks(twin: Twin, setup: Setup, now: datetime) -> dict[tuple[str, str], _Stuck]:
-    """The stuck test of every observed signal over the lookback."""
+def _raw_readings(
+    twin: Twin,
+    setup: Setup,
+    first: VersionRef,
+    spans: Mapping[tuple[str, str], list[tuple]],
+    start: datetime,
+) -> dict[tuple[str, str], tuple[list[tuple], list[tuple[datetime, Any]]]]:
+    """Per (Type.property, uid) suspect at some time after `start`: its spans and the raw
+    readings its signal record kept, as (time, value), from the record's history."""
+    wanted = {
+        records.signal_uid(*key): key
+        for key, found in spans.items()
+        if any(until is None or until > start for _, until, *_ in found)
+    }
+    if not wanted or not setup.ontology.has_type(SIGNAL_TYPE):
+        return {}
+    events = inforce.events(
+        twin.store,
+        setup.ontology,
+        SIGNAL_TYPE,
+        first,
+        setup.head,
+        properties=["reading"],
+        uids=sorted(wanted),
+    )
+    raw: dict[tuple[str, str], list[tuple[datetime, Any]]] = {}
+    for uid, moment, text in zip(
+        events.column("uid").to_pylist(),
+        events.column(inforce.T).to_pylist(),
+        events.column("reading").to_pylist(),
+        strict=True,
+    ):
+        if text is not None:
+            raw.setdefault(wanted[uid], []).append((moment, records.loads(text)))
+    return {
+        key: ([(found[0], found[1]) for found in spans[key]], sorted(raw.get(key, [])))
+        for key in wanted.values()
+    }
+
+
+def _lookbacks(
+    twin: Twin, setup: Setup, now: datetime, spans: Mapping[tuple[str, str], list[tuple]]
+) -> dict[tuple[str, str], _Stuck]:
+    """The stuck test of every observed signal over the lookback: the fidelity window,
+    never fewer than `quality.STUCK_LOOKBACK` intervals. Inside the times a signal was
+    suspect it reads the raw readings, never what the check wrote in their place."""
     if not setup.observations:
         return {}
     started = time.perf_counter()
     count = setup.window // setup.step
     if count <= 0:
         return {}
+    count = max(count, quality.STUCK_LOOKBACK)
     start = now - count * setup.step
     first = reading.version_in_force(twin, start) or reading.first_version(twin)
     ends = [start + (index + 1) * setup.step for index in range(count)]
     source_ids = sorted({source for found in setup.sources_of.values() for source in found})
     delivering = reading.delivery(twin, setup.head, first, source_ids, ends, setup.step)
+    raw = _raw_readings(twin, setup, first, spans, start)
     by_type: dict[str, list[str]] = {}
     for type_name, name in setup.observations:
         by_type.setdefault(type_name, []).append(name)
     results: dict[tuple[str, str], _Stuck] = {}
     for type_name, names in by_type.items():
+        withheld = {
+            (key[0].partition(".")[2], key[1]): found
+            for key, found in raw.items()
+            if key[0].partition(".")[0] == type_name
+        }
         found = reading.lookback(
-            twin, setup.head, first, type_name, names, start, setup.step, count
+            twin, setup.head, first, type_name, names, start, setup.step, count, withheld
         )
         for (name, uid), seen in found.items():
             sources = setup.sources_of.get((type_name, name), ())
@@ -380,7 +537,11 @@ def _lookbacks(twin: Twin, setup: Setup, now: datetime) -> dict[tuple[str, str],
                 any(delivering[source][index] for source in sources) for index in range(count)
             ]
             results[(f"{type_name}.{name}", uid)] = _Stuck(
-                quality.stuck_test(seen.changed, delivered), seen.value
+                quality.stuck_test(seen.changed, delivered, seen.steps),
+                seen.value,
+                tuple(seen.changed),
+                start,
+                setup.step,
             )
     log.debug(
         "observed signals tested for being stuck",
@@ -407,6 +568,9 @@ class _Measurement:
     coverage: dict[str, Any]
     trace_id: str
     clock: float
+    # Per signal flagged as the measurement found it: the forecast that stands in for its
+    # readings, made before the lock (`_infer`).
+    inference: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -548,29 +712,342 @@ def _inferring(measurement: _Measurement, property_text: str) -> Measured | None
     )
 
 
-def _estimate(measurement: _Measurement, property_text: str, uid: str) -> dict[str, Any] | None:
-    """The inferred value of a signal: the latest predicted value of the predictive
-    question on its property with the shortest horizon, when that question predicted it
-    at this check."""
-    chosen = _inferring(measurement, property_text)
-    if chosen is None:
-        return None
-    value = chosen.estimates.get(uid)
-    if value is None or chosen.estimates_at is None:
-        return None
-    return {
-        "value": value,
-        "t": iso_utc(chosen.estimates_at),
-        "question": chosen.setup.id,
-        "model": chosen.setup.model["uid"] if chosen.setup.model else None,
-        "tolerance": chosen.setup.tolerance,
-    }
-
-
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return float(value)
+
+
+def _observed_range(
+    context: _Context, property_text: str, uid: str, tolerance: float | None
+) -> dict[str, Any]:
+    """The range an inferred value of a signal may lie in: per side, the ontology's
+    declared bound, else the bound observed over the window (outside the times the
+    signal was suspect) widened by the margin."""
+    setup, now = context.setup, context.now
+    type_name, _, name = property_text.partition(".")
+    declared = (
+        setup.ontology.type(type_name).field(name)
+        if setup.ontology.has_type(type_name) and setup.ontology.type(type_name).has_field(name)
+        else None
+    )
+    first = reading.version_in_force(context.twin, now - setup.window) or reading.first_version(
+        context.twin
+    )
+    events = inforce.events(
+        context.twin.store,
+        setup.ontology,
+        type_name,
+        first,
+        setup.head,
+        properties=[name],
+        uids=[uid],
+    )
+    spans = context.spans.get((property_text, uid), ())
+    seen = [
+        number
+        for moment, value in zip(
+            events.column(inforce.T).to_pylist(), events.column(name).to_pylist(), strict=True
+        )
+        if not any(
+            since <= moment and (until is None or moment < until) for since, until, *_ in spans
+        )
+        and (number := _number(value)) is not None
+        and math.isfinite(number)
+    ]
+    lowest, highest = (min(seen), max(seen)) if seen else (None, None)
+    margin = None
+    if lowest is not None and highest is not None:
+        margin = max(RANGE_MARGIN * (highest - lowest), float(tolerance or 0.0))
+    low = declared.minimum if declared is not None and declared.minimum is not None else None
+    high = declared.maximum if declared is not None and declared.maximum is not None else None
+    return {
+        "low": float(low) if low is not None else (None if margin is None else lowest - margin),
+        "high": float(high) if high is not None else (None if margin is None else highest + margin),
+        "declared": {"low": low is not None, "high": high is not None},
+        "observed": [lowest, highest],
+        "margin": margin,
+    }
+
+
+def _infer(context: _Context, measurement: _Measurement, property_text: str, uid: str) -> dict:
+    """The forecast that stands in for a signal's readings while it is suspect, made once
+    when it is flagged: by the inferring question's active model, from the version in
+    force one step before the check (the readings up to the one before the flagged one;
+    every other input as it was in force then), for the question's horizon. Never from a
+    version that holds an inferred value of this signal. `refused` says why there is
+    none."""
+    setup, now = context.setup, context.now
+    chosen = _inferring(measurement, property_text)
+    if chosen is None or chosen.setup.model is None or chosen.setup.steps is None:
+        return {
+            "refused": _reason(
+                "no_question", "no predictive question with an active model targets the property"
+            )
+        }
+    question, model = chosen.setup, chosen.setup.model
+    origin = reading.floor_to(now - setup.step, setup.interval)
+    version = reading.version_at(context.twin, origin)
+    if version is None:
+        return {"refused": _reason("no_version", "the live line has no version at the origin")}
+    grid = [origin + j * setup.step for j in range(1, question.steps + 1)]
+    left = context.deadline_s - (time.monotonic() - context.started)
+    if left <= 0:
+        return {"refused": _reason("deadline", "the check's budget ran out before it was asked")}
+    interventions = (
+        reading.interventions(context.twin, setup.head, origin, grid[-1])
+        if question.interventional
+        else []
+    )
+    try:
+        table = context.predictor(
+            model,
+            origin=version,
+            horizon=question.steps,
+            step=setup.step,
+            interventions=interventions,
+            deadline_s=left,
+        )
+        path = _prediction(table, grid).get(uid) or {}
+    except DtaError as exc:
+        log.warn(
+            "the predictor refused the forecast of a flagged signal; its value is unknown",
+            property=property_text,
+            object=uid,
+            model=model["uid"],
+            code=exc.code,
+        )
+        return {"refused": _reason("predictor_refused", f"{exc.code}: {exc.message}")}
+    except _Bad as exc:
+        log.warn(
+            "the forecast of a flagged signal cannot be read; its value is unknown",
+            property=property_text,
+            object=uid,
+            model=model["uid"],
+            reason=str(exc),
+        )
+        return {"refused": _reason("bad_prediction", str(exc))}
+    except Exception as exc:
+        log.error(
+            "the predictor failed on the forecast of a flagged signal; its value is unknown",
+            exc=exc,
+            property=property_text,
+            object=uid,
+            model=model["uid"],
+        )
+        return {
+            "refused": _reason(
+                "predictor_failed", f"{type(exc).__name__} was raised; the cause is in the log"
+            )
+        }
+    values = {
+        iso_utc(moment): path[reading.micros(moment)][0]
+        for moment in grid
+        if reading.micros(moment) in path
+    }
+    log.info(
+        "flagged signal forecast from what was observed",
+        property=property_text,
+        object=uid,
+        question=question.id,
+        model=model["uid"],
+        origin=iso_utc(origin),
+        steps=question.steps,
+        values=len(values),
+    )
+    return {
+        "question": question.id,
+        "model": model["uid"],
+        "tolerance": question.tolerance,
+        "origin": iso_utc(origin),
+        "origin_version": version.id,
+        "horizon_steps": question.steps,
+        "values": values,
+        "range": _observed_range(context, property_text, uid, question.tolerance),
+    }
+
+
+@dataclass(frozen=True)
+class _Value:
+    """What a suspect signal's value is at a check."""
+
+    kind: str
+    value: float | None = None
+    t: datetime | None = None
+    lead: int | None = None
+    why: str | None = None
+    message: str | None = None
+
+
+def _value_now(document: Mapping[str, Any], setup: Setup, now: datetime) -> _Value:
+    """A suspect signal's value at a check: the forecast made when it was flagged, at
+    the lead time it has reached, while that lead is within the horizon the inferring
+    question was validated for and the value is finite and in range; else unknown, and
+    unknown it stays until the signal clears."""
+    detail = document.get("detail") or {}
+    if isinstance(detail.get("unknown"), Mapping):
+        return _Value(UNKNOWN)
+    inference = detail.get("inference") or {}
+    refused_by = inference.get("refused")
+    origin = records.parse_time(inference.get("origin"))
+    steps = inference.get("horizon_steps")
+    if refused_by or origin is None or not isinstance(steps, int):
+        why = (refused_by or {}).get("message") or "no forecast was made when it was flagged"
+        return _Value(TURN_UNKNOWN, why=records.NO_INFERENCE, message=why)
+    lead = (reading.floor_to(now, setup.step) - origin) // setup.step
+    if lead > steps:
+        return _Value(
+            TURN_UNKNOWN,
+            lead=lead,
+            why=records.HORIZON_PASSED,
+            message=f"the lead time of {lead} steps is past the {steps} steps the inferring "
+            "question was validated for",
+        )
+    lead = max(lead, 1)
+    moment = origin + lead * setup.step
+    value = _number((inference.get("values") or {}).get(iso_utc(moment)))
+    if value is None or not math.isfinite(value):
+        return _Value(
+            TURN_UNKNOWN,
+            lead=lead,
+            why=records.NOT_FINITE,
+            message=f"the forecast has no finite value at {iso_utc(moment)}",
+        )
+    bounds = inference.get("range") or {}
+    low, high = _number(bounds.get("low")), _number(bounds.get("high"))
+    if (low is not None and value < low) or (high is not None and value > high):
+        return _Value(
+            TURN_UNKNOWN,
+            value=value,
+            lead=lead,
+            why=records.OUT_OF_RANGE,
+            message=f"the forecast {value:g} lies outside the range [{low}, {high}] the "
+            "property can have",
+        )
+    return _Value(INFERRED, value=value, t=moment, lead=lead)
+
+
+@dataclass
+class _Flags:
+    flags: dict[str, dict[str, Any]]
+    tested_stuck: int
+    tested_biased: int
+    alarming: dict[str, dict[str, Any]]
+    uncorroborated: list[dict[str, Any]]
+
+
+def _flags(measurement: _Measurement, suspect_before: set[str]) -> _Flags:
+    """The signals the measurement calls stuck or biased, of those not suspect already: a
+    plain function of the measurement, asked before the lock (to forecast what is
+    flagged) and under it (to decide)."""
+    setup, now = measurement.setup, measurement.now
+    flags: dict[str, dict[str, Any]] = {}
+    tested_stuck = 0
+    for (property_text, uid), result in sorted(measurement.stuck.items()):
+        signal = records.signal_uid(property_text, uid)
+        if signal in suspect_before:
+            continue
+        tested_stuck += int(result.test.tested)
+        if result.test.stuck:
+            flags[signal] = {
+                "property": property_text,
+                "object": uid,
+                "reason": STUCK,
+                "value": result.value,
+                "test": result.test.document(),
+                "question": None,
+            }
+    observed_cells = set(setup.observations)
+    alarming: dict[str, dict[str, Any]] = {}
+    bias_tests: dict[str, dict[str, quality.BiasTest]] = {}
+    called_by: dict[str, set[str]] = {}
+    tested_biased = 0
+    for qid, measured in sorted(measurement.questions.items()):
+        question = measured.setup
+        if measured.scored is None or question.tolerance is None:
+            continue
+        window_origins = [
+            found
+            for found in _active(measured)
+            if measures.in_window(
+                found.origin, now=now, horizon=question.horizon, window=setup.window
+            )
+        ]
+        tests: dict[str, quality.BiasTest] = {}
+        for uid in sorted(measured.scored.residuals):
+            type_name = measured.types.get(uid)
+            if type_name is None or (type_name, question.cells[0][1]) not in observed_cells:
+                continue
+            property_text = f"{type_name}.{question.cells[0][1]}"
+            if records.signal_uid(property_text, uid) in suspect_before:
+                continue
+            history = [found.residuals[uid] for found in window_origins if uid in found.residuals]
+            tests[uid] = quality.bias_test(history, question.tolerance)
+        called = quality.biased(tests)
+        bias_tests[qid], called_by[qid] = tests, called
+        tested = sum(1 for found in tests.values() if found.tested)
+        tested_biased += tested
+        alarming[qid] = {
+            "tested": tested,
+            "alarming": sum(1 for found in tests.values() if found.alarm),
+            "biased": sorted(called),
+        }
+    # A series is called by the question that would infer it, and is biased only when
+    # every other question on its property bears its alarm out.
+    uncorroborated: list[dict[str, Any]] = []
+    for qid, called in sorted(called_by.items()):
+        measured = measurement.questions[qid]
+        for uid in sorted(called):
+            property_text = f"{measured.types[uid]}.{measured.setup.cells[0][1]}"
+            signal = records.signal_uid(property_text, uid)
+            if signal in flags:
+                continue
+            inferring = _inferring(measurement, property_text)
+            if inferring is None or inferring.setup.id != qid:
+                log.debug(
+                    "series alarms in a question that would not infer it; not called",
+                    signal=signal,
+                    question=qid,
+                    inferring=None if inferring is None else inferring.setup.id,
+                )
+                continue
+            test = bias_tests[qid][uid]
+            others = {
+                found.setup.id: bias_tests.get(found.setup.id, {}).get(uid)
+                for found in _on_property(measurement, property_text)
+                if found.setup.id != qid
+            }
+            unsupported = quality.uncorroborated(test, others)
+            if unsupported:
+                uncorroborated.extend(
+                    {
+                        "signal": signal,
+                        "property": property_text,
+                        "object": uid,
+                        "question": qid,
+                        "by": other,
+                        "why": why,
+                    }
+                    for other, why in unsupported.items()
+                )
+                log.info(
+                    "series alarms but another question on its property does not bear it "
+                    "out; not flagged",
+                    signal=signal,
+                    question=qid,
+                    side=test.side,
+                    uncorroborated=unsupported,
+                )
+                continue
+            flags[signal] = {
+                "property": property_text,
+                "object": uid,
+                "reason": BIASED,
+                "value": measured.current.get(uid),
+                "test": test.document(),
+                "question": qid,
+            }
+    return _Flags(flags, tested_stuck, tested_biased, alarming, uncorroborated)
 
 
 def _decide(measurement: _Measurement, current: _Current) -> _Decision:
@@ -780,112 +1257,23 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
     # -- signals -------------------------------------------------------------------------
     signals = {uid: dict(document) for uid, document in current.signals.items()}
     suspect_before = {uid for uid, document in signals.items() if document["status"] == SUSPECT}
-    flags: dict[str, dict[str, Any]] = {}
-    tested_stuck = 0
-    for (property_text, uid), result in sorted(measurement.stuck.items()):
-        signal = records.signal_uid(property_text, uid)
-        if signal in suspect_before:
-            continue
-        tested_stuck += int(result.test.tested)
-        if result.test.stuck:
-            flags[signal] = {
-                "property": property_text,
-                "object": uid,
-                "reason": STUCK,
-                "value": result.value,
-                "test": result.test.document(),
-                "question": None,
-            }
-    observed_cells = set(setup.observations)
-    alarming: dict[str, dict[str, Any]] = {}
-    bias_tests: dict[str, dict[str, quality.BiasTest]] = {}
-    called_by: dict[str, set[str]] = {}
-    tested_biased = 0
-    for qid, measured in sorted(measurement.questions.items()):
-        question = measured.setup
-        if measured.scored is None or question.tolerance is None:
-            continue
-        window_origins = [
-            found
-            for found in _active(measured)
-            if measures.in_window(
-                found.origin, now=now, horizon=question.horizon, window=setup.window
+    found_flags = _flags(measurement, suspect_before)
+    flags = found_flags.flags
+    tested_stuck, tested_biased = found_flags.tested_stuck, found_flags.tested_biased
+    alarming, uncorroborated = found_flags.alarming, found_flags.uncorroborated
+
+    def incident_of(signal: str) -> dict[str, Any] | None:
+        found = by_key.get((SIGNAL, signal))
+        if found is None:
+            found = next(
+                (
+                    document
+                    for document in changed.values()
+                    if document["kind"] == SIGNAL and document["subject"] == signal
+                ),
+                None,
             )
-        ]
-        tests: dict[str, quality.BiasTest] = {}
-        for uid in sorted(measured.scored.residuals):
-            type_name = measured.types.get(uid)
-            if type_name is None or (type_name, question.cells[0][1]) not in observed_cells:
-                continue
-            property_text = f"{type_name}.{question.cells[0][1]}"
-            if records.signal_uid(property_text, uid) in suspect_before:
-                continue
-            history = [found.residuals[uid] for found in window_origins if uid in found.residuals]
-            tests[uid] = quality.bias_test(history, question.tolerance)
-        called = quality.biased(tests)
-        bias_tests[qid], called_by[qid] = tests, called
-        tested = sum(1 for found in tests.values() if found.tested)
-        tested_biased += tested
-        alarming[qid] = {
-            "tested": tested,
-            "alarming": sum(1 for found in tests.values() if found.alarm),
-            "biased": sorted(called),
-        }
-    # A series is called by the question that would infer it, and is biased only when
-    # every other question on its property bears its alarm out.
-    uncorroborated: list[dict[str, Any]] = []
-    for qid, called in sorted(called_by.items()):
-        measured = measurement.questions[qid]
-        for uid in sorted(called):
-            property_text = f"{measured.types[uid]}.{measured.setup.cells[0][1]}"
-            signal = records.signal_uid(property_text, uid)
-            if signal in flags:
-                continue
-            inferring = _inferring(measurement, property_text)
-            if inferring is None or inferring.setup.id != qid:
-                log.debug(
-                    "series alarms in a question that would not infer it; not called",
-                    signal=signal,
-                    question=qid,
-                    inferring=None if inferring is None else inferring.setup.id,
-                )
-                continue
-            test = bias_tests[qid][uid]
-            others = {
-                found.setup.id: bias_tests.get(found.setup.id, {}).get(uid)
-                for found in _on_property(measurement, property_text)
-                if found.setup.id != qid
-            }
-            unsupported = quality.uncorroborated(test, others)
-            if unsupported:
-                uncorroborated.extend(
-                    {
-                        "signal": signal,
-                        "property": property_text,
-                        "object": uid,
-                        "question": qid,
-                        "by": other,
-                        "why": why,
-                    }
-                    for other, why in unsupported.items()
-                )
-                log.info(
-                    "series alarms but another question on its property does not bear it "
-                    "out; not flagged",
-                    signal=signal,
-                    question=qid,
-                    side=test.side,
-                    uncorroborated=unsupported,
-                )
-                continue
-            flags[signal] = {
-                "property": property_text,
-                "object": uid,
-                "reason": BIASED,
-                "value": measured.current.get(uid),
-                "test": test.document(),
-                "question": qid,
-            }
+        return None if found is None else changed.get(found["uid"], found)
 
     changed_signals: dict[str, dict[str, Any]] = {}
     flagged_entries = []
@@ -901,7 +1289,17 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
         episodes.append(
             {"since": iso_utc(now), "until": None, "reason": flag["reason"], "cleared_by": None}
         )
-        detail.update(test=flag["test"], question=flag["question"], episodes=episodes)
+        inference = measurement.inference.get(signal) or {
+            "refused": _reason("not_forecast", "the signal was not flagged when it was measured")
+        }
+        detail.update(
+            test=flag["test"],
+            question=flag["question"],
+            episodes=episodes,
+            inference=inference,
+            unknown=None,
+            estimate=None,
+        )
         updated = {
             **document,
             "status": SUSPECT,
@@ -948,91 +1346,192 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
             object=flag["object"],
             reason=flag["reason"],
             question=flag["question"],
+            inferred_from=inference.get("origin"),
+            not_inferred=(inference.get("refused") or {}).get("code"),
         )
 
     cleared: list[str] = []
     for signal in sorted(suspect_before):
         document = signals[signal]
-        estimate = _estimate(measurement, document["property"], document["object"])
-        reading_value = document.get("reading")
-        flag_value = document.get("value_at_flag")
-        sound = reading_value is not None and reading_value != flag_value
-        if sound and estimate is not None:
-            raw, guess = _number(reading_value), _number(estimate["value"])
-            tolerance = estimate.get("tolerance")
+        since = document.get("since")
+        previous = int(document.get("clear_checks") or 0)
+        if document.get("reason") == STUCK:
+            # Cleared when the raw readings change again the way the test calls normal:
+            # the same readings it was flagged on, so a stop has to come again, a whole
+            # run of it, before it is flagged again.
+            result = measurement.stuck.get((document["property"], document["object"]))
+            if result is None or since is None:
+                log.debug("no raw readings of a stuck signal at this check", signal=signal)
+                continue
+            changes = result.changes_since(since)
             sound = (
-                raw is not None
-                and guess is not None
-                and tolerance is not None
-                and abs(raw - guess) <= CLEAR_TOLERANCES * tolerance
+                changes >= STUCK_CLEAR_CHANGES
+                and result.test.n < quality.STUCK_MIN_INTERVALS
+                and not result.test.stuck
             )
-        count = int(document.get("clear_checks") or 0) + 1 if sound else 0
-        if count >= CLEAR_CHECKS:
+            count, needed = (1 if sound else 0), 1
+            evidence = {"changes": changes, "run": result.test.n}
+        else:
+            # A biased signal: its reading against its inferred value, while there is one.
+            value = _value_now(document, setup, now)
+            raw = _number(document.get("reading"))
+            reading_at = document.get("reading_at")
+            tolerance = _number(
+                ((document.get("detail") or {}).get("inference") or {}).get("tolerance")
+            )
+            if (
+                value.kind != INFERRED
+                or value.value is None
+                or raw is None
+                or tolerance is None
+                or reading_at is None
+                or since is None
+                or reading_at <= since
+            ):
+                log.debug(
+                    "no inferred value or fresh reading to clear a biased signal against; "
+                    "neither counted nor reset",
+                    signal=signal,
+                    value=value.kind,
+                )
+                continue
+            sound = abs(raw - value.value) <= CLEAR_TOLERANCES * tolerance
+            count, needed = (previous + 1 if sound else 0), CLEAR_CHECKS
+            evidence = {"reading": raw, "inferred": value.value, "tolerance": tolerance}
+        if count >= needed:
             detail = dict(document.get("detail") or {})
             episodes = [dict(item) for item in detail.get("episodes") or []]
             if episodes and episodes[-1].get("until") is None:
                 episodes[-1].update(until=iso_utc(now), cleared_by="check")
-            detail["episodes"] = episodes
+            detail.update(episodes=episodes, unknown=None, estimate=None)
             updated = {**document, "status": records.OK, "clear_checks": 0, "detail": detail}
             cleared.append(signal)
-            incident = by_key.get((SIGNAL, signal))
+            incident = incident_of(signal)
             if incident is not None:
-                closed = {
-                    **changed.get(incident["uid"], incident),
-                    "status": RESOLVED,
-                    "resolved_at": now,
-                }
+                closed = {**incident, "status": RESOLVED, "resolved_at": now}
                 closed["steps"] = [
                     *(closed.get("steps") or []),
-                    _step_entry({"action": "cleared", "by": "check"}, now, check),
+                    _step_entry({"action": "cleared", "by": "check", **evidence}, now, check),
                 ]
                 changed[closed["uid"]] = closed
-            log.info("suspect signal cleared after sound checks", signal=signal, checks=count)
-        elif count != int(document.get("clear_checks") or 0):
+            log.info("suspect signal cleared", signal=signal, checks=count, **evidence)
+        elif count != previous:
             updated = {**document, "clear_checks": count}
         else:
             continue
         signals[signal] = updated
         changed_signals[signal] = updated
 
-    # Inferred values of every signal suspect after the check.
+    # The value of every signal suspect after the check: the forecast made when it was
+    # flagged while within its horizon and range, else unknown (written once, as no value).
     inferred: dict[str, dict[str, Provenance]] = {}
     # One row per object: two suspect properties of one object are written together.
     rows_by_object: dict[tuple[str, str], dict[str, Any]] = {}
     inferred_entries = []
+    unknown_entries = []
     for signal in sorted(uid for uid, document in signals.items() if document["status"] == SUSPECT):
         document = signals[signal]
-        estimate = _estimate(measurement, document["property"], document["object"])
-        if estimate is None:
-            continue
         type_name, _, name = document["property"].partition(".")
         if not setup.ontology.has_type(type_name):
             continue
-        field_kind = setup.ontology.type(type_name).field(name).kind
-        value = round(estimate["value"]) if field_kind == Kind.integer else float(estimate["value"])
-        rows_by_object.setdefault((type_name, document["object"]), {"uid": document["object"]})[
-            name
-        ] = value
-        moment = records.parse_time(estimate["t"])
-        assert moment is not None
-        inferred.setdefault(document["object"], {})[name] = Provenance(
-            source=estimate["model"] or records.ACTOR, kind=FactKind.inferred, t_valid=moment
+        value = _value_now(document, setup, now)
+        if value.kind == UNKNOWN:
+            continue
+        detail = dict(document.get("detail") or {})
+        inference = detail.get("inference") or {}
+        row = rows_by_object.setdefault(
+            (type_name, document["object"]), {"uid": document["object"]}
         )
-        detail = {**(document.get("detail") or {}), "estimate": estimate}
-        updated = {**changed_signals.get(signal, document), "detail": detail}
-        signals[signal] = updated
-        changed_signals[signal] = updated
-        inferred_entries.append(
-            {
+        if value.kind == INFERRED:
+            assert value.value is not None and value.t is not None
+            field_kind = setup.ontology.type(type_name).field(name).kind
+            number = round(value.value) if field_kind == Kind.integer else float(value.value)
+            row[name] = number
+            inferred.setdefault(document["object"], {})[name] = Provenance(
+                source=inference.get("model") or records.ACTOR,
+                kind=FactKind.inferred,
+                t_valid=value.t,
+            )
+            estimate = {
+                "value": number,
+                "t": iso_utc(value.t),
+                "question": inference.get("question"),
+                "model": inference.get("model"),
+                "tolerance": inference.get("tolerance"),
+                "origin": inference.get("origin"),
+                "lead_steps": value.lead,
+            }
+            detail["estimate"] = estimate
+            inferred_entries.append(
+                {
+                    "signal": signal,
+                    "property": document["property"],
+                    "object": document["object"],
+                    **{key: estimate[key] for key in ("value", "t", "question", "model")},
+                    "origin": estimate["origin"],
+                    "lead_steps": value.lead,
+                }
+            )
+        else:
+            # Nothing is inferred any more: the property holds no value, said by the
+            # signal as its source, until the signal clears.
+            row[name] = None
+            inferred.setdefault(document["object"], {})[name] = Provenance(
+                source=signal, kind=FactKind.inferred, t_valid=now, confidence=0.0
+            )
+            questions = _unanswered(setup, document["property"])
+            state = {
+                "since": iso_utc(now),
+                "why": value.why,
+                "message": value.message,
+                "questions": questions,
+            }
+            episodes = [dict(item) for item in detail.get("episodes") or []]
+            if episodes and episodes[-1].get("until") is None:
+                episodes[-1]["unknown_since"] = iso_utc(now)
+            detail.update(unknown=state, estimate=None, episodes=episodes)
+            entry = {
                 "signal": signal,
                 "property": document["property"],
                 "object": document["object"],
-                "value": value,
-                "t": estimate["t"],
-                "question": estimate["question"],
-                "model": estimate["model"],
+                **state,
             }
-        )
+            unknown_entries.append(entry)
+            incident = incident_of(signal)
+            if incident is not None:
+                stepped = {
+                    **incident,
+                    "detail": {
+                        **(incident.get("detail") or {}),
+                        "unknown": state,
+                        "unanswered": questions,
+                    },
+                }
+                stepped["steps"] = [
+                    *(stepped.get("steps") or []),
+                    _step_entry(
+                        {
+                            "action": "unknown",
+                            "why": value.why,
+                            "message": value.message,
+                            "questions": questions,
+                        },
+                        now,
+                        check,
+                    ),
+                ]
+                changed[stepped["uid"]] = stepped
+            log.warn(
+                "a suspect signal's value is unknown from now on; nothing computes from it",
+                signal=signal,
+                property=document["property"],
+                object=document["object"],
+                why=value.why,
+                questions=questions,
+            )
+        updated = {**document, "detail": detail}
+        signals[signal] = updated
+        changed_signals[signal] = updated
 
     inferred_rows: dict[str, list[dict[str, Any]]] = {}
     for (type_name, _), row in sorted(rows_by_object.items()):
@@ -1056,6 +1555,7 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
             uid for uid, document in signals.items() if document["status"] == SUSPECT
         ),
         "inferred": inferred_entries,
+        "unknown": unknown_entries,
         "alarming": alarming,
         "uncorroborated": uncorroborated,
         "skipped": [],
@@ -1135,6 +1635,7 @@ def outcome_at(twin: Twin, version: VersionRef, uid: str, *, replayed: bool) -> 
         twin, SIGNAL_TYPE, records.SIGNAL_COLUMNS, records.signal_document, version, parent
     )
     events, grouped = incident_events(pairs, check=uid, at=check_document["at"])
+    events.extend(unknown_events(signal_pairs, check=uid))
     moved = state_event(before["state"], after["state"], since=after["since"], check=uid)
     if moved is not None:
         events.append(moved)
@@ -1212,10 +1713,12 @@ def _commit(
                 violations=len(exc.detail.get("violations") or []),
                 rows=sum(len(rows) for rows in decision.inferred_rows.values()),
             )
+            # The signals keep what was decided (an unknown value stays unknown to every
+            # reader of the signal); only the property values are not written.
             document = dict(decision.signals_document)
             document["skipped"] = [
                 {"signal": entry["signal"], "reason": "refused by the store"}
-                for entry in document["inferred"]
+                for entry in [*document["inferred"], *document.get("unknown", [])]
             ]
             document["inferred"] = []
             upserts[CHECK_TYPE] = [{**decision.check_row, "signals": dumps(document)}]
@@ -1295,7 +1798,7 @@ def _check(
         qid: _measure(context, question, reading.scored_origins(earlier, qid))
         for qid, question in setup.questions.items()
     }
-    stuck = _lookbacks(twin, setup, now)
+    stuck = _lookbacks(twin, setup, now, context.spans)
     unknown = sorted(set(freshness) - set(setup.questions))
     if unknown:
         log.warn("freshness given for questions the contract does not ask; ignored", ids=unknown)
@@ -1318,6 +1821,14 @@ def _check(
         trace_id=trace_id,
         clock=clock,
     )
+    # What this measurement flags is forecast now, outside the lock: the decision under
+    # it flags from the same measurement, and a signal it flags that was not forecast here
+    # (another writer changed the signals in between) has no value inferred.
+    suspect_now = {uid for uid, document in signals.items() if document["status"] == SUSPECT}
+    for signal, flag in sorted(_flags(measurement, suspect_now).flags.items()):
+        measurement.inference[signal] = _infer(
+            context, measurement, flag["property"], flag["object"]
+        )
     measured_ms = _ms(clock)
     with WRITES:
         head = store.head()

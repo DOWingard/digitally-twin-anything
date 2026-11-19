@@ -132,6 +132,57 @@ def suspects(twin: Twin, at: At = None) -> set[Cell]:
     )
 
 
+def unknown(twin: Twin, at: At = None) -> dict[Cell, dict[str, Any]]:
+    """(`Type.property`, object uid) of every suspect signal whose value in force is
+    unknown, with the signal's document: what nothing may compute from."""
+    if not _has(twin, SIGNAL_TYPE):
+        return {}
+    rows = twin.store.table(
+        SIGNAL_TYPE, columns=SIGNAL_COLUMNS, filter=[("status", "=", SUSPECT)], at=_at(at)
+    ).to_pylist()
+    found: dict[Cell, dict[str, Any]] = {}
+    for row in rows:
+        document = records.signal_document(row)
+        if records.unknown_of(document) is not None:
+            found[(document["property"], document["object"])] = document
+    return found
+
+
+def withheld(
+    cells: Mapping[Cell, Mapping[str, Any]],
+    properties: Iterable[str],
+    *,
+    uids: Iterable[str] | None = None,
+    concrete: Mapping[str, Iterable[str]] | None = None,
+) -> list[dict[str, Any]]:
+    """The unknown signals among `cells` (as `unknown` gives them) on any of `properties`
+    (`Type.property`; an abstract type stands for its concrete types in `concrete`), of
+    the objects `uids` when given: what a computation reading those properties may not
+    compute from, as `{signal, property, object, since, why}`."""
+    names: set[str] = set()
+    for text in properties:
+        type_name, _, name = str(text).partition(".")
+        names.add(text)
+        for found in (concrete or {}).get(type_name, ()):
+            names.add(f"{found}.{name}")
+    only = None if uids is None else set(uids)
+    hits = []
+    for (property_text, uid), document in sorted(cells.items()):
+        if property_text not in names or (only is not None and uid not in only):
+            continue
+        state = records.unknown_of(document) or {}
+        hits.append(
+            {
+                "signal": document["uid"],
+                "property": property_text,
+                "object": uid,
+                "since": state.get("since"),
+                "why": state.get("why"),
+            }
+        )
+    return hits
+
+
 def observed_reading(property_name: str, uid: str, value: Any, *, t: datetime) -> dict[str, Any]:
     """The `TwinSignal` row that keeps a suspect signal's raw reading, for sync to write
     in place of the value: `{"uid", "reading", "reading_at"}`, a partial row."""

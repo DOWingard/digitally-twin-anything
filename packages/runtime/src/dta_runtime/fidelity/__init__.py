@@ -36,7 +36,7 @@ from .errors import (
     FidelityError,
 )
 from .incidents import clear_signal, close_incident, corrected, open_incident, resolve, retry
-from .outcome import INCIDENT_EVENT, REMODEL_EVENT, STATE_EVENT
+from .outcome import INCIDENT_EVENT, REMODEL_EVENT, STATE_EVENT, UNKNOWN_EVENT
 from .reads import (
     checks,
     errors,
@@ -63,6 +63,7 @@ __all__ = [
     "OUT_OF_ORDER",
     "REMODEL_EVENT",
     "STATE_EVENT",
+    "UNKNOWN_EVENT",
     "UNSUPPORTED",
     "CheckOutcome",
     "CorrectionRequest",

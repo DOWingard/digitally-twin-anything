@@ -162,6 +162,15 @@ BREACH, STALE, SIGNAL, RECONCILE = "breach", "stale", "signal", "reconcile"
 KINDS = (BREACH, STALE, SIGNAL, RECONCILE)
 SUSPECT, OK = "suspect", "ok"
 STUCK, BIASED = "stuck", "biased"
+# Why a suspect signal's value is unknown rather than inferred: the forecast's lead time
+# passed the inferring question's horizon, its value was not finite, it lay outside the
+# property's range, or no forecast was made.
+HORIZON_PASSED, NOT_FINITE, OUT_OF_RANGE, NO_INFERENCE = (
+    "horizon_passed",
+    "not_finite",
+    "out_of_range",
+    "no_inference",
+)
 
 INCIDENT_COLUMNS = [
     "kind",
@@ -323,6 +332,15 @@ def signal_document(row: Mapping[str, Any]) -> dict[str, Any]:
         "clear_checks": row.get("clear_checks") or 0,
         "detail": loads(row.get("detail"), {}),
     }
+
+
+def unknown_of(document: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`{since, why, message}` when a suspect signal's value in force is unknown (nothing
+    is inferred for it any more), else None."""
+    if document.get("status") != SUSPECT:
+        return None
+    found = (document.get("detail") or {}).get("unknown")
+    return dict(found) if isinstance(found, Mapping) else None
 
 
 def check_document(row: Mapping[str, Any]) -> dict[str, Any]:

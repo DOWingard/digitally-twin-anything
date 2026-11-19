@@ -16,6 +16,9 @@ NOT_FOUND = "fidelity.not_found"
 BAD_REQUEST = "fidelity.bad_request"
 # The record is not in a status the call applies to.
 CONFLICT = "fidelity.conflict"
+# An input the computation reads is a suspect signal whose value is unknown; `signals`
+# names them.
+INPUT_UNKNOWN = "fidelity.input_unknown"
 
 
 class FidelityError(DtaError):
