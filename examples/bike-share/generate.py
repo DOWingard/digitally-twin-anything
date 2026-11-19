@@ -5,7 +5,7 @@ The system is simulated, so the files agree with each other: a trip takes a bike
 station that had one and brings it to a station that had a free dock, and the station
 status files are the running balance of those trips and of the night's rebalancing.
 
-    uv run python testbed-b/generate.py OUT_DIR [--seed 7] [--days 21] [--stations 80]
+    python generate.py OUT_DIR [--seed 7] [--days 21] [--stations 80]
 
 Writes into OUT_DIR: districts.csv, stations.csv, bikes.csv, weather.csv (hourly, local
 time), trips/trips-<date>.parquet (one file per day), status/status-<date>.jsonl (one
@@ -38,7 +38,7 @@ def log(level: str, message: str, **context: Any) -> None:
     line = {
         "timestamp": datetime.now(UTC).isoformat(),
         "level": level,
-        "context": "testbed_b.generate",
+        "context": "bike_share.generate",
         "message": message,
         **context,
     }

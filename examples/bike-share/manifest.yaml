@@ -3,7 +3,7 @@
 # the ontology's signature, the record of what the user confirmed, the signature).
 manifest_version: 2
 twin:
-  id: cykelbo
+  id: bike-share
   name: Cykelbo bike share
 contract:
   purpose: For Cykelbo operations, to see where and when stations run empty or full, so that the night
