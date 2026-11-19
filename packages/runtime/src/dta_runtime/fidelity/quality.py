@@ -1,11 +1,35 @@
 """The two tests of an observed signal, as plain functions of plain data.
 
-Stuck: over the lookback, split into sync intervals, a signal that used to change
-in most intervals has not changed for n intervals in which its source kept
-delivering. With k intervals before its last change, u of them without a change,
-the chance of an interval without a change is taken as p0 = (u + 1)/(k + 2); the
-signal is stuck when n >= 3 and p0^n < 1e-4. It is tested only when it changed in
-at least 20 intervals, so a signal that seldom changes is never called stuck.
+Stuck: over the lookback, split into sync intervals, each interval in which the source
+delivered is C (the value changed) or N (it did not). The signal is called stuck when the
+run of N since its last change is improbable under the signal's own history:
+
+1. A smooth signal is not tested. A level, say, is flat for a while around each of its
+   turning points, longer at the turning point of a slow swing than at a daily one, and
+   a lookback seldom holds the slowest: no length of run tells such a flat from a stuck
+   sensor without calling good readings stuck. Smooth is read off the signs of its
+   changes: of the m pairs of consecutive changes in the lookback, s keep their sign;
+   with m >= 10 it is smooth when a one-sided binomial test of s against m/2 gives
+   p < 0.01. A stuck smooth signal is left to the bias test and to the questions'
+   errors.
+2. Otherwise the history up to and including the last change is taken as a two-state
+   chain and its transitions are counted (between intervals that both delivered):
+   n_CC, n_CN, n_NC, n_NN. With p0 = (u + 1)/(k + 2), u of the k history intervals
+   without a change, the probability of the run of n intervals without a change that
+   follows the last change is P = p0^n when the no-change intervals come as
+   independent draws, and P = b a^(n-1) when they cluster:
+
+       b = P(N | C) = (n_CN + w p0) / (n_CC + n_CN + w)
+       a = P(N | N) = (n_NN + w p0) / (n_NC + n_NN + w),    w = 2,
+
+   the rows estimated with a prior of weight w centred on independence. They cluster
+   when a G-test of independence on the 2x2 table of transitions gives p < 0.01 and
+   a > b.
+3. It is stuck when n >= 3 and P < 1e-7, the false-alarm rate per series and check.
+
+It is tested only when it changed in at least 20 intervals, so a signal that seldom
+changes is never called stuck. The lookback is the fidelity window, and never fewer
+than 96 sync intervals.
 
 Biased: the mean signed residual of a series at its newest origins against its own
 earlier ones. Baseline: the median and 1.4826 * MAD of the earlier residuals (the
@@ -29,16 +53,37 @@ question needs no agreement.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
 import numpy as np
+from scipy.stats import binomtest, chi2_contingency
 
 STUCK_MIN_CHANGES = 20
 STUCK_MIN_INTERVALS = 3
-STUCK_P = 1e-4
+# The false-alarm rate per series and check: P(the run in progress | the signal's history).
+# Every interval can start a run, so a month of 15-minute syncs (2880 intervals) holds at
+# most about 2880 * alpha false alarms per series: below 1e-3 needs alpha < 3.5e-7.
+STUCK_ALPHA = 1e-7
+# The stuck test reads at least this many sync intervals, whatever the fidelity window: a
+# signal changing in every interval is called stuck after 6 only when k >= 20 changes
+# precede them ((1/22)^6 < 1e-7), and the rate above was measured over 96 intervals.
+STUCK_LOOKBACK = 96
+# Weight, in transitions, of the prior that centres each row of the chain on independence.
+STUCK_PRIOR = 2.0
+# The level of the tests that call a signal smooth and its no-change intervals clustered.
+SMOOTH_LEVEL = 0.01
+SMOOTH_MIN_PAIRS = 10
+CLUSTER_LEVEL = 0.01
+
+# Why a signal was not tested for being stuck.
+NEVER_CHANGED = "never_changed"
+FEW_CHANGES = "few_changes"
+SMOOTH = "smooth"
+INDEPENDENT, MARKOV = "independent", "markov"
 
 BIAS_MIN_ORIGINS = 8
 BIAS_HELD_OUT = 3
@@ -66,6 +111,21 @@ def changes_per_interval(
     """For each of `count` intervals (start + i*step, start + (i+1)*step], whether the
     value changed in it. `before` is the value in force at `start`; `events` are the
     values stored after it, oldest first. Storing the same value again is no change."""
+    return [found is not None for found in steps_per_interval(start, step, count, before, events)]
+
+
+def steps_per_interval(
+    start: datetime,
+    step: timedelta,
+    count: int,
+    before: Any,
+    events: Sequence[tuple[datetime, Any]],
+) -> list[float | None]:
+    """For each interval as `changes_per_interval` splits them: None when the value did
+    not change in it, else how far it moved over it (NaN when the values are not
+    numbers, 0.0 when it came back to where it was)."""
+    first: list[Any] = [None] * count
+    final: list[Any] = [None] * count
     changed = [False] * count
     previous = before
     for moment, value in events:
@@ -76,9 +136,22 @@ def changes_per_interval(
         if position >= count:
             break
         if value != previous:
+            if not changed[position]:
+                first[position] = previous
             changed[position] = True
+            final[position] = value
         previous = value
-    return changed
+    found: list[float | None] = []
+    for position in range(count):
+        if not changed[position]:
+            found.append(None)
+            continue
+        old, new = first[position], final[position]
+        numbers = all(
+            isinstance(value, int | float) and not isinstance(value, bool) for value in (old, new)
+        )
+        found.append(float(new) - float(old) if numbers else math.nan)
+    return found
 
 
 @dataclass(frozen=True)
@@ -87,39 +160,161 @@ class StuckTest:
     stuck: bool
     # Delivering intervals since the interval of the last change.
     n: int
-    # Intervals up to and including that of the last change, and those without a change.
+    # Observed intervals up to and including that of the last change, and those of them
+    # without a change.
     k: int
     u: int
     p0: float | None
     # Index of the interval of the last change; None when it never changed.
     last: int | None
+    # Why it was not tested; None when it was.
+    skipped: str | None = None
+    # Pairs of consecutive changes in the lookback, those that kept their sign, and the
+    # one-sided binomial p-value of that many.
+    pairs: int = 0
+    kept: int = 0
+    smooth_p: float | None = None
+    # Transitions of the history between intervals that both delivered.
+    cc: int = 0
+    cn: int = 0
+    nc: int = 0
+    nn: int = 0
+    # The G-test of independence of those transitions, and the model used.
+    cluster_p: float | None = None
+    model: str | None = None
+    # b = P(N | C), a = P(N | N) as the model has them (both p0 when independent).
+    b: float | None = None
+    a: float | None = None
+    # P of the run in progress, and the shortest run that would be called stuck.
+    p: float | None = None
+    needed: int | None = None
 
     def document(self) -> dict[str, Any]:
         return {
             "tested": self.tested,
             "stuck": self.stuck,
+            "skipped": self.skipped,
             "n": self.n,
             "k": self.k,
             "u": self.u,
             "p0": self.p0,
-            "p0_n": None if self.p0 is None else self.p0**self.n,
+            "signs": {"pairs": self.pairs, "kept": self.kept, "p": self.smooth_p},
+            "transitions": {"cc": self.cc, "cn": self.cn, "nc": self.nc, "nn": self.nn},
+            "cluster_p": self.cluster_p,
+            "model": self.model,
+            "b": self.b,
+            "a": self.a,
+            "p": self.p,
+            "alpha": STUCK_ALPHA,
+            "needed": self.needed,
         }
 
 
-def stuck_test(changed: Sequence[bool], delivering: Sequence[bool]) -> StuckTest:
-    """The stuck test over intervals given oldest first."""
-    if len(changed) != len(delivering):
-        raise ValueError("changed and delivering differ in length")
+def run_probability(b: float, a: float, n: int) -> float:
+    """P(a run of n intervals without a change right after a change) = b a^(n-1)."""
+    return b * a ** max(0, n - 1)
+
+
+def needed_run(b: float, a: float) -> int:
+    """The shortest run, at least STUCK_MIN_INTERVALS, whose probability is below the
+    false-alarm rate."""
+    if b < STUCK_ALPHA or a <= 0.0:
+        return STUCK_MIN_INTERVALS
+    # b a^(n-1) < alpha  <=>  n - 1 > log(alpha / b) / log(a), with 0 < a < 1.
+    bound = math.log(STUCK_ALPHA / b) / math.log(a)
+    return max(STUCK_MIN_INTERVALS, math.floor(bound) + 2)
+
+
+@dataclass(frozen=True)
+class Smoothness:
+    pairs: int
+    kept: int
+    # One-sided binomial p-value of keeping the sign that often; None below the minimum.
+    p: float | None
+
+    @property
+    def smooth(self) -> bool:
+        return self.p is not None and self.p < SMOOTH_LEVEL
+
+
+def smoothness(steps: Sequence[float | None]) -> Smoothness:
+    """How often a signal's consecutive changes keep their sign, as the stuck test's
+    first step reads it."""
+    moves = [found for found in steps if found is not None and math.isfinite(found) and found]
+    pairs = max(0, len(moves) - 1)
+    kept = sum(
+        1 for left, right in zip(moves, moves[1:], strict=False) if (left > 0) == (right > 0)
+    )
+    if pairs < SMOOTH_MIN_PAIRS:
+        return Smoothness(pairs, kept, None)
+    return Smoothness(pairs, kept, float(binomtest(kept, pairs, 0.5, alternative="greater").pvalue))
+
+
+def clustering_p(cc: int, cn: int, nc: int, nn: int) -> float | None:
+    """The G-test of independence of the next interval from the one before; None when a
+    row or a column of the table is empty, which says nothing either way."""
+    table = np.array([[cc, cn], [nc, nn]], dtype=np.float64)
+    if (table.sum(axis=0) == 0).any() or (table.sum(axis=1) == 0).any():
+        return None
+    result = chi2_contingency(table, correction=False, lambda_="log-likelihood")
+    return float(result.pvalue)
+
+
+def stuck_test(
+    changed: Sequence[bool],
+    delivering: Sequence[bool],
+    steps: Sequence[float | None] | None = None,
+) -> StuckTest:
+    """The stuck test over intervals given oldest first. An interval is observed when its
+    source delivered or the value changed in it; one that is not breaks the chain.
+    `steps` (as `steps_per_interval` gives them) are what tells a smooth signal; without
+    them none is taken for smooth."""
+    if len(changed) != len(delivering) or (steps is not None and len(steps) != len(changed)):
+        raise ValueError("changed, delivering and steps differ in length")
     last = max((index for index, flag in enumerate(changed) if flag), default=None)
     if last is None:
-        return StuckTest(False, False, 0, 0, 0, None, None)
-    k = last + 1
-    u = sum(1 for flag in changed[:k] if not flag)
-    n = sum(1 for flag in delivering[k:] if flag)
+        return StuckTest(False, False, 0, 0, 0, None, None, skipped=NEVER_CHANGED)
+    seen = [bool(flag) or bool(sent) for flag, sent in zip(changed, delivering, strict=True)]
+    k = sum(seen[: last + 1])
+    u = sum(1 for index in range(last + 1) if seen[index] and not changed[index])
+    n = sum(1 for flag in delivering[last + 1 :] if flag)
+    counts = {"cc": 0, "cn": 0, "nc": 0, "nn": 0}
+    for index in range(1, last + 1):
+        if seen[index - 1] and seen[index]:
+            key = ("c" if changed[index - 1] else "n") + ("c" if changed[index] else "n")
+            counts[key] += 1
+    shape = smoothness(steps) if steps is not None else Smoothness(0, 0, None)
+    common = {"pairs": shape.pairs, "kept": shape.kept, "smooth_p": shape.p, **counts}
     if k - u < STUCK_MIN_CHANGES:
-        return StuckTest(False, False, n, k, u, None, last)
+        return StuckTest(False, False, n, k, u, None, last, skipped=FEW_CHANGES, **common)
     p0 = (u + 1) / (k + 2)
-    return StuckTest(True, n >= STUCK_MIN_INTERVALS and p0**n < STUCK_P, n, k, u, p0, last)
+    if shape.smooth:
+        return StuckTest(False, False, n, k, u, p0, last, skipped=SMOOTH, **common)
+    weight = STUCK_PRIOR
+    b = (counts["cn"] + weight * p0) / (counts["cc"] + counts["cn"] + weight)
+    a = (counts["nn"] + weight * p0) / (counts["nc"] + counts["nn"] + weight)
+    cluster_p = clustering_p(**counts)
+    if cluster_p is not None and cluster_p < CLUSTER_LEVEL and a > b:
+        model = MARKOV
+    else:
+        model, b, a = INDEPENDENT, p0, p0
+    p = run_probability(b, a, n)
+    return StuckTest(
+        True,
+        n >= STUCK_MIN_INTERVALS and p < STUCK_ALPHA,
+        n,
+        k,
+        u,
+        p0,
+        last,
+        **common,
+        cluster_p=cluster_p,
+        model=model,
+        b=b,
+        a=a,
+        p=p,
+        needed=needed_run(b, a),
+    )
 
 
 # -- biased ------------------------------------------------------------------------------
