@@ -35,6 +35,11 @@ def test_plugin_json_names_the_plugin_and_the_tool_version() -> None:
     data = _json(PLUGIN_JSON)
     assert data["name"] == "digitally-twin-anything"
     assert data["version"] == importlib.metadata.version("dta-toolkit")
+    # One version for the plugin, the launcher's image tags and the three packages.
+    assert {importlib.metadata.version(name) for name in ("dta-core", "dta-runtime")} == {
+        data["version"]
+    }
+    assert (PLUGIN / "bin" / "VERSION").read_text(encoding="utf-8").strip() == data["version"]
     assert isinstance(data.get("description"), str) and data["description"].strip()
 
 
