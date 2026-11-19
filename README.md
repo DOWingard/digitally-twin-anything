@@ -77,7 +77,7 @@ Measured on one machine:
 
 | What | Measured |
 |---|---|
-| Downloads of a first build | about 0.6 GB: two base images (110 MB) and the Python packages of both images |
+| Downloads of a first build | about 0.6 GB, counted from the registry's manifests and the lock file: two base images (110 MB), the Python packages of both images and the installer |
 | A first build | 49 s on a fast connection with the base images already present; expect several minutes on an ordinary one |
 | A build of unchanged sources with docker's layer cache | about 2 s for both |
 | Size | `dta-toolkit` 712 MB and `dta-runtime` 1.21 GB as docker lists them; 1.8 GB on disk together, since they share their 120 MB base |
