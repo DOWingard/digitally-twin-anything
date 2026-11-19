@@ -2,6 +2,7 @@
   "name": "digitally-twin-anything",
   "version": "0.1.0",
   "description": "Build, accept and hand over a digital twin of any system whose data lives in databases, APIs or files, with the dta command line tool: a typed graph with full history, served by an API, a browser UI and an operator skill.",
+  "license": "Apache-2.0",
   "author": {
     "name": "Derek Wingard"
   },

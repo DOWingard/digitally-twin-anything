@@ -421,3 +421,7 @@ The testbed is a separate project with its own environment; see
 
 Secrets are read only from environment variables. A process that needs a
 variable that is missing stops at startup and names it.
+
+## License
+
+Apache License 2.0; see `LICENSE`.
