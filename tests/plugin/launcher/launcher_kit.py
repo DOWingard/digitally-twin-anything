@@ -87,7 +87,7 @@ needs_buildx = pytest.mark.skipif(
 # What the launcher runs besides docker and the shell's own builtins; flock is
 # used when present and is left out here.
 LAUNCHER_TOOLS = (
-    *("env", "sed", "ls", "id", "readlink", "mkdir"),
+    *("env", "sed", "ls", "id", "readlink", "mkdir", "uname"),
     *("tee", "tail", "date", "sleep", "rm", "rmdir"),
 )
 

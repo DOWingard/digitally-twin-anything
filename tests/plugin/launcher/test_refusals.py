@@ -9,6 +9,7 @@ launcher, is never built either (building is covered by test_first_use).
 
 from __future__ import annotations
 
+import os
 import secrets
 import shutil
 import socket
@@ -40,6 +41,35 @@ def test_the_runtime_image_built_is_the_one_a_manifest_names_by_default() -> Non
     # The launcher builds dta-runtime:<VERSION>; a twin runs what runtime.image names.
     version = kit.VERSION_FILE.read_text(encoding="utf-8").strip()
     assert Runtime().image == f"dta-runtime:{version}"
+
+
+def _another_system(tmp_path: Path) -> str:
+    """A PATH on which `uname -s` answers as a system that is not Linux."""
+    tools = tmp_path / "other-system"
+    tools.mkdir()
+    fake = tools / "uname"
+    fake.write_text("#!/bin/sh\necho Darwin\n", encoding="utf-8")
+    fake.chmod(0o755)
+    return f"{tools}{os.pathsep}{os.environ['PATH']}"
+
+
+def test_refused_on_a_system_that_is_not_linux(tmp_path: Path, workdir: Path, home: Path) -> None:
+    env = kit.environment(home, PATH=_another_system(tmp_path))
+    done = kit.launch(["--help"], cwd=workdir, env=env)
+    assert done.returncode == kit.EX_UNAVAILABLE
+    assert done.stdout == ""
+    line = kit.refusal(done)
+    assert "this machine is Darwin and the tool runs on Linux only" in line
+    assert "DTA_UNSUPPORTED_OS=1" in line
+
+
+def test_another_system_is_tried_when_the_caller_says_so(
+    tmp_path: Path, workdir: Path, home: Path
+) -> None:
+    env = kit.environment(home, PATH=_another_system(tmp_path), DTA_UNSUPPORTED_OS="1")
+    done = kit.launch(["--help"], cwd=workdir, env=env)
+    assert done.returncode == 0, done.stderr
+    assert "Usage" in done.stdout
 
 
 def test_refused_without_docker(tmp_path: Path, workdir: Path, home: Path) -> None:

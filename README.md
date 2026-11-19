@@ -15,11 +15,11 @@ A twin built by this system is:
   tells an agent how to operate it;
 - one container stack that can be exported and moved to another host.
 
-Status: under construction. A static twin (loaded once from recorded data) and
-a live twin (kept in step with its sources, one version per sync interval)
-can be built, accepted and handed over today, with functions, models selected
-by backtest, questions whose accuracy the twin measures, and what-if
-scenarios. A live twin checks its own fidelity, corrects itself or says that
+Status: version 0.1.0, a first release for Linux. A static twin (loaded once
+from recorded data) and a live twin (kept in step with its sources, one
+version per sync interval) can be built, accepted and handed over, with
+functions, models selected by backtest, questions whose accuracy the twin
+measures, and what-if scenarios. A live twin checks its own fidelity, corrects itself or says that
 it failed, and can act on the real system through typed actions and control
 loops. A twin can be exported into one file and imported on another host
 with the same history. The repository is itself the agent plugin: it carries
@@ -34,6 +34,10 @@ it. The plugin gives the agent the `build-twin` skill and the `dta` command;
 
 Requirements:
 
+- Linux. It is developed and tested on x86-64 Linux only. On macOS and
+  Windows the launcher refuses to run: there Docker runs containers in a
+  virtual machine, and the toolkit cannot reach a twin the way it does on
+  Linux (`DTA_UNSUPPORTED_OS=1` tries it anyway, untested).
 - Docker: the engine, running, and its command line with the buildx plugin
   (Docker Desktop has both; on Linux, the `docker-buildx-plugin` package or
   your distribution's equivalent). The user who runs the agent must be allowed
@@ -62,6 +66,23 @@ digitally-twin-anything@digitally-twin-anything` do the same. A marketplace
 added from a local path loads the plugin in place, so a `git pull` in the
 clone takes effect at the next session. Once the repository is hosted on
 GitHub, `<owner>/<repo>` replaces the path.
+
+### What the plugin can do on your machine
+
+Read this before installing. The `dta` launcher starts the toolkit's container
+with Docker's socket, the host's network and the working directory mounted,
+running as you. Access to Docker's socket is equivalent to root on the
+machine: the toolkit uses it to build images and to start and stop the twin's
+own containers, and anything that can run `dta` can do as much. Install the
+plugin only where you would let the agent use Docker.
+
+- A twin's services listen on the loopback address only (`127.0.0.1`), behind
+  one API token; nothing is published to the network.
+- Secrets (source credentials, the token, the store's password) live in the
+  workspace's `.env`, which the toolkit never prints, never puts into an
+  export and reads values of by name only.
+- A twin calls the real system only through actions you declared and signed,
+  and only when the executors add-on is switched on in the contract.
 
 ### First use
 
@@ -544,9 +565,38 @@ docker compose -p dta-store-dev --env-file .env -f packages/core/tests/store/com
 The testbed is a separate project with its own environment; see
 `testbed/README.md`.
 
+### Releasing a version
+
+The version is in five places that tests hold together: `bin/VERSION` (the
+image tags the launcher builds and runs), `.claude-plugin/plugin.json`, the
+three packages' `pyproject.toml`, and the default of `runtime.image` in the
+manifest's models. Change them together. A plugin installed from a
+marketplace stays on the copy it has until the version in `plugin.json`
+changes, so a change that users should get needs a new version.
+
 Secrets are read only from environment variables. A process that needs a
 variable that is missing stops at startup and names it.
+
+## Known limits
+
+- Linux only (see Install).
+- The reference twin in `testbed/` does not meet two of its own questions
+  under stress, and says so: it names the zone of a 20 L/s leak six hours
+  after it began in about three cases of five (the leak is as large as the
+  demand's own variation over that time), and its hydraulic calibration does
+  not follow a 40 % change of pipe roughness within the time its correction
+  allows, after which the twin declares itself failed.
+- A control's `on_failure` is not a safety function: a twin that is stopped or
+  cut off sends nothing.
+- No continuous integration is set up: the whole suite needs Docker, a Dolt
+  and a PostgreSQL server and about 70 minutes.
 
 ## License
 
 Apache License 2.0; see `LICENSE`.
+
+The repository contains no third-party code. The images built on your machine
+install the project's Python dependencies from the package index under their
+own licences: mostly permissive (MIT, BSD, Apache-2.0), some under the Mozilla
+Public License 2.0 (among them `certifi`, `orjson`, `tqdm`), and
+`psycopg2-binary` under the LGPL.

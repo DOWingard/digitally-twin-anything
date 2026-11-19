@@ -10,6 +10,7 @@ The last column says whether the user must be asked. "No" means fix it yourself 
 
 | The last line says | Meaning | What to do | Ask the user? |
 |---|---|---|---|
+| `this machine is <system> and the tool runs on Linux only` | The plugin is tested on Linux only; on other systems Docker runs containers in a virtual machine, where the tool cannot reach a twin the way it does on Linux. | Tell the user it needs a Linux machine (a Linux server or virtual machine with Docker works). Do not set `DTA_UNSUPPORTED_OS` unless the user asks to try it untested. | Yes. |
 | `docker is not installed or not on the PATH` | Docker is not on this machine, or not where the shell finds it. | Ask the user to install Docker: the engine, its command line and the buildx plugin (Docker Desktop has all three). | Yes. |
 | `the docker daemon is not reachable` | Docker is installed but its daemon is not running, or not at the socket the line names. | Ask the user to start Docker, then run the command again. | Yes. |
 | `docker refuses this user` | The user's account may not use Docker's socket. | Tell the user the line: they add their account to the socket's group (often `sudo usermod -aG docker "$USER"`, then log in again) or use rootless Docker. Never run `dta` with `sudo`. | Yes. |

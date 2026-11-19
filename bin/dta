@@ -33,6 +33,8 @@
 #   DTA_REBUILD        1: build both images again, even when present (after a
 #                      change to the sources); not together with
 #                      DTA_TOOLKIT_IMAGE
+#   DTA_UNSUPPORTED_OS 1: run on a system other than Linux, where it is refused
+#                      otherwise because it has not been tested there
 #   DTA_HOME           the directory to mount instead of the working directory;
 #                      it must contain the working directory
 #   DTA_MOUNTS         more absolute directories, separated by colons, mounted
@@ -256,7 +258,17 @@ if [ "$subcommand" = install-skill ] && [ -z "$help" ]; then
 	fi
 fi
 
-# -- docker and the images --------------------------------------------------------
+# -- the machine, docker and the images -------------------------------------------
+
+# The toolkit reaches a twin's API on the host's loopback address through the
+# host's network, and writes as the caller through bind mounts: what Docker
+# gives a container on Linux, and not through the virtual machine of Docker
+# Desktop on other systems.
+system=$(uname -s 2>/dev/null) || system=unknown
+if [ "$system" != Linux ] && [ "${DTA_UNSUPPORTED_OS:-}" != 1 ]; then
+	refuse "$EX_UNAVAILABLE" "this machine is $system and the tool runs on Linux only:" \
+		"use a Linux machine, or set DTA_UNSUPPORTED_OS=1 to try it untested"
+fi
 
 command -v docker >/dev/null 2>&1 ||
 	refuse "$EX_UNAVAILABLE" "docker is not installed or not on the PATH: install Docker" \
