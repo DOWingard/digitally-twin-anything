@@ -22,16 +22,106 @@ by backtest, questions whose accuracy the twin measures, and what-if
 scenarios. A live twin checks its own fidelity, corrects itself or says that
 it failed, and can act on the real system through typed actions and control
 loops. A twin can be exported into one file and imported on another host
-with the same history. The plugin (`plugin/`) carries the skill by which an
-agent builds a twin, and a launcher that runs the toolkit from its image.
+with the same history. The repository is itself the agent plugin: it carries
+the skill by which an agent builds a twin, and a launcher that runs the
+toolkit from its image.
+
+## Install
+
+The repository's root is a Claude Code plugin, and a marketplace that lists
+it. The plugin gives the agent the `build-twin` skill and the `dta` command;
+`dta` runs the toolkit in a container, so no Python is needed on the machine.
+
+Requirements:
+
+- Docker: the engine, running, and its command line with the buildx plugin
+  (Docker Desktop has both; on Linux, the `docker-buildx-plugin` package or
+  your distribution's equivalent). The user who runs the agent must be allowed
+  to use Docker's socket. Compose is not needed on the machine itself: the
+  toolkit's image carries its own docker client with compose.
+- A POSIX shell (`sh`) and the usual command line tools.
+- For the first use, network access to Docker Hub (`registry-1.docker.io`,
+  `auth.docker.io`, `production.cloudfront.docker.com`) and the Python package
+  index (`pypi.org`, `files.pythonhosted.org`), and about 2 GB of free disk.
+
+Add the plugin from a clone of this repository:
+
+```sh
+git clone <this repository> digitally-twin-anything
+
+# for one session
+claude --plugin-dir ./digitally-twin-anything
+
+# or for good, through the repository's marketplace
+claude plugin marketplace add ./digitally-twin-anything
+claude plugin install digitally-twin-anything@digitally-twin-anything
+```
+
+Inside a session, `/plugin marketplace add <path>` and `/plugin install
+digitally-twin-anything@digitally-twin-anything` do the same. A marketplace
+added from a local path loads the plugin in place, so a `git pull` in the
+clone takes effect at the next session. Once the repository is hosted on
+GitHub, `<owner>/<repo>` replaces the path.
+
+### First use
+
+The images are built on your machine, not downloaded ready-made. The first
+`dta` command, whatever it is, builds `dta-toolkit:<version>` (the toolkit)
+and `dta-runtime:<version>` (what a twin's own services run from), the
+version being `bin/VERSION`, then runs. The agent says so and waits; you see
+docker's progress on standard error, and all of it goes to
+`~/.local/state/dta/build.log` (`$XDG_STATE_HOME/dta/build.log` when that is
+set). Commands started while it builds wait for it instead of building again.
+
+Measured on one machine:
+
+| What | Measured |
+|---|---|
+| Downloads of a first build | about 0.6 GB: two base images (110 MB) and the Python packages of both images |
+| A first build | 49 s on a fast connection with the base images already present; expect several minutes on an ordinary one |
+| A build of unchanged sources with docker's layer cache | about 2 s for both |
+| Size | `dta-toolkit` 712 MB and `dta-runtime` 1.21 GB as docker lists them; 1.8 GB on disk together, since they share their 120 MB base |
+| Time the launcher adds to every later command | about 30 ms before the container starts, the check for the two images included |
+
+The builds need only the repository's committed files; local files of a clone
+(`.env`, environments, caches, notes, tests) never enter the build. Base
+images are pinned by digest and Python packages by the lock file; the one
+thing fetched at its newest version is the build backend of the project's own
+packages.
+
+To build both images again, after changing the sources or to start over:
+
+```sh
+DTA_REBUILD=1 ./digitally-twin-anything/bin/dta status
+```
+
+To remove them (a later `dta` command builds them again):
+
+```sh
+docker image rm dta-toolkit:0.1.0 dta-runtime:0.1.0
+```
+
+Docker keeps the layers it built in its build cache (`docker builder du`
+shows how much); `docker builder prune` empties that cache, for every project
+on the machine, not this one alone. Twins you built have their own containers,
+volumes and images: `dta down --destroy-data` in a twin's workspace removes
+them.
+
+`bin/dta` documents every variable it reads in its header; `DTA_TOOLKIT_IMAGE`
+runs an image of your choosing instead, which is then never built.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
+| `.claude-plugin` | The plugin's manifest and the marketplace that lists it |
+| `bin/dta` | The launcher: builds the two images when they are absent, then runs the toolkit's image on the working directory |
+| `skills/build-twin` | The skill by which an agent builds, accepts and hands over a twin |
+| `tests/plugin` | Tests of the launcher (against real docker) and of the skill's texts against the tool |
 | `packages/core` | Shared library: structured logging, environment configuration, the manifest schema and its checks, ontology loading (LinkML), the versioned store, the connector protocol |
 | `packages/toolkit` | The `dta` command line tool: manifest checks, the gate each build stage ends in, delegated tasks, the twin's container stack derived from its manifest, build, acceptance and the operator skill |
 | `packages/runtime` | What runs inside a twin's stack: installing and opening a twin, reading its sources, loading them into the graph and keeping it in step with them, the HTTP API, the scheduler, the worker that runs functions and models, training frames, the shipped model families, scenarios and the browser UI |
+| `docker/toolkit.Dockerfile` | Image of the toolkit, with a docker client and its compose and buildx plugins |
 | `docker/runtime.Dockerfile` | Image of the twin's services: one image, one command per service |
 | `testbed` | A simulated water utility used as the standing test target, with the definitions of two reference twins: `testbed/twin` (static) and `testbed/twin-live` (live, with forecasts and a hydraulic model of its own in `testbed/twin-live/code`) |
 | `spikes/storage` | Benchmark that selected Dolt as the versioned store |
@@ -415,6 +505,12 @@ docker compose -p dta-store-dev --env-file .env -f packages/core/tests/store/com
   after changing `packages/core` or `packages/runtime`.
 - The UI tests drive headless Chrome through Selenium, on loopback ports
   18720 to 18739, and are skipped when Chrome is not installed.
+- The launcher's tests (`tests/plugin/launcher`) run the toolkit's image named
+  by `DTA_TEST_TOOLKIT_IMAGE` (default `dta-toolkit:main`) and the runtime's by
+  `DTA_TEST_RUNTIME_IMAGE` (default `dta-runtime:main`). Their first-use tests
+  run copies of the plugin with versions of their own, build
+  `dta-toolkit:0.0.0-firstuse-<random>` and `dta-runtime:0.0.0-firstuse-<random>`
+  with docker's layer cache, and remove exactly those tags.
 
 The testbed is a separate project with its own environment; see
 `testbed/README.md`.

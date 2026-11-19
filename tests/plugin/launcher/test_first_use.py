@@ -49,7 +49,7 @@ class Plugin:
 
 
 def _version() -> str:
-    return f"0.0.0-m9ftest-{secrets.token_hex(4)}"
+    return f"0.0.0-firstuse-{secrets.token_hex(4)}"
 
 
 def _env(home: Path, **extra: str) -> dict[str, str]:
