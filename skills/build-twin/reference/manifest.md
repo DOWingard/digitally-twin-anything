@@ -189,6 +189,7 @@ Predictive models.
 | `models.<model>.candidates.<candidate>.family` | text | yes | agent |  | Model family |
 | `models.<model>.candidates.<candidate>.params` | map of name to any value | no | agent |  | Fixed settings of the family |
 | `models.<model>.features` | list of text | no | agent |  | Ontology properties used as inputs |
+| `models.<model>.reads` | list of text | no | agent |  | Every observed property a prediction of this model reads from the twin, other than its features, as Type.property |
 | `models.<model>.backtest` | section | yes | agent |  | How candidates are evaluated |
 | `models.<model>.backtest.scheme` | one of `walk_forward` | no | agent | `walk_forward` | Evaluation scheme |
 | `models.<model>.backtest.initial_window` | duration (ISO 8601, such as `PT15M`) | yes | agent |  | History used before the first forecast |

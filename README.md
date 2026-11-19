@@ -394,18 +394,26 @@ then observed, and is in one state: `unknown` (no check yet), `healthy`,
 - **Stale data, stuck and biased signals.** A question whose data is older
   than its staleness opens an incident. An observed signal that used to change
   and stopped while its source kept delivering is called stuck when a run
-  without a change that long has probability below 1e-7 under its own history
-  (a smooth signal, whose changes keep their sign, is not judged by its run:
+  without a change that long has probability below 1e-7 under its own history.
+  A smooth signal, whose changes keep their sign, is not judged by its run:
   after 3 intervals without a change it is stuck when its reading lies more
-  than half the tolerance from the forecast of the question that infers it,
-  made once from its last change); one whose residual shifts by at least ε against every model of its property
-  is called biased. A suspect signal's readings are kept on its record and not
-  written to the object; the value in force is the twin's own estimate,
-  forecast once from what was observed before the flag and marked as inferred.
-  Past the horizon of the question that infers it, or when the estimate is not
-  finite or outside the signal's range, the value is unknown: an answer that
-  needs it is refused with `fidelity.input_unknown`, naming the signal, until
-  the signal is sound again.
+  than half the tolerance from the twin's own forecast made from its last
+  change. A signal whose residual shifts by at least ε against every model of
+  its property is called biased.
+- **The value of a suspect signal.** Its readings are kept on its record and
+  not written to the object; the value in force is the twin's own estimate,
+  marked as inferred: the forecast of a question of that property, from the
+  newest version at which everything the model reads was observed. An
+  estimate never rests on an estimate. A model that does not read the signal
+  is forecast again at every check. One that reads it is forecast once, by the
+  question with the longest horizon; past that horizon, or when the estimate
+  is not finite or outside the signal's range, the value is unknown, and an
+  answer or an action that needs it is refused with `fidelity.input_unknown`,
+  naming the signal, until the signal is sound again. A model's own code says
+  what its predictions read in `models.<id>.reads`; a code model that does not
+  say is taken to read everything. Forecasts that started from a frozen, an
+  inferred or an unknown value are not scored, so a failed sensor opens no
+  breach and starts no correction of a model.
 - **Actions.** The manifest declares what may be done to the real system: an
   action type with typed parameters, the control it carries out with its
   bounds and autonomy (`advisory`, `supervised`, `autonomous`), and an HTTP
