@@ -9,6 +9,7 @@ from dta_core.log import Log
 from dta_core.manifest.checks import subject_of
 
 from ..output import command, emit, session
+from ..runtimecheck import require_image_reads
 from ..stack import Stack
 from ..workspace import Workspace
 from .common import require_complete_env, timed
@@ -45,7 +46,11 @@ def up(
     ] = None,
 ) -> None:
     """Start the stack's services and wait until they are healthy."""
-    stack = _stack(session(ctx).workspace)
+    current = session(ctx)
+    manifest = current.workspace.load_manifest()
+    stack = Stack(current.workspace, manifest)
+    require_complete_env(stack)
+    require_image_reads(current, stack, manifest)
     with timed(log, "stack up", services=services or "all"):
         stack.up(*(services or []))
     state = stack.services()

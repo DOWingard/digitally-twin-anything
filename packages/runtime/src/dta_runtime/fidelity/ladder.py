@@ -10,12 +10,18 @@ A breach incident climbs a ladder, one step per check:
 
 A rung that is not allowed is passed over. A step that is refused, or that put a
 model in place whose origins then miss the tolerance, moves the incident on: the
-next attempt at rung 1, rung 3 after rung 2. When the ladder runs out (rung 3 passed
-over, or a rung 2 after a re-model came to nothing) the cycle ends: the next one
-starts again at rung 1 on newer data, and a cycle beyond retry_budget fails the
-incident. While a correction is pending, or the model it put in place has fewer
-than three origins, the incident waits. `attempt` counts the tries at the current
-rung: rung 2 starts at 0, and a re-model brings it back at 1.
+next attempt at rung 1, rung 3 after rung 2. Rungs 1 and 2 make a cycle. When a cycle
+has spent them it ends, asking for the re-model the first time (rung 3); cycle c >= 2
+starts on newer data g * 2^(c-2) after the previous one ended, g being retry_backoff
+(the fidelity interval when it is not set), while c <= retry_budget. The re-model
+request stays open while those cycles run: a cycle whose model holds resolves the
+incident, a model the agent registered or changed brings rung 2 back, and only
+remodel_timeout fails an incident whose request is open, however many cycles were
+spent. Without a request open, a cycle beyond retry_budget fails the incident. While a
+correction is pending, or the model it put in place has fewer than three origins, the
+incident waits. `attempt` counts the tries at the current rung: rung 2 starts at 0, and
+a re-model brings it back at 1. `due` is the instant the next cycle starts, once the
+current one has ended.
 
 Resolution: three or more origins at or after the cut whose mean error is within the
 tolerance. The cut is the end of the data of the model a correction put in place; with
@@ -27,7 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from dta_core.manifest.models import Correction
@@ -78,6 +84,10 @@ class Position:
     # Cycles begun before the latest retry. A retry starts again at cycle 1, but the
     # keys of the corrections it asks for count on from here, so none is used twice.
     offset: int = 0
+    # When cycle + 1 starts: set once the current cycle has spent its rungs.
+    due: datetime | None = None
+    # No further cycle is left, and the incident waits on its re-model request.
+    spent: bool = False
 
     @property
     def key_cycle(self) -> int:
@@ -118,19 +128,58 @@ def failed_rung(position: Position) -> Position:
     return replace(position, rung=3, awaiting=None, pending=None)
 
 
-def _take(position: Position, settings: Correction, now: datetime, logged: list) -> Step:
+def spacing_of(settings: Correction, interval: timedelta) -> timedelta:
+    """g: the wait after cycle 1 before cycle 2, doubled for each cycle after it."""
+    return settings.retry_backoff if settings.retry_backoff is not None else interval
+
+
+def cycle_start(ended: datetime, cycle: int, spacing: timedelta) -> datetime:
+    """When cycle `cycle` (>= 2) starts, its previous cycle having ended at `ended`."""
+    return ended + spacing * (2 ** (cycle - 2))
+
+
+def _has_rungs(settings: Correction) -> bool:
+    """Whether a cycle holds any step: without rung 1 or 2 there is nothing to run again."""
+    return settings.recalibrate_attempts > 0 or settings.reselect
+
+
+def _last_cycle(position: Position, settings: Correction) -> bool:
+    return position.cycle + 1 > settings.retry_budget or not _has_rungs(settings)
+
+
+def _take(
+    position: Position, settings: Correction, now: datetime, logged: list, spacing: timedelta
+) -> Step:
     """The next step from a position with nothing pending or awaited."""
     current = position
+    asked = False
+    if current.spent:
+        return Step(current, None, logged)
     while True:
+        if current.due is not None:
+            if now < current.due:
+                return Step(current, None, logged, remodel_requested=asked)
+            cycle = current.cycle + 1
+            logged.append({"action": "cycle", "cycle": cycle})
+            current = replace(
+                current, rung=1, attempt=0, cycle=cycle, after_remodel=False, due=None
+            )
         if current.rung == 1:
             if current.attempt < settings.recalibrate_attempts:
-                return Step(current, (1, current.attempt, current.key_cycle), logged)
+                request = (1, current.attempt, current.key_cycle)
+                return Step(current, request, logged, remodel_requested=asked)
             current = replace(current, rung=2, attempt=0)
         if current.rung == 2:
             if settings.reselect:
-                return Step(current, (2, current.attempt, current.key_cycle), logged)
+                request = (2, current.attempt, current.key_cycle)
+                return Step(current, request, logged, remodel_requested=asked)
             current = replace(current, rung=3)
-        if settings.agent_remodel and not current.after_remodel:
+        # The cycle has spent rungs 1 and 2.
+        if (
+            settings.agent_remodel
+            and current.status != REMODEL_REQUESTED
+            and not current.after_remodel
+        ):
             current = replace(current, status=REMODEL_REQUESTED, requested_at=now)
             logged.append(
                 {
@@ -138,13 +187,19 @@ def _take(position: Position, settings: Correction, now: datetime, logged: list)
                     "timeout_s": settings.remodel_timeout.total_seconds(),
                 }
             )
-            return Step(current, None, logged, remodel_requested=True)
+            asked = True
         cycle = current.cycle + 1
-        if cycle > settings.retry_budget:
+        if _last_cycle(current, settings):
+            if current.status == REMODEL_REQUESTED:
+                # Only the re-model's timeout fails an incident whose request is open.
+                if _has_rungs(settings):
+                    logged.append({"action": "cycles_spent", "cycles": current.cycle})
+                return Step(replace(current, spent=True), None, logged, remodel_requested=asked)
             logged.append({"action": "failed", "reason": "retry_budget", "cycles": current.cycle})
             return Step(replace(current, status=FAILED, failed_at=now), None, logged)
-        logged.append({"action": "cycle", "cycle": cycle})
-        current = replace(current, rung=1, attempt=0, cycle=cycle, after_remodel=False)
+        due = cycle_start(now, cycle, spacing)
+        logged.append({"action": "cycle_ended", "cycle": current.cycle, "next_cycle": cycle})
+        current = replace(current, due=due)
 
 
 def next_step(
@@ -155,9 +210,11 @@ def next_step(
     now: datetime,
     tolerance: float,
     remodelled: bool,
+    interval: timedelta,
 ) -> Step:
-    """One check's step for a breach incident, given the evidence at its cut and whether
-    a model of its specification was registered or changed since a re-model request."""
+    """One check's step for a breach incident, given the evidence at its cut, whether a
+    model of its specification was registered or changed since a re-model request, and
+    the fidelity interval (the spacing of cycles when retry_backoff is not set)."""
     logged: list[dict[str, Any]] = []
     if position.status == RESOLVED:
         return Step(position)
@@ -171,7 +228,20 @@ def next_step(
     if holds:
         action = "held" if current.awaiting is not None else "recovered"
         logged.append({"action": action, "n": found.n, "error": found.error})
-        return Step(replace(current, status=RESOLVED, pending=None), None, logged)
+        return Step(replace(current, status=RESOLVED, pending=None, due=None), None, logged)
+    if current.status == REMODEL_REQUESTED and not remodelled:
+        assert current.requested_at is not None
+        if now - current.requested_at >= settings.remodel_timeout:
+            logged.append(
+                {
+                    "action": "failed",
+                    "reason": "remodel_timeout",
+                    "timeout_s": settings.remodel_timeout.total_seconds(),
+                }
+            )
+            # A correction of a further cycle still running is no longer waited for.
+            failed = replace(current, status=FAILED, failed_at=now, pending=None, due=None)
+            return Step(failed, None, logged)
     if current.awaiting is not None:
         if holds is None:
             return Step(current)
@@ -181,38 +251,30 @@ def next_step(
         current = failed_rung(current)
     if current.pending is not None:
         return Step(current, None, logged)
-    if current.status == REMODEL_REQUESTED:
-        assert current.requested_at is not None
-        if remodelled:
-            logged.append({"action": "remodelled"})
-            # The second attempt at rung 2: its key must differ from the one the cycle
-            # took before the re-model, or the job would not run again.
-            current = replace(
-                current,
-                status=OPEN,
-                rung=2,
-                attempt=current.attempt + 1,
-                after_remodel=True,
-                requested_at=None,
-            )
-        elif now - current.requested_at >= settings.remodel_timeout:
-            logged.append(
-                {
-                    "action": "failed",
-                    "reason": "remodel_timeout",
-                    "timeout_s": settings.remodel_timeout.total_seconds(),
-                }
-            )
-            return Step(replace(current, status=FAILED, failed_at=now), None, logged)
-        else:
-            return Step(current, None, logged)
-    return _take(current, settings, now, logged)
+    if current.status == REMODEL_REQUESTED and remodelled:
+        logged.append({"action": "remodelled"})
+        # The second attempt at rung 2: its key must differ from the one the cycle may
+        # have taken before the re-model, or the job would not run again. A cycle has at
+        # most one re-model, as only a cycle without one makes a request.
+        current = replace(
+            current,
+            status=OPEN,
+            rung=2,
+            attempt=1,
+            after_remodel=True,
+            requested_at=None,
+            due=None,
+            spent=False,
+        )
+    return _take(current, settings, now, logged, spacing_of(settings, interval))
 
 
 def answered(position: Position, *, accepted: bool, fitted_to: datetime | None) -> Position:
-    """The incident once the pending correction has been reported back."""
+    """The incident once the pending correction has been reported back; an open re-model
+    request stays open."""
     if accepted:
-        return replace(position, status=OPEN, awaiting=fitted_to, pending=None)
+        status = REMODEL_REQUESTED if position.status == REMODEL_REQUESTED else OPEN
+        return replace(position, status=status, awaiting=fitted_to, pending=None)
     return failed_rung(position)
 
 

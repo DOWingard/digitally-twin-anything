@@ -77,6 +77,7 @@ def incident_rows(found: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
             incident["rung"],
             incident["attempt"],
             incident["cycle"],
+            T.time_text(incident["detail"].get("next_cycle_at")),
             T.time_text(incident["opened_at"]),
             T.time_text(incident["resolved_at"]),
         )
@@ -93,6 +94,7 @@ def shown_incidents(rows: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
             row["rung"],
             row["attempt"],
             row["cycle"],
+            row["next_cycle_at"],
             row["opened_at"],
             row["resolved_at"],
         )
@@ -287,8 +289,8 @@ def test_an_incident_shows_its_steps_and_what_a_remodel_request_waits_for(fideli
     assert [row[1] for row in steps] == [step["action"] for step in found["steps"]]
     assert [row[0] for row in steps] == [T.time_text(step["at"]) for step in found["steps"]]
     opened = found["steps"][0]["error"]
-    assert steps[0][4:] == ["", T.measure_text(opened, "m")]
-    assert steps[1][2:] == [
+    assert steps[0][4:6] == ["", T.measure_text(opened, "m")]
+    assert steps[1][2:6] == [
         "recalibrate, attempt 0, cycle 1",
         "asked for",
         T.measure_text(opened, "m"),
@@ -298,6 +300,14 @@ def test_an_incident_shows_its_steps_and_what_a_remodel_request_waits_for(fideli
     assert steps[3][2] == "reselect, attempt 0, cycle 1"
     assert steps[4][2:4] == ["reselect", "not accepted"]
     assert steps[5][2:4] == ["asked the managing agent to re-model", "waits at most 2 h"]
+    # The cycle of each step and when the next cycle is due, as the record says.
+    assert [row[6:8] for row in steps] == [
+        [
+            "" if step.get("cycle") is None else str(step["cycle"]),
+            T.time_text(step.get("next_cycle_at")),
+        ]
+        for step in found["steps"]
+    ]
 
     resolved = served.every("/fidelity/incidents", status="resolved")[0]
     click_row(browser, ids.INCIDENTS_GRID, resolved["uid"], "kind")

@@ -84,6 +84,14 @@ SUPERVISED = "supervised"
 AUTONOMOUS = "autonomous"
 EXECUTOR = "executor"
 
+# Where a record came from, as its source tells: a control's fail-safe (`failsafe:<control>`),
+# a control loop's run (the loop's uid) or anyone else's proposal.
+FAILSAFE_PREFIX = "failsafe:"
+FAILSAFE_ORIGIN = "failsafe"
+LOOP_ORIGIN = "loop"
+PROPOSAL_ORIGIN = "proposal"
+ORIGINS = (FAILSAFE_ORIGIN, LOOP_ORIGIN, PROPOSAL_ORIGIN)
+
 # A record named by a caller's key gets this many hexadecimal characters of its hash.
 ID_LENGTH = 32
 _DURATION = TypeAdapter(timedelta)
@@ -113,6 +121,28 @@ def record_uid(record_id: str) -> str:
 def bare(uid: str | None) -> str | None:
     """A uid without its scope."""
     return None if uid is None else uid.split(":", 1)[-1]
+
+
+def origin_of(source: Any) -> str:
+    """`failsafe`, `loop` or `proposal`: where a record with this source came from."""
+    text = source if isinstance(source, str) else ""
+    if text.startswith(FAILSAFE_PREFIX):
+        return FAILSAFE_ORIGIN
+    if text.startswith(f"{LOOP_SCOPE}:"):
+        return LOOP_ORIGIN
+    return PROPOSAL_ORIGIN
+
+
+def origin_filter(origin: str) -> list[tuple[str, str, Any]]:
+    """The store's filter on `source` that keeps the records of one origin."""
+    failsafe, loop = f"{FAILSAFE_PREFIX}%", f"{LOOP_SCOPE}:%"
+    if origin == FAILSAFE_ORIGIN:
+        return [("source", "like", failsafe)]
+    if origin == LOOP_ORIGIN:
+        return [("source", "like", loop)]
+    if origin == PROPOSAL_ORIGIN:
+        return [("source", "not_like", failsafe), ("source", "not_like", loop)]
+    raise ValueError(f"no origin {origin!r}; one of {', '.join(ORIGINS)}")
 
 
 def keyed_id(key: str) -> str:
@@ -177,6 +207,7 @@ def record_document(uid: str, values: Mapping[str, Any]) -> dict[str, Any]:
         "params": from_json(values.get("params"), {}),
         "reason": values.get("reason"),
         "source": values.get("source"),
+        "origin": origin_of(values.get("source")),
         "proposed_at": utc(values.get("proposed_at")),
         "at_version": values.get("at_version"),
         "fidelity": values.get("fidelity"),

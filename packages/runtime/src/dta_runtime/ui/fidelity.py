@@ -314,6 +314,7 @@ def incident_row(incident: dict[str, Any]) -> dict[str, Any]:
         "rung": incident.get("rung"),
         "attempt": incident.get("attempt"),
         "cycle": incident.get("cycle"),
+        "next_cycle_at": T.time_text((incident.get("detail") or {}).get("next_cycle_at")),
         "opened_at": T.time_text(incident.get("opened_at")),
         "resolved_at": T.time_text(incident.get("resolved_at")),
     }
@@ -422,6 +423,8 @@ def steps_table(steps: list[dict[str, Any]], unit: str | None) -> html.Table:
                     html.Td(T.step_outcome(step)),
                     html.Td(error_cell(before, unit)),
                     html.Td(error_cell(after, unit)),
+                    html.Td("" if step.get("cycle") is None else str(step["cycle"])),
+                    html.Td(T.time_text(step.get("next_cycle_at"))),
                 ],
                 className=f"step step-{step.get('action')}",
             )

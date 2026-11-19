@@ -384,8 +384,15 @@ class _Bytes:
         return chunk
 
 
-def synthetic_bundle(base: Path, twin_id: str | None = None) -> Path:
-    """A well-formed bundle of the kit's twin, made without a stack: for the refusals."""
+def synthetic_bundle(
+    base: Path,
+    twin_id: str | None = None,
+    change: Callable[[dict[str, Any]], None] | None = None,
+) -> Path:
+    """A well-formed bundle of the kit's twin, made without a stack: for the refusals.
+
+    `change` edits its manifest before it is packed.
+    """
     twin_id = twin_id or f"{ID_PREFIX}{secrets.token_hex(4)}"
     staging = base / "staging"
     workspace = staging / bundles.WORKSPACE
@@ -393,6 +400,8 @@ def synthetic_bundle(base: Path, twin_id: str | None = None) -> Path:
     (workspace / "ontology").mkdir()
     manifest = kit.manifest(twin_id)
     manifest["runtime"]["image"] = RUNTIME_IMAGE
+    if change is not None:
+        change(manifest)
     (workspace / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), "utf-8")
     (workspace / "ontology" / "plant.yaml").write_text(kit.ONTOLOGY, "utf-8")
     state = State(created_at=datetime(2026, 11, 1, tzinfo=UTC))

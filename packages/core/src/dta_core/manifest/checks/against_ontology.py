@@ -9,11 +9,14 @@ time what would otherwise surface as rejected rows during the first load.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Any
 
 from ...functions import BUILTINS, Builtin, ParamKind, shape_problem
 from ...log import Log
 from ...schema import UID_FIELD, Kind, Ontology, Role
 from ..models import Manifest
+from .failsafe import INVALID as FAILSAFE
+from .failsafe import failsafe_actions, target_type_of
 from .filters import (
     clause_problem,
     edge_clause_problem,
@@ -47,6 +50,7 @@ CODES = (
     UNIT,
     FUNCTION_PARAM,
     ACTION_PRECONDITION,
+    FAILSAFE,
 )
 _NUMERIC = (Kind.integer, Kind.float)
 
@@ -238,6 +242,59 @@ def _function_findings(
                     break
 
 
+def _kind_problem(ontology: Ontology, field: Any, value: Any) -> str | None:
+    """Why a value cannot be held by a property; None when it can."""
+    number = isinstance(value, int | float) and not isinstance(value, bool)
+    if field.kind == Kind.float and not number:
+        return f"{field.name} holds numbers, not {value!r}"
+    if field.kind == Kind.integer and not (number and float(value).is_integer()):
+        return f"{field.name} holds whole numbers, not {value!r}"
+    if field.kind == Kind.boolean and not isinstance(value, bool):
+        return f"{field.name} holds true or false, not {value!r}"
+    if field.kind == Kind.string and not isinstance(value, str):
+        return f"{field.name} holds text, not {value!r}"
+    if field.kind == Kind.enum:
+        choices = ontology.enums.get(field.target or "", ())
+        if not isinstance(value, str) or (choices and value not in choices):
+            return f"{field.name} holds one of {', '.join(choices)}, not {value!r}"
+    return None
+
+
+def _failsafe_problems(view: ManifestView, ontology: Ontology) -> Iterator[tuple[str, str]]:
+    """A fail-safe action has to act on every concrete type its control sets, and a value it
+    sends to a control has to be one the control's property can hold."""
+    for cid, control, action_id, action in failsafe_actions(view):
+        base = f"contract.controls.{cid}.on_failure"
+        where = f"{base}.action" if control.on_failure and control.on_failure.action else base
+        wanted = split_ref(control.target)[0] if control.target else None
+        acts_on = target_type_of(view, action)
+        if not wanted or not acts_on:
+            continue
+        covered, members = _concrete(ontology, acts_on), _concrete(ontology, wanted)
+        if covered is None or members is None:
+            continue  # an unknown type is reported on its own
+        outside = [name for name in members if name not in covered]
+        if outside:
+            yield (
+                where,
+                f"action '{action_id}' acts on {acts_on}, which does not cover "
+                f"{', '.join(outside)} that control '{cid}' sets",
+            )
+            continue
+        value = (control.on_failure.parameters if control.on_failure else {}).get("value")
+        carried = view.controls.get(action.control) if action.control else None
+        if value is None or carried is None or not carried.target:
+            continue
+        type_name, prop = split_ref(carried.target)
+        for member in _concrete(ontology, type_name) or ():
+            if not ontology.type(member).has_field(prop):
+                continue
+            problem = _kind_problem(ontology, ontology.type(member).field(prop), value)
+            if problem is not None:
+                yield f"{base}.parameters.value", problem
+                break
+
+
 def ontology_findings(manifest: Manifest, ontology: Ontology, signature: str) -> list[Finding]:
     """What in the manifest does not fit the ontology.
 
@@ -275,6 +332,9 @@ def ontology_findings(manifest: Manifest, ontology: Ontology, signature: str) ->
             f"functions.{fid}", builtin, function.params, ontology
         ):
             report(code, path, message)
+
+    for path, message in _failsafe_problems(view, ontology):
+        report(FAILSAFE, path, message)
 
     for aid, action in sorted(view.actions.items()):
         if action.object_type and _concrete(ontology, action.object_type) is None:

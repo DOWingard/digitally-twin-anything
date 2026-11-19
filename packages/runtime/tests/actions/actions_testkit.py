@@ -105,6 +105,7 @@ def manifest_document(ontology: str) -> dict[str, Any]:
                     "bounds": {"allowed": [True, False]},
                     "autonomy": "autonomous",
                     "action": "set_pump",
+                    "on_failure": {"mode": "hold"},
                 },
                 "valve_setting": {
                     "description": "Loss coefficient of a valve",

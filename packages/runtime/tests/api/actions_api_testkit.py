@@ -190,7 +190,9 @@ def acting_document(
     executors: bool = True,
     fidelity_section: bool = True,
     retry_budget: int = 1,
+    changes: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
+    """The manifest of the twin; `changes` is given the document last, to change it."""
     document = manifest_document(text)
     contract = document["contract"]
     contract["addons"] = {"executors": executors}
@@ -244,6 +246,8 @@ def acting_document(
         "garbled": {"controls": ["pump_running"], "policy": "bad_policy", "interval": "PT1H"},
     }
     document["sources"] = {"telemetry": speeds_source(telemetry)}
+    if changes is not None:
+        changes(document)
     return document
 
 
@@ -539,6 +543,7 @@ def serve_acting(
     worker: bool = True,
     register: bool = True,
     retry_budget: int = 1,
+    changes: Callable[[dict[str, Any]], None] | None = None,
 ) -> Iterator[Acting]:
     """Install the twin, observe its network at step 1, and serve its API, a worker and
     the plant; the code is kept and the registries brought in line with the manifest."""
@@ -551,6 +556,7 @@ def serve_acting(
         executors=executors,
         fidelity_section=fidelity_section,
         retry_budget=retry_budget,
+        changes=changes,
     )
     twin = install_twin(
         store, Bundle(manifest=manifest_of(document), ontology_text=text), t=T0

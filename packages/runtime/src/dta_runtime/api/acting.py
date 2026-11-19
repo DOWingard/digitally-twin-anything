@@ -90,9 +90,49 @@ def standing_at(services: Services, head: VersionRef) -> tuple[str, list[dict[st
     return str(found["state"]), incidents
 
 
-def type_document(action: Mapping[str, Any], has_executor: bool) -> dict[str, Any]:
-    """An action type as the routes hand it out: whether the twin could execute it."""
-    return {**action, "executable": gate.executable(action, has_executor)}
+def type_document(
+    action: Mapping[str, Any],
+    has_executor: bool,
+    failures: Mapping[str, dict[str, Any] | None] | None = None,
+) -> dict[str, Any]:
+    """An action type as the routes hand it out: whether the twin could execute it, and
+    what its control sends when the twin fails (from `failures`, by control)."""
+    control = action.get("control")
+    on_failure = (failures or {}).get(control) if isinstance(control, str) else None
+    return {
+        **action,
+        "executable": gate.executable(action, has_executor),
+        "on_failure": on_failure,
+    }
+
+
+def failures_at(services: Services, version: VersionRef) -> dict[str, dict[str, Any] | None]:
+    """The `on_failure` of every control of the manifest at `version`, by control; empty
+    when the manifest cannot be read there."""
+    try:
+        manifest = services.twin.manifest(at=version)
+    except DtaError as exc:
+        log.warn(
+            "the manifest cannot be read at this version; controls are listed without "
+            "what they send on failure",
+            exc=exc,
+            code=exc.code,
+            seq=version.seq,
+        )
+        return {}
+    controls = dict(manifest.contract.controls) if manifest.contract else {}
+    found: dict[str, dict[str, Any] | None] = {}
+    for control_id, control in controls.items():
+        if control.on_failure is None:
+            found[control_id] = None
+            continue
+        document = control.on_failure.model_dump(mode="json", exclude_none=True)
+        # A safe value the manifest sends by the control's own action names it here.
+        sent = control.on_failure.action_of(control.action)
+        if sent:
+            document["action"] = sent
+        found[control_id] = document
+    return found
 
 
 def action_or_404(services: Services, action_id: str, version: VersionRef) -> dict[str, Any]:

@@ -197,9 +197,8 @@ def corrected(
             )
             return _answer(document, None, [])
         rung = ladder.RUNG_NAMES.get(position.pending.rung)
-        updated = records.with_position(
-            document, ladder.answered(position, accepted=result.accepted, fitted_to=fitted_to)
-        )
+        moved = ladder.answered(position, accepted=result.accepted, fitted_to=fitted_to)
+        updated = records.with_position(document, moved)
         detail = dict(updated["detail"])
         detail["last_result"] = {
             "key": request.key,
@@ -221,6 +220,8 @@ def corrected(
                 model=result.model,
                 fitted_to=iso(fitted_to),
                 error=result.error,
+                cycle=moved.cycle,
+                next_cycle_at=iso(moved.due),
             ),
         ]
         version, events = _write(

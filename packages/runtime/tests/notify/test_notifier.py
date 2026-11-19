@@ -92,6 +92,24 @@ def test_the_receiver_sees_a_cloudevent_in_structured_json(log_file: Path) -> No
     assert delivered[0]["data"]["status"] == 204 and delivered[0]["data"]["attempt"] == 1
 
 
+def test_an_event_says_how_urgent_it_is_in_its_severity_attribute() -> None:
+    with webhook() as receiver:
+        sender = notifier(receiver.url)
+        sender.start()
+        try:
+            sender.emit("twin.action.failsafe_failed", "r", {"x": 1}, time=T, severity="critical")
+            sender.emit("twin.test", "s", {}, time=T)
+            first, second = receiver.wait_for(2)
+        finally:
+            sender.close()
+    assert first["severity"] == "critical" and "severity" not in second
+    listed = {found["type"]: found for found in sender.listing()}
+    assert listed["twin.action.failsafe_failed"]["severity"] == "critical"
+    assert listed["twin.test"]["severity"] is None
+    with pytest.raises(ValueError, match="severity"):
+        sender.emit("twin.test", "t", {}, time=T, severity="urgent")
+
+
 def test_events_arrive_in_the_order_they_were_emitted() -> None:
     with webhook() as receiver:
         sender = notifier(receiver.url)

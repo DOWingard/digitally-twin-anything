@@ -11,13 +11,15 @@ Data of the events:
 
     twin.fidelity.incident            {"action": opened | changed | resolved, "incident",
                                        "kind", "subject", "status", "previous_status",
-                                       "rung", "attempt", "cycle", "at", "check"}
+                                       "rung", "attempt", "cycle", "next_cycle_at",
+                                       "at", "check"}
     twin.fidelity.remodel_requested   {"incident", "question", "spec", "requested_at",
                                        "timeout_s", "check"}
     twin.fidelity.state               {"from", "to", "since", "check"}
 
 An incident counts as changed when its status, rung, cycle, awaited fit, re-model
-request or pending correction moved, or, for a breach, its attempt; a stale incident
+request or pending correction moved, or, for a breach, its attempt or the instant its
+next cycle is due; a stale incident
 counting one more stale check, or any incident only noting the latest measurement,
 does not.
 """
@@ -57,8 +59,12 @@ def _notable(document: Mapping[str, Any]) -> tuple[Any, ...]:
         _pending_key(document),
     ]
     if document.get("kind") == BREACH:
-        fields.append(document.get("attempt"))
+        fields += [document.get("attempt"), _next_cycle_at(document)]
     return tuple(fields)
+
+
+def _next_cycle_at(document: Mapping[str, Any] | None) -> str | None:
+    return ((document or {}).get("detail") or {}).get("next_cycle_at")
 
 
 def _order(pair: Pair) -> tuple[int, str, str]:
@@ -103,6 +109,7 @@ def incident_events(
                     "rung": after.get("rung"),
                     "attempt": after.get("attempt"),
                     "cycle": after.get("cycle"),
+                    "next_cycle_at": _next_cycle_at(after),
                     "at": iso(at),
                     "check": check,
                 },

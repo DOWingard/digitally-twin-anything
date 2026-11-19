@@ -440,9 +440,18 @@ def propose_with(
     executor: Executor | None,
     key: str | None,
     tail: Tail | None,
+    interlock: bool = True,
 ) -> dict[str, Any]:
-    """`propose`, with rows of the caller's own put into the version of its last write."""
+    """`propose`, with rows of the caller's own put into the version of its last write.
+
+    With `interlock` false the proposal is executed whatever the autonomy of its control,
+    the state and the incidents, and `executor` must be given: it is what a control sends
+    when the twin can no longer vouch for itself, and a fail-safe that waited for the twin
+    to be trusted again would come too late. The object, the parameters, the bounds and
+    the precondition are still judged; a refusal is still recorded and raised."""
     started = time.perf_counter()
+    if not interlock and executor is None:
+        raise ValueError("an action sent past the interlock needs something to make its call")
     check_state(state)
     unresolved = check_incidents(incidents)
     uid = record_uid(keyed_id(key) if key is not None else new_id())
@@ -540,8 +549,12 @@ def propose_with(
             )
             raise rejected(judged.reasons, record=uid, action=document["id"], object=object_uid)
 
-        decision = gate.on_proposal(
-            document, has_executor=executor is not None, state=state, incidents=unresolved
+        decision = (
+            gate.on_proposal(
+                document, has_executor=executor is not None, state=state, incidents=unresolved
+            )
+            if interlock
+            else gate.EXECUTE
         )
         blocking = [found["uid"] for found in gate.blocking(unresolved)]
         if decision == gate.BLOCK:
@@ -584,7 +597,11 @@ def propose_with(
         else:
             assert executor is not None
             log.info(
-                "proposal cleared to execute; sending it", **context, unresolved=len(unresolved)
+                "proposal cleared to execute; sending it"
+                if interlock
+                else "action sent past the interlock and the autonomy of its control",
+                **context,
+                unresolved=len(unresolved),
             )
             made = _execute(twin, document, made, executor=executor, now=now, tail=tail)
             log.info(

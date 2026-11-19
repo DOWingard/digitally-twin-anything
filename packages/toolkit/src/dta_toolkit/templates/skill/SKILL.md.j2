@@ -128,7 +128,7 @@ At every fidelity interval ({{ fidelity.interval }}) the twin checks itself agai
 Each thing that goes wrong is one incident (`GET /fidelity/incidents?status=unresolved`; `GET /fidelity/incidents/{id}` lists every step taken). The twin works on them itself, at every check; you do not need to start anything:
 
 {% if fidelity.scored %}
-- `breach`: a forecast question whose error over the window is above its tolerance. The twin re-fits the active model on recent data (up to {{ fidelity.recalibrate_attempts }} times){% if fidelity.reselect %}, then makes the best of the specification's candidates active{% endif %}{% if fidelity.agent_remodel %}, then asks the managing agent to revise the model (status `remodel_requested`){% endif %}. After {{ fidelity.retry_budget }} rounds without success the incident is `failed`.
+- `breach`: a forecast question whose error over the window is above its tolerance. The twin re-fits the active model on recent data (up to {{ fidelity.recalibrate_attempts }} times){% if fidelity.reselect %}, then makes the best of the specification's candidates active{% endif %}{% if fidelity.agent_remodel %}, then asks the managing agent to revise the model (status `remodel_requested`){% endif %}. A round without success is followed by another, each after a longer wait ({{ fidelity.retry_backoff }}, then twice as long each time), {{ fidelity.retry_budget }} rounds at most; then the incident is `failed`{% if fidelity.agent_remodel %}, unless its request to revise the model is still open: only {{ fidelity.remodel_timeout }} from the request fails it{% endif %}.
 {% endif %}
 {% if fidelity.stale %}
 - `stale`: a question whose data is older than agreed. It resolves when fresh data arrives, and fails after {{ fidelity.retry_budget }} stale checks in a row.
@@ -141,7 +141,7 @@ Each thing that goes wrong is one incident (`GET /fidelity/incidents?status=unre
 What is yours to do:
 
 {% if remodel %}
-- An incident in status `remodel_requested`, or the notification `twin.fidelity.remodel_requested`: follow `reference/remodel.md`. The twin waits {{ fidelity.remodel_timeout }} for a revised model, then the incident is `failed`.
+- An incident in status `remodel_requested`, or the notification `twin.fidelity.remodel_requested`: follow `reference/remodel.md`. The twin waits {{ fidelity.remodel_timeout }} for a revised model, going on with whatever is left of its own rounds meanwhile (`detail.next_cycle_at` says when the next is due), then the incident is `failed`.
 {% endif %}
 - A `failed` incident: tell the user what failed and since when. `POST /fidelity/incidents/{id}/retry` starts its corrections again; send it only when the user says so.
 - A `signal`{% if executes %} or `reconcile`{% endif %} incident whose cause the user says is mended (a sensor replaced, a reading checked on site): `POST /fidelity/signals/{uid}/clear`{% if executes %} or `POST /fidelity/incidents/{id}/resolve`{% endif %}, with `by` (the user) and `note` (what was done). Only on the user's word.
@@ -154,11 +154,13 @@ What is yours to do:
 
 The user delegated these controls to the twin. Each is carried out by an action type, within bounds, at an autonomy the user chose:
 
-| Control | What it is for | Sets | Bounds | Autonomy | Action |
-|---|---|---|---|---|---|
+| Control | What it is for | Sets | Bounds | Autonomy | Action | When the twin fails |
+|---|---|---|---|---|---|---|
 {% for c in controls %}
-| `{{ c.id }}` | {{ c.description }} | `{{ c.target }}` | {{ c.bounds }} | {{ c.autonomy }} | {{ "`" ~ c.action ~ "`" if c.action else "-" }} |
+| `{{ c.id }}` | {{ c.description }} | `{{ c.target }}` | {{ c.bounds }} | {{ c.autonomy }} | {{ "`" ~ c.action ~ "`" if c.action else "-" }} | {{ c.on_failure }} |
 {% endfor %}
+
+"When the twin fails" is the user's choice of what each control sends, once per failure, to each object the twin commanded under it, past the interlock: `hold` sends nothing, a release hands the object back, a safe value sets a fixed value. Its record has the source `failsafe:<control>` (`GET /actions/records?origin=failsafe`), and it is notified as `twin.action.failsafe`, or `twin.action.failsafe_failed` with severity `critical` when it could not be sent. It is not a safety function: a twin that is not running sends nothing. Never propose an action to undo it.
 
 {% if actions %}
 | Action | What it does | On | Parameters | Effect observable after |

@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import typer
@@ -27,6 +27,8 @@ class Session:
     workspace: Workspace
     json_output: bool
     trace_id: str
+    # The newest manifest version each runtime image reads, as it answered within this command.
+    image_reads: dict[str, int] = field(default_factory=dict)
 
 
 def session(ctx: typer.Context) -> Session:

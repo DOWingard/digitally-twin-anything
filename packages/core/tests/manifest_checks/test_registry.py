@@ -24,6 +24,9 @@ EXPECTED_CODES = {
     "ref.incremental",
     "control.bounds",
     "control.binding",
+    "control.on_failure_missing",
+    "control.on_failure_invalid",
+    "manifest.version_unset",
     "action.executor_addon",
     "action.reserved_header",
     "tier.static_control",
@@ -43,6 +46,7 @@ EXPECTED_CODES = {
     "sync.mapping_invalid",
 }
 WARNINGS = {
+    "manifest.version_unset",
     "ref.env_unused",
     "tier.static_extras",
     "status.stale",

@@ -9,7 +9,7 @@ import typer
 from dta_core.errors import DtaError, WorkspaceError
 from dta_core.log import Log
 from dta_core.manifest import Manifest
-from dta_core.manifest.models import EnvVar, Interfaces, Twin
+from dta_core.manifest.models import MANIFEST_VERSION, EnvVar, Interfaces, Twin
 
 from ..output import command, emit, session
 from ..workspace import State, Workspace, now
@@ -66,7 +66,13 @@ def _create(workspace: Workspace, twin_id: str, name: str) -> bool:
             "a manifest already exists; it is kept as it is", path=str(workspace.manifest_path)
         )
     else:
-        workspace.save_manifest(Manifest(twin=Twin(id=twin_id, name=name), env=_interface_env()))
+        workspace.save_manifest(
+            Manifest(
+                manifest_version=MANIFEST_VERSION,
+                twin=Twin(id=twin_id, name=name),
+                env=_interface_env(),
+            )
+        )
         manifest_created = True
     _ensure_env_ignored(workspace)
     # Written last: its presence is what marks the directory as a workspace, so an

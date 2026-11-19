@@ -209,6 +209,7 @@ EXECUTOR_STATUS = "executor-status"
 ACTION_TYPES_FEEDBACK = "action-types-feedback"
 RECORDS_STATUS = "records-status"
 RECORDS_ACTION = "records-action"
+RECORDS_ORIGIN = "records-origin"
 RECORDS = "records"
 RECORDS_FEEDBACK = "records-feedback"
 # Role of the pattern-matching id of the records grid, re-created per filter.

@@ -13,7 +13,8 @@ The twin's state (`state`): `unknown` before a check has completed, `healthy`,
 failed. Incident kinds: `breach`, `stale`, `signal`, `reconcile`; statuses: `open`,
 `remodel_requested`, `failed`, `resolved`. Signals: `suspect` (reason `stuck` or
 `biased`) or `ok`. `standing` reads the state and the incidents not resolved at one
-version: the interlock of the twin's actions judges by both.
+version: the interlock of the twin's actions judges by both. `unhealthy_since` names the
+stretch the twin has not been healthy, which a control's fail-safe is sent once in.
 
 Refusals are `FidelityError`s with a code: `fidelity.not_live` (a twin with no
 recurring sync or no fidelity interval and window), `fidelity.unsupported` (an ontology
@@ -47,6 +48,7 @@ from .reads import (
     standing,
     state,
     suspects,
+    unhealthy_since,
     withhold,
 )
 from .records import incident_uid, signal_uid
@@ -87,5 +89,6 @@ __all__ = [
     "standing",
     "state",
     "suspects",
+    "unhealthy_since",
     "withhold",
 ]

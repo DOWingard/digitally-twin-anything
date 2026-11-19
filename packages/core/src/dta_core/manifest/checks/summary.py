@@ -17,13 +17,17 @@ from pathlib import Path
 from ...errors import DtaError
 from ...log import Log
 from ..io import contract_hash, manifest_hash
-from ..models import Bounds, Manifest, Tier, Tolerance
+from ..models import Bounds, Control, FailureMode, Manifest, Tier, Tolerance
 from .view import fmt_duration
 
 log = Log("manifest.summary")
 
 _UNSET = "not set"
 _ONCE = "none: read once"
+_NOT_SAFETY = (
+    "This is not a safety function: a twin that is not running sends nothing, so the real "
+    "system must stay safe on its own."
+)
 _LINK_ANNOTATIONS = ("link_source", "link_target")
 
 
@@ -120,6 +124,35 @@ def _enum(value: object) -> str | None:
     return None if value is None else getattr(value, "value", str(value))
 
 
+def _constants(parameters: dict[str, object]) -> str:
+    def shown(value: object) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return f"{value:g}" if isinstance(value, float) else str(value)
+
+    return ", ".join(f"{name} = {shown(value)}" for name, value in sorted(parameters.items()))
+
+
+def failure_text(control: Control) -> str:
+    """What a control sends when the twin fails, in words the user signs."""
+    found = control.on_failure
+    if found is None or found.mode is None:
+        return "not chosen: nothing is sent"
+    if found.mode == FailureMode.hold:
+        return "hold: nothing is sent; the real system keeps the twin's last command"
+    action = found.action_of(control.action) or _UNSET
+    given = _constants(found.parameters)
+    with_constants = f" with {given}" if given else ""
+    if found.mode == FailureMode.release:
+        text = f"release: `{action}`{with_constants} hands each object the twin commanded back"
+    else:
+        text = f"safe value: `{action}`{with_constants} is sent to each object the twin commanded"
+    text += ", once, when its fidelity becomes failed"
+    if found.after_stale is not None:
+        text += f", or once data has been too old for {fmt_duration(found.after_stale)}"
+    return text
+
+
 def render_summary(manifest: Manifest, ontology: OntologyTypes | None = None) -> str:
     twin = manifest.twin
     contract = manifest.contract
@@ -173,6 +206,12 @@ def render_summary(manifest: Manifest, ontology: OntologyTypes | None = None) ->
                 for cid, control in sorted(controls.items())
             ],
         )
+        lines += ["", "When the twin fails:", ""]
+        lines += _table(
+            ("Control", "What is sent"),
+            [(cid, failure_text(control)) for cid, control in sorted(controls.items())],
+        )
+        lines += ["", _NOT_SAFETY]
     else:
         lines.append("None.")
 

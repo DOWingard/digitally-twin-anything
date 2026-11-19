@@ -353,6 +353,9 @@ def test_a_table_read_takes_columns_filters_and_paging(store: Store):
     assert where([("name", "like", "%3")]) == ["node:t3"]
     assert where([("uid", "like", "node:t_"), ("status", "like", "o%")]) == ["node:t1", "node:t3"]
     assert where([("name", "like", "t1")]) == []
+    assert where([("name", "not_like", "%3")]) == ["node:t1", "node:t2", "node:t4"]
+    assert where([("status", "not_like", "o%")]) == ["node:t2"]
+    assert where([("name", "not_like", "T%")]) == []
     assert where([("name", "in", ["T1", "T4", "nobody"])]) == ["node:t1", "node:t4"]
     assert where([("name", "=", "T1' OR '1'='1")]) == []
     assert where({"status": []}) == []
@@ -439,6 +442,7 @@ def test_a_table_read_takes_columns_filters_and_paging(store: Store):
         (lambda: store.table("Tank", filter=[("name", "in", "T1")]), "store.bad_filter"),
         (lambda: store.table("Tank", filter=[("level", "like", "5%")]), "store.bad_filter"),
         (lambda: store.table("Tank", filter=[("name", "like", 5)]), "store.bad_filter"),
+        (lambda: store.table("Tank", filter=[("level", "not_like", "5%")]), "store.bad_filter"),
         (lambda: store.table("Tank", limit=-1), "store.bad_filter"),
         (lambda: store.table("Tank", offset=1.5), "store.bad_filter"),
         (lambda: store.table("Tank", order_by=[("depth", "asc")]), "store.unknown_property"),

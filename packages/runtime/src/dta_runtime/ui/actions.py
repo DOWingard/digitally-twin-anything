@@ -2,9 +2,10 @@
 
 Shown only for a live twin whose manifest declares actions. Read while the tab is
 open, once per selected version: the action types and whether an executor is
-configured (`/actions`); the records of the proposals, newest first, in an
-infinite grid that reads a block of rows as it is scrolled to, filtered by status
-and action (`/actions/records`); everything about the record chosen
+configured (`/actions`), with what each control sends when the twin fails; the records
+of the proposals, newest first, in an infinite grid that reads a block of rows as it is
+scrolled to, filtered by status, action and origin, a control's fail-safe among them
+(`/actions/records`); everything about the record chosen
 (`/actions/records/{uid}`); the control loops and what each one's last run did
 (`/control/loops`). The external call of a record is shown as the API tells it,
 which holds no secret. Nothing here proposes, approves, enables or runs anything.
@@ -54,6 +55,7 @@ def type_row(action: dict[str, Any]) -> dict[str, Any]:
         "binding": action.get("binding") or "",
         "bounds": T.bounds_text(action.get("bounds")),
         "settle": T.duration_text(action.get("settle")),
+        "on_failure": T.failure_text(action.get("on_failure")),
         "status": action.get("status"),
     }
 
@@ -65,6 +67,7 @@ def record_row(record: dict[str, Any]) -> dict[str, Any]:
         "action": record.get("action"),
         "object": record.get("object"),
         "params": T.params_text(record.get("params")),
+        "origin": T.origin_text(record.get("origin")),
         "source": record.get("source"),
         "fidelity": record.get("fidelity") or "",
         "status": T.record_status_text(record.get("status")),
@@ -243,6 +246,18 @@ def layout() -> html.Div:
                             searchable=False,
                         ),
                     ),
+                    field(
+                        T.ORIGIN_FILTER_LABEL,
+                        dcc.Dropdown(
+                            id=ids.RECORDS_ORIGIN,
+                            options=[
+                                {"label": words, "value": origin}
+                                for origin, words in T.ORIGIN_WORDS.items()
+                            ],
+                            placeholder=T.FILTER_ANY,
+                            searchable=False,
+                        ),
+                    ),
                 ],
                 className="filters",
             ),
@@ -349,6 +364,7 @@ def register(app: Dash, backend: Backend) -> None:
         Input(ids.ACTIONS_SHOWN, "data"),
         Input(ids.RECORDS_STATUS, "value"),
         Input(ids.RECORDS_ACTION, "value"),
+        Input(ids.RECORDS_ORIGIN, "value"),
         State({"role": ids.RECORDS_GRID, "query": ALL}, "id"),
     )
     @guarded(1)
@@ -356,6 +372,7 @@ def register(app: Dash, backend: Backend) -> None:
         shown: dict[str, Any] | None,
         status: str | None,
         action: str | None,
+        origin: str | None,
         present: list[dict[str, Any]] | None,
     ) -> Any:
         """The records grid, made again when its filters change; a new version is read into
@@ -365,11 +382,13 @@ def register(app: Dash, backend: Backend) -> None:
         if shown["branch"] != LIVE_BRANCH:
             return None
         query = {"status": status or None, "action": action or None}
+        if origin:
+            query["origin"] = origin
         if {"role": ids.RECORDS_GRID, "query": json.dumps(query, sort_keys=True)} in (
             present or []
         ):
             raise PreventUpdate
-        log.debug("the records grid is made", status=status, action=action)
+        log.debug("the records grid is made", status=status, action=action, origin=origin)
         return records_grid(query)
 
     app.clientside_callback(

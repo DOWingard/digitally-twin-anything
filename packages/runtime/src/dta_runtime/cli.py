@@ -71,6 +71,47 @@ def _run(service: str, work: Callable[[], dict[str, Any] | None]) -> None:
 
 
 @app.command()
+def version() -> None:
+    """Say what this runtime is and the newest manifest version it reads."""
+
+    def work() -> dict[str, Any]:
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as package_version
+
+        from dta_core.manifest.models import MANIFEST_VERSION
+
+        try:
+            found = package_version("dta-runtime")
+        except PackageNotFoundError:
+            log.warn("the runtime's package metadata is missing; its version is not known")
+            found = None
+        log.info("version asked", version=found, manifest_version=MANIFEST_VERSION)
+        return {"package": "dta-runtime", "version": found, "manifest_version": MANIFEST_VERSION}
+
+    _run("version", work)
+
+
+def _too_old(exc: Any) -> Any:
+    """What this runtime answers a manifest newer than it reads with."""
+    from dta_core.manifest.models import MANIFEST_VERSION
+
+    from .twin import TwinError
+
+    declared = exc.detail.get("manifest_version")
+    log.error(
+        "the manifest is newer than this runtime reads",
+        manifest_version=declared,
+        reads=MANIFEST_VERSION,
+    )
+    return TwinError(
+        f"this runtime reads manifest versions up to {MANIFEST_VERSION}, and the manifest is "
+        f"written in version {declared}: run the twin from a newer runtime image",
+        code="runtime.too_old",
+        detail={"manifest_version": declared, "runtime_reads": MANIFEST_VERSION},
+    )
+
+
+@app.command()
 def install(
     bundle: Annotated[
         str, typer.Option(help="File holding the bundle, or - for standard input")
@@ -83,6 +124,8 @@ def install(
     """Create the twin, or bring an existing one in line with a manifest and ontology."""
 
     def work() -> dict[str, Any]:
+        from dta_core.errors import ManifestTooNew
+
         from .twin import Bundle, TwinError, install_twin
 
         text = sys.stdin.read() if bundle == "-" else Path(bundle).read_text(encoding="utf-8")
@@ -94,7 +137,11 @@ def install(
                 raise TwinError(
                     f"--t0 is not an ISO 8601 time: {t0!r}", code="twin.bad_time"
                 ) from exc
-        installed = install_twin(StoreSettings.from_env(), Bundle.from_json(text), t=started)
+        try:
+            given = Bundle.from_json(text)
+        except ManifestTooNew as exc:
+            raise _too_old(exc) from exc
+        installed = install_twin(StoreSettings.from_env(), given, t=started)
         try:
             version = installed.version
             return {
@@ -114,6 +161,7 @@ def install(
 def _manifest_from(option: str) -> Any:
     """The manifest given as YAML text in a file, or on standard input for `-`."""
     import yaml
+    from dta_core.errors import ManifestTooNew
     from dta_core.manifest import parse_manifest
 
     from .twin import TwinError
@@ -127,7 +175,10 @@ def _manifest_from(option: str) -> Any:
             f"the manifest cannot be read from {origin}: {type(exc).__name__}",
             code="runtime.manifest_unreadable",
         ) from exc
-    return parse_manifest(data, origin=origin)
+    try:
+        return parse_manifest(data, origin=origin)
+    except ManifestTooNew as exc:
+        raise _too_old(exc) from exc
 
 
 def _chosen_sources(manifest: Any, only: list[str] | None) -> dict[str, Any]:

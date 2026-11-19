@@ -54,6 +54,7 @@ from .. import bundle as bundles
 from .. import codepack, workerimage
 from ..envfile import read_env
 from ..output import command, emit, session
+from ..runtimecheck import require_image_reads
 from ..stack import API_SERVICE, STORE_SERVICE, Stack, StackError, plan_stack
 from ..workspace import STAGES, Workspace, now
 from .build import BASES_KEY, REUSABLE_STEPS, read_record
@@ -920,6 +921,7 @@ def import_bundle(
             emit(ctx, result, _import_text(result))
             return
 
+        require_image_reads(session(ctx), stack, manifest)
         with workspace.exclusive():
             if volume is not None:
                 log.warn("replacing the store of this stack, as asked", volume=volume)

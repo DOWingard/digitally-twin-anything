@@ -4,7 +4,8 @@ A check measures the twin at a boundary `c` of the fidelity interval on the twin
 clock: it predicts each question's origin through the worker, exactly as the predict
 route does, and hands the library the freshness of each question at `c`. Once it is
 written, what it decided is told to the notifier and every correction it asked for is
-queued as a job of its own; the check never waits for one.
+queued as a job of its own; the check never waits for one. Then each control's fail-safe
+that is due is sent, at the check's time (see `failing`), after a replayed check too.
 
 A correction runs the recent evaluation of the question's specification for its rung
 and always reports back, accepted or not. One that never reported (the process ended
@@ -34,7 +35,7 @@ from ..fidelity import CorrectionRequest, CorrectionResult, Freshness
 from ..fidelity.outcome import corrections_of
 from ..fidelity.reading import floor_to
 from ..protocol import InterventionRef
-from . import evaluating, predicting
+from . import evaluating, failing, predicting
 from .jobs import JobsClosed, Outcome, Work
 from .live import ClockReading, HeadState, sync_document
 from .problems import ApiError
@@ -178,26 +179,44 @@ def check_work(services: Services, at: datetime) -> Work:
             "cleared": _uids(outcome.cleared),
             "events": [found["type"] for found in outcome.events],
             "corrections": [],
+            "failsafe": [],
         }
         if outcome.replayed:
-            # A check of a time that has its record: nothing is told or started again.
+            # A check of a time that has its record: nothing is told or started again,
+            # but a fail-safe the first run did not get to send is sent now.
             log.info("fidelity check answered from its record", check=summary["check"])
             summary["events"] = []
             summary["record"] = outcome.check
+            summary["failsafe"] = _fail_safe(services, at)
             return Outcome(result=summary)
         emit(services, outcome.events, at)
         summary["corrections"] = start_corrections(services, outcome.corrections)
+        summary["failsafe"] = _fail_safe(services, at)
         log.info(
             "fidelity check job finished",
             check=summary["check"],
             state=outcome.state_after,
             events=len(outcome.events),
             corrections=len(summary["corrections"]),
+            failsafe=len(summary["failsafe"]),
             elapsed_ms=_ms(started),
         )
         return Outcome(result=summary)
 
     return work
+
+
+def _fail_safe(services: Services, at: datetime) -> list[dict[str, Any]]:
+    """The fail-safes due at the check; a failure to send them never undoes the check."""
+    try:
+        return failing.fail_safe(services, at)
+    except Exception as exc:
+        log.error(
+            "the fail-safes due at a check could not be worked out; the next check tries again",
+            exc=exc,
+            at=iso(at),
+        )
+        return []
 
 
 # -- corrections -------------------------------------------------------------------------
