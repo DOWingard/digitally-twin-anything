@@ -21,6 +21,7 @@ from typing import Any
 
 import pyarrow as pa
 from dta_core.errors import DtaError
+from dta_core.families import FAMILIES
 from dta_core.log import Log, trace
 from dta_core.schema import FactKind, Kind
 from dta_core.store import Provenance, VersionRef, ViolationError
@@ -73,6 +74,10 @@ _TEXT = (pa.string(), pa.large_string())
 
 # What becomes of a suspect signal's value at a check.
 INFERRED, UNKNOWN, TURN_UNKNOWN = "inferred", "unknown", "turn_unknown"
+FROZEN = "frozen"
+# Why a question infers a suspect signal (`_choice`).
+VALIDATED = "validated"
+DOES_NOT_READ_IT, LONGEST_HORIZON = "does_not_read_it", "reads_it_longest_horizon"
 
 
 def _ms(started: float) -> float:
@@ -155,8 +160,9 @@ def _prediction(table: Any, grid: Sequence[datetime]) -> dict[str, dict[int, tup
 
 def _spans(signals: Mapping[str, Mapping[str, Any]]) -> dict[tuple[str, str], list[tuple]]:
     """Per (Type.property, uid): every time it was suspect, as (since, until,
-    unknown_since): until is None while it still is, unknown_since None while its value
-    was inferred throughout."""
+    unknown_since, run_since): until is None while it still is, unknown_since None while
+    its value was inferred throughout, run_since the last change before a stuck flag (its
+    readings in (run_since, since] were frozen) and None for a biased one."""
     spans: dict[tuple[str, str], list[tuple]] = {}
     for document in signals.values():
         key = (document["property"], document["object"])
@@ -169,24 +175,55 @@ def _spans(signals: Mapping[str, Mapping[str, Any]]) -> dict[tuple[str, str], li
                         since,
                         records.parse_time(episode.get("until")),
                         records.parse_time(episode.get("unknown_since")),
+                        records.parse_time(episode.get("run_since")),
                     )
                 )
         if document.get("status") == SUSPECT and not episodes and document.get("since"):
-            spans.setdefault(key, []).append((document["since"], None, None))
+            spans.setdefault(key, []).append((document["since"], None, None, None))
     return spans
 
 
+def _with_runs(
+    spans: Mapping[tuple[str, str], list[tuple]], flags: Mapping[str, Mapping[str, Any]]
+) -> dict[tuple[str, str], list[tuple]]:
+    """The spans with those of signals flagged at this check added, from `now` (or from
+    the start of the run of a stuck one)."""
+    found = {key: list(value) for key, value in spans.items()}
+    for flag in flags.values():
+        found.setdefault((flag["property"], flag["object"]), []).append(
+            (flag["at"], None, None, records.parse_time(flag.get("run_since")))
+        )
+    return found
+
+
 def _suspect_in(spans: Sequence[tuple], start: datetime, end: datetime) -> bool:
-    """Whether a signal was suspect at any time in (start, end]."""
-    return any(since <= end and (until is None or until > start) for since, until, *_ in spans)
+    """Whether a signal was suspect, or read frozen in the run before a stuck flag, at
+    any time in (start, end]."""
+    return any(
+        (since <= end if run is None else run < end) and (until is None or until > start)
+        for since, until, _, run in spans
+    )
+
+
+def _suspect_at(spans: Sequence[tuple], moment: datetime) -> str | None:
+    """What a signal's value in force at `moment` was when it was not observed: `unknown`,
+    `inferred`, or `frozen` (a reading of the run before a stuck flag); None when it
+    was observed."""
+    for since, until, unknown, run in spans:
+        if until is not None and until <= moment:
+            continue
+        if unknown is not None and unknown <= moment:
+            return UNKNOWN
+        if since <= moment:
+            return INFERRED
+        if run is not None and run < moment:
+            return FROZEN
+    return None
 
 
 def _unknown_at(spans: Sequence[tuple], moment: datetime) -> bool:
     """Whether a signal's value in force at `moment` was unknown."""
-    return any(
-        unknown is not None and unknown <= moment and (until is None or until > moment)
-        for _, until, unknown in spans
-    )
+    return _suspect_at(spans, moment) == UNKNOWN
 
 
 def _concrete(setup: Setup, text: str) -> set[str]:
@@ -298,23 +335,28 @@ def _measure(context: _Context, question: QuestionSetup, earlier: list[Scored]) 
         entry["reason"] = _reason("no_version", "the live line has no version at the origin")
         return measured
     inputs = _feature_inputs(setup, question)
-    withheld = sorted(
-        records.signal_uid(property_text, uid)
-        for (property_text, uid), spans in context.spans.items()
-        if property_text in inputs and _unknown_at(spans, origin)
-    )
-    if withheld:
+    states: dict[str, list[str]] = {}
+    for (property_text, uid), spans in context.spans.items():
+        state = _suspect_at(spans, origin) if property_text in inputs else None
+        if state is not None:
+            states.setdefault(state, []).append(records.signal_uid(property_text, uid))
+    # An unknown feature first, then an inferred one, then a frozen reading of a stuck run.
+    for state, code, said in (
+        (UNKNOWN, "input_unknown", "unknown at the origin; nothing is computed from it"),
+        (INFERRED, "input_inferred", "inferred at the origin; no score rests on it"),
+        (FROZEN, "input_frozen", "a frozen reading of a stuck run at the origin"),
+    ):
+        withheld = sorted(states.get(state, []))
+        if not withheld:
+            continue
         log.info(
-            "an input of the question was unknown at the origin; not scored",
+            "a feature of the question was not observed at the origin; not scored",
             question=question.id,
             origin=iso_utc(origin),
+            state=state,
             signals=withheld,
         )
-        entry["reason"] = _reason(
-            "input_unknown",
-            f"the value of {', '.join(withheld)} was unknown at the origin; nothing is "
-            "computed from it",
-        )
+        entry["reason"] = _reason(code, f"the value of {', '.join(withheld)} was {said}")
         entry["withheld"] = withheld
         return measured
     grid = [origin + j * setup.step for j in range(1, question.steps + 1)]
@@ -474,6 +516,19 @@ class _Stuck:
         return sum(1 for flag in self.changed[first:] if flag)
 
 
+def _run_end(result: _Stuck) -> datetime | None:
+    """The end of the interval of a signal's last change: its run without a change began
+    there."""
+    if result.test.last is None or result.start is None or result.step is None:
+        return None
+    return result.start + (result.test.last + 1) * result.step
+
+
+def _run_since(result: _Stuck) -> str | None:
+    found = _run_end(result)
+    return None if found is None else iso_utc(found)
+
+
 def _raw_readings(
     twin: Twin,
     setup: Setup,
@@ -590,6 +645,12 @@ class _Measurement:
     # (`_forecast_tests`): the entry the check keeps, with the forecast itself, which the
     # next check of the same run reads again instead of asking for it.
     forecasts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Per (Type.property, uid): when its values were not observed (`_spans`), with the
+    # runs of the stuck signals this check flags added once they are known.
+    spans: dict[tuple[str, str], list[tuple]] = field(default_factory=dict)
+    # Per suspect signal: the forecast made again at this check from a newer origin at
+    # which every input of the inferring model was observed (`_refresh`).
+    refreshed: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass
@@ -608,6 +669,29 @@ class _Decision:
     inferred_rows: dict[str, list[dict[str, Any]]]
     check_row: dict[str, Any]
     signals_document: dict[str, Any]
+
+
+def _rests_on_suspect(
+    spans: Mapping[tuple[str, str], list[tuple]],
+    setup: Setup,
+    question: QuestionSetup,
+    found: Scored,
+) -> bool:
+    """Whether a scored origin rests on a value that was not observed: a feature of the
+    model (of any object) not observed at the origin, or a series it scored suspect or
+    frozen in (origin, origin + horizon]."""
+    inputs = _feature_inputs(setup, question)
+    if any(
+        text in inputs and _suspect_at(found_spans, found.origin) is not None
+        for (text, _), found_spans in spans.items()
+    ):
+        return True
+    end = found.origin + question.horizon
+    return any(
+        _suspect_in(spans.get((f"{type_name}.{name}", uid), ()), found.origin, end)
+        for uid in found.residuals
+        for type_name, name in question.cells
+    )
 
 
 def _active(measured: Measured) -> list[Scored]:
@@ -718,9 +802,9 @@ def _on_property(measurement: _Measurement, property_text: str) -> list[Measured
     )
 
 
-def _inferring(measurement: _Measurement, property_text: str) -> Measured | None:
-    """The question that would infer a signal of a property: of those with an active
-    model, the one with the shortest horizon."""
+def _caller(measurement: _Measurement, property_text: str) -> Measured | None:
+    """The question whose bias test calls a series of a property biased: of those with
+    an active model, the one with the shortest horizon."""
     return next(
         (
             found
@@ -729,6 +813,43 @@ def _inferring(measurement: _Measurement, property_text: str) -> Measured | None
         ),
         None,
     )
+
+
+def _reads_itself(setup: Setup, question: QuestionSetup, property_text: str) -> bool:
+    """Whether the question's active model reads the property it would infer for a
+    series: a shipped family forecasts a series from its own history; code of the twin's
+    own reads only the features it declares."""
+    model = question.model or {}
+    if model.get("family") in FAMILIES:
+        return True
+    return property_text in _feature_inputs(setup, question)
+
+
+def _choice(measurement: _Measurement, property_text: str) -> tuple[Measured | None, str | None]:
+    """The question that infers a suspect signal of a property, and why: of those with an
+    active model and validated, first one whose model does not read the signal (its
+    forecast can be made again from newer observed origins), the shortest horizon
+    first; else the one with the longest horizon (forecast once, its value stands only
+    up to the horizon, and the question's error vouches for all of it)."""
+    setup = measurement.setup
+    able = [
+        found
+        for found in _on_property(measurement, property_text)
+        if found.setup.model is not None
+        and found.setup.steps is not None
+        and setup.question_status.get(found.setup.id) == VALIDATED
+    ]
+    fresh = [found for found in able if not _reads_itself(setup, found.setup, property_text)]
+    if fresh:
+        return fresh[0], DOES_NOT_READ_IT
+    if able:
+        return max(able, key=lambda found: (found.setup.horizon, found.setup.id)), LONGEST_HORIZON
+    return None, None
+
+
+def _inferring(measurement: _Measurement, property_text: str) -> Measured | None:
+    """The question that infers a suspect signal of a property (`_choice`)."""
+    return _choice(measurement, property_text)[0]
 
 
 def _number(value: Any) -> float | None:
@@ -768,9 +889,7 @@ def _observed_range(
         for moment, value in zip(
             events.column(inforce.T).to_pylist(), events.column(name).to_pylist(), strict=True
         )
-        if not any(
-            since <= moment and (until is None or moment < until) for since, until, *_ in spans
-        )
+        if _suspect_at(spans, moment) is None
         and (number := _number(value)) is not None
         and math.isfinite(number)
     ]
@@ -805,16 +924,32 @@ def _infer(
     same forecast from the end of the interval of its last change."""
     setup, now = context.setup, context.now
     signal = records.signal_uid(property_text, uid)
-    chosen = _inferring(measurement, property_text)
+    chosen, why = _choice(measurement, property_text)
     if chosen is None or chosen.setup.model is None or chosen.setup.steps is None:
         return {
             "refused": _reason(
-                "no_question", "no predictive question with an active model targets the property"
+                "no_question",
+                "no validated predictive question with an active model targets the property",
             )
         }
     question, model = chosen.setup, chosen.setup.model
     if origin is None:
-        origin = reading.floor_to(now - setup.step, setup.interval)
+        newest = reading.floor_to(now - setup.step, setup.interval)
+        origin = _admissible(context, question, property_text, uid, newest, now - setup.window)
+        if origin is None:
+            log.warn(
+                "no origin in the window at which every input of the inferring model was "
+                "observed; the signal is not forecast",
+                signal=signal,
+                question=question.id,
+                newest=iso_utc(newest),
+            )
+            return {
+                "refused": _reason(
+                    "no_observed_origin",
+                    "no origin in the window had every input of the inferring model observed",
+                )
+            }
     version = reading.version_at(context.twin, origin)
     if version is None:
         log.warn(
@@ -941,7 +1076,78 @@ def _infer(
         "horizon_steps": question.steps,
         "values": values,
         "range": _observed_range(context, property_text, uid, question.tolerance),
+        "chosen": {"question": question.id, "why": why},
     }
+
+
+def _admissible(
+    context: _Context,
+    question: QuestionSetup,
+    property_text: str,
+    uid: str,
+    newest: datetime,
+    oldest: datetime,
+) -> datetime | None:
+    """The newest origin in (oldest, newest] at which every input of the question's model
+    for the series was observed: its features (of every object) and, for a shipped
+    family, the series' own history; none suspect, inferred, unknown or frozen in the
+    run before a stuck flag."""
+    setup = context.setup
+    features = _feature_inputs(setup, question)
+    own = (question.model or {}).get("family") in FAMILIES
+    watched = [
+        spans
+        for (text, found), spans in context.spans.items()
+        if text in features or (own and text == property_text and found == uid)
+    ]
+    moment = newest
+    while moment > oldest:
+        if all(_suspect_at(spans, moment) is None for spans in watched):
+            return moment
+        moment -= setup.step
+    return None
+
+
+def _refresh(
+    context: _Context, measurement: _Measurement, signals: Mapping[str, Mapping[str, Any]]
+) -> None:
+    """Forecasts again every suspect signal whose inferring model does not read it, from
+    the newest origin after its present inference's at which every input was observed
+    (`_admissible`); the lead starts over. A model that reads it, or no newer such
+    origin, keeps the present inference. An unknown value stays unknown until the signal
+    clears."""
+    setup, now = context.setup, context.now
+    newest = reading.floor_to(now - setup.step, setup.interval)
+    for signal, document in sorted(signals.items()):
+        if document.get("status") != SUSPECT:
+            continue
+        detail = document.get("detail") or {}
+        if isinstance(detail.get("unknown"), Mapping):
+            continue
+        property_text, uid = document["property"], document["object"]
+        chosen = _inferring(measurement, property_text)
+        if chosen is None or _reads_itself(setup, chosen.setup, property_text):
+            continue
+        present = records.parse_time((detail.get("inference") or {}).get("origin"))
+        oldest = present if present is not None else now - setup.window
+        origin = _admissible(context, chosen.setup, property_text, uid, newest, oldest)
+        if origin is None:
+            log.debug(
+                "no newer origin with every input observed; the present inference stays",
+                signal=signal,
+                present=None if present is None else iso_utc(present),
+            )
+            continue
+        found = _infer(context, measurement, property_text, uid, origin=origin)
+        if found.get("refused"):
+            log.warn(
+                "a suspect signal could not be forecast again; the present inference stays",
+                signal=signal,
+                origin=iso_utc(origin),
+                reason=found["refused"].get("code"),
+            )
+            continue
+        measurement.refreshed[signal] = found
 
 
 def _forecast_tests(
@@ -1167,6 +1373,8 @@ def _flags(measurement: _Measurement, suspect_before: set[str]) -> _Flags:
                 "value": result.value,
                 "test": result.test.document(),
                 "question": None,
+                "at": now,
+                "run_since": _run_since(result),
             }
     observed_cells = set(setup.observations)
     alarming: dict[str, dict[str, Any]] = {}
@@ -1213,7 +1421,7 @@ def _flags(measurement: _Measurement, suspect_before: set[str]) -> _Flags:
             signal = records.signal_uid(property_text, uid)
             if signal in flags:
                 continue
-            inferring = _inferring(measurement, property_text)
+            inferring = _caller(measurement, property_text)
             if inferring is None or inferring.setup.id != qid:
                 log.debug(
                     "series alarms in a question that would not infer it; not called",
@@ -1257,6 +1465,8 @@ def _flags(measurement: _Measurement, suspect_before: set[str]) -> _Flags:
                 "value": measured.current.get(uid),
                 "test": test.document(),
                 "question": qid,
+                "at": now,
+                "run_since": None,
             }
     return _Flags(flags, tested_stuck, tested_biased, alarming, uncorroborated)
 
@@ -1277,7 +1487,16 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
         tolerance = question.tolerance
         # Only what the active model, as fitted now, predicted after the end of its data:
         # a recalibration keeps the model's uid and moves the end of its data.
-        usable = [(found.origin, found.error) for found in _active(measured)]
+        # Origins whose score rests on a value that was not observed (a feature inferred,
+        # unknown or frozen; a series frozen in the run before a stuck flag) are set aside,
+        # also those scored before the flag showed it: no breach or correction rests on them.
+        active = _active(measured)
+        aside = [
+            found
+            for found in active
+            if _rests_on_suspect(measurement.spans, setup, question, found)
+        ]
+        usable = [(found.origin, found.error) for found in active if found not in aside]
         is_breach = False
         if question.model is not None and tolerance is not None:
             error, count = measures.window_error(
@@ -1285,6 +1504,15 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
             )
             is_breach = measures.breach(error, count, tolerance)
             entry["window"] = {"error": error, "n": count, "breach": is_breach}
+            set_aside = sorted(
+                iso_utc(found.origin)
+                for found in aside
+                if measures.in_window(
+                    found.origin, now=now, horizon=question.horizon, window=setup.window
+                )
+            )
+            if set_aside:
+                entry["window"]["set_aside"] = set_aside
         else:
             entry["window"] = None
         incident = by_key.get((BREACH, qid))
@@ -1468,6 +1696,19 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
     # -- signals -------------------------------------------------------------------------
     signals = {uid: dict(document) for uid, document in current.signals.items()}
     suspect_before = {uid for uid, document in signals.items() if document["status"] == SUSPECT}
+    # A suspect signal whose inferring model does not read it is forecast again from the
+    # newest origin with every input observed: its value never rests on inferred values,
+    # and a biased one has a fresh reference to clear against.
+    for signal, inference in sorted(measurement.refreshed.items()):
+        document = signals.get(signal)
+        if document is None or document["status"] != SUSPECT:
+            continue
+        detail = dict(document.get("detail") or {})
+        if isinstance(detail.get("unknown"), Mapping):
+            continue
+        detail["inference"] = inference
+        signals[signal] = {**document, "detail": detail}
+        log.debug("suspect signal forecast again", signal=signal, origin=inference.get("origin"))
     found_flags = _flags(measurement, suspect_before)
     flags = found_flags.flags
     tested_stuck, tested_biased = found_flags.tested_stuck, found_flags.tested_biased
@@ -1498,7 +1739,13 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
         detail = dict(document.get("detail") or {})
         episodes = list(detail.get("episodes") or [])
         episodes.append(
-            {"since": iso_utc(now), "until": None, "reason": flag["reason"], "cleared_by": None}
+            {
+                "since": iso_utc(now),
+                "until": None,
+                "reason": flag["reason"],
+                "cleared_by": None,
+                "run_since": flag.get("run_since"),
+            }
         )
         inference = measurement.inference.get(signal) or {
             "refused": _reason("not_forecast", "the signal was not flagged when it was measured")
@@ -2031,6 +2278,7 @@ def _check(
         },
         coverage=reading.coverage(twin, head, setup.question_status, now, setup.window),
         trace_id=trace_id,
+        spans=context.spans,
         clock=clock,
     )
     # What this measurement flags is forecast now, outside the lock: the decision under
@@ -2038,7 +2286,12 @@ def _check(
     # (another writer changed the signals in between) has no value inferred.
     suspect_now = {uid for uid, document in signals.items() if document["status"] == SUSPECT}
     _forecast_tests(context, measurement, suspect_now, reading.kept_forecasts(twin, head, now))
-    for signal, flag in sorted(_flags(measurement, suspect_now).flags.items()):
+    flags = _flags(measurement, suspect_now).flags
+    # From here on, what this check flags counts as suspect, a stuck signal from the start
+    # of its run: what it infers rests on none of it, nor do the window errors.
+    context.spans.update(_with_runs(context.spans, flags))
+    _refresh(context, measurement, signals)
+    for signal, flag in sorted(flags.items()):
         # A smooth signal called stuck by the forecast keeps that forecast as its value.
         tested = measurement.forecasts.get(signal) or {}
         if tested.get("stuck") and isinstance(tested.get("inference"), Mapping):

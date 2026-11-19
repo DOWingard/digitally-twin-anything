@@ -101,10 +101,13 @@ def test_both_questions_alarming_on_the_same_side_flag_the_series(make_plant):
     assert signal["detail"]["question"] == "level"
     assert signal["detail"]["test"]["s"] == pytest.approx(-35.5)
     assert [found["subject"] for found in flagged.opened] == [LEVEL_G3]
-    # Inferred as before: the forecast of `level`, the question with the shorter horizon.
+    # Called by `level`, the question with the shorter horizon, but inferred by the forecast
+    # of `level_far`: both models read the level's own history, so it is forecast once,
+    # and the longer horizon keeps a value in force for longer.
     value, kind = observed(plant, G3, flagged.version)
     assert value == pytest.approx(level(G3, 16) + 1.8) and kind == "inferred"
-    assert [entry["question"] for entry in signals["inferred"]] == ["level"]
+    assert [entry["question"] for entry in signals["inferred"]] == ["level_far"]
+    assert signal["detail"]["inference"]["chosen"]["why"] == "reads_it_longest_horizon"
     assert outcomes[17].check["questions"]["level"]["left_out"] == [G3]
 
 
