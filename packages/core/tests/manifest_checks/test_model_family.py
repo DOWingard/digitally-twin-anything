@@ -46,6 +46,37 @@ def test_a_shipped_family_and_code_pass_and_anything_else_is_named():
     assert "'prophet' is neither a shipped family" in message and "module:name" in message
 
 
+def test_code_that_declares_no_reads_is_warned_of_and_nothing_else_is():
+    def spec(reads: list[str] | None = None, **candidates: str) -> dict[str, Any]:
+        found = _model(**candidates)
+        if reads is not None:
+            found["m"]["reads"] = reads
+        return found
+
+    code = "plant.hydraulics:Network"
+    undeclared = _manifest(models=spec(a="theta", b=code, c=code), runtime={"code": "code"})
+    ((path, message),) = _findings(undeclared, "model.reads_undeclared")
+    assert path == "models.m.reads"
+    assert message.startswith("code of the twin's own (b, c) with no reads:")
+    assert "read every property" in message and "none of its origins is scored" in message
+    finding = next(f for f in run_checks(undeclared) if f.code == "model.reads_undeclared")
+    assert finding.severity.value == "warning"
+    for fine in (spec([], b=code), spec(["Tank.level"], b=code), spec(None, a="theta")):
+        assert (
+            _findings(_manifest(models=fine, runtime={"code": "code"}), "model.reads_undeclared")
+            == []
+        )
+
+
+def test_what_a_model_reads_is_a_property_reference_as_a_feature_is():
+    models = {"m": {"candidates": {"a": {"family": "theta"}}, "reads": ["Tank.level", "level"]}}
+    found = _findings(_manifest(models=models), "ref.property_format")
+    assert [path for path, _ in found] == ["models.m.reads"]
+    models["m"]["features"] = ["level"]
+    found = _findings(_manifest(models=models), "ref.property_format")
+    assert sorted(path for path, _ in found) == ["models.m.features", "models.m.reads"]
+
+
 def test_code_of_the_twin_needs_its_directory():
     functions = {"f": {"kind": "registered", "entry": "plant:simulate"}}
     models = _model(a="theta", b="plant.hydraulics:Network")

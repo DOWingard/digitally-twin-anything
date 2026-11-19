@@ -118,6 +118,8 @@ def _references(view: ManifestView) -> Iterator[tuple[str, str]]:
             yield f"models.{mid}.target", model.target
         for ref in model.features or []:
             yield f"models.{mid}.features", ref
+        for ref in model.reads or []:
+            yield f"models.{mid}.reads", ref
 
 
 def _link_types(ontology: Ontology, type_name: str) -> tuple[str, ...] | None:
