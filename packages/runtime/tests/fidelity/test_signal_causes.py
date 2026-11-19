@@ -179,13 +179,15 @@ def test_an_inferred_value_rests_on_observed_values_and_a_moving_reading_clears(
     # Whatever the forecaster makes of it, the gauge holds an observed value, a value
     # inside the range it was observed in, or no value; never a runaway.
     assert all(value is None or 10.25 <= value <= 13.25 for value in held(plant, G1, outcomes))
-    # The forecast that stood in for the readings was made from step 27, the reading
-    # before the flagged one: an observed value, the value it was stuck at.
+    # The forecast was made from step 22, the end of the interval of the last change: the
+    # readings after it were frozen, and the persistence model reads its own series. At
+    # the flag its lead of 6 steps is past the question's 2: the value is unknown at once,
+    # and nothing is inferred.
     inferred = [entry for i in range(28, 41) for entry in outcomes[i].check["signals"]["inferred"]]
-    assert {(entry["origin"], entry["value"]) for entry in inferred} == {
-        ("2026-01-05T06:45:00Z", 11.7)
-    }
-    assert (at(27), 11.7) in echo.origins
+    assert inferred == []
+    signal = outcomes[28].check["signals"]["unknown"][0]
+    assert (signal["signal"], signal["why"]) == (LEVEL_G1, "horizon_passed")
+    assert (at(22), 11.7) in echo.origins
     # Readings move again from step 34: three changes by step 36, cleared there.
     assert [i for i, outcome in outcomes.items() if outcome.cleared] == [36]
     assert fidelity.signal(plant.twin, LEVEL_G1)["status"] == "ok"
@@ -279,8 +281,20 @@ def test_an_unknown_feature_keeps_every_series_of_an_origin_from_being_scored(ma
     outcomes = plant.run(range(19, 31), Oracle(plant))
     assert [found["uid"] for found in outcomes[27].flagged] == [FLOW_G2]
     assert fidelity.signal(plant.twin, FLOW_G2)["detail"]["unknown"]["why"] == "no_inference"
-    # Origin 26 (scored at 28) had the flow; origin 27 (scored at 29) did not.
-    assert outcomes[28].check["questions"]["level"]["scored"] is True
+    # Its run began at step 21, its last change: origin 26 (scored at 28) held a frozen
+    # reading of the flow, origin 27 (scored at 29) none at all.
+    entry = outcomes[28].check["questions"]["level"]
+    assert (entry["scored"], entry["reason"]["code"], entry["withheld"]) == (
+        False,
+        "input_frozen",
+        [FLOW_G2],
+    )
+    # Origins 22 to 25, scored before the flag, rested on frozen readings: the window
+    # leaves them out from the flag on.
+    stamp = "%Y-%m-%dT%H:%M:%SZ"
+    assert outcomes[27].check["questions"]["level"]["window"]["set_aside"] == [
+        at(step).strftime(stamp) for step in range(22, 26)
+    ]
     entry = outcomes[29].check["questions"]["level"]
     assert (entry["scored"], entry["reason"]["code"], entry["withheld"]) == (
         False,

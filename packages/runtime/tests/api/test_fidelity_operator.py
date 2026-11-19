@@ -180,22 +180,18 @@ def test_stuck_signals_are_flagged_withheld_by_sync_and_written_again_once_clear
     tanks = world.store_rows("Tank")
     assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (5.0, 3.0)
 
-    # Past the question's horizon of 2 steps the values are unknown, and what reads them
-    # is refused, naming the signals.
+    # The hold model, code of the twin's own, declares no input: it does not read the
+    # levels, so they are forecast again at every check from the step before, and past
+    # the question's horizon of 2 steps from the flag they are still inferred.
     job, _ = world.step(BUILT + 8)
     events = job["result"]["events"]
-    assert events.count("twin.fidelity.signal_unknown") == 2, events
-    tanks = world.store_rows("Tank")
-    assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (None, None)
-    withheld = world.ok("/fidelity/signals", status="suspect")["data"]
-    assert {found["value"] for found in withheld} == {"unknown"}
-    assert {found["unknown"]["why"] for found in withheld} == {"horizon_passed"}
-    assert {tuple(found["unknown"]["questions"]) for found in withheld} == {(QUESTION,)}
-    problem = world.refused(
-        world.post(f"/models/{HOLD}/predict", json={"horizon": 2}), 409, "fidelity.input_unknown"
-    )
-    assert sorted(found["object"] for found in problem["signals"]) == ["node:T1", "node:T2"]
-    assert {found["why"] for found in problem["signals"]} == {"horizon_passed"}
+    assert "twin.fidelity.signal_unknown" not in events, events
+    inferred = world.ok("/fidelity/signals", status="suspect")["data"]
+    assert {found["value"] for found in inferred} == {"inferred"}
+    assert {found["detail"]["inference"]["origin"] for found in inferred} == {iso(at(BUILT + 7))}
+    assert {found["detail"]["inference"]["chosen"]["why"] for found in inferred} == {
+        "does_not_read_it"
+    }
     assert world.fidelity()["state"] == "correcting"
 
     # One signal cleared, the other's incident resolved, which clears its signal with it.

@@ -29,9 +29,12 @@ written with sorted keys and no spaces.
                      no_tolerance, not_fitted,
                      already_scored, before_fit, no_version, ahead_of_data, deadline,
                      predictor_refused, predictor_failed, bad_prediction,
-                     no_observations, metric_undefined, input_unknown
-    withheld         [signal uid]: the model's features whose value was unknown at the
-                     origin, for any object (with input_unknown); a series whose own
+                     no_observations, metric_undefined, input_unknown, input_inferred,
+                     input_frozen
+    withheld         [signal uid]: the model's features whose value was unknown, inferred,
+                     or a frozen reading of the run before a stuck flag, at the
+                     origin, for any object (with input_unknown, input_inferred,
+                     input_frozen); a series whose own
                      value was unknown is in `left_out`
     error, n         the origin's error and its number of points (when scored)
     series           {uid: d}: the mean signed residual (observed less predicted) per
@@ -41,9 +44,13 @@ written with sorted keys and no spaces.
     estimates_at     the time of those values: the origin plus the horizon on the grid
     left_out         uids of the series left out because they were suspect in the span
     interval_ratio   mean width of the 80 % interval over the tolerance, or null
-    window           {"error", "n", "breach"}: the window error over origins the model
-                     had not seen, and whether it breaches
-    warning          {"sum", "raised", "last", "request", "fitted_to"}: the warning sum
+    window           {"error", "n", "breach", "set_aside"}: the window error over origins
+                     the model had not seen, and whether it breaches; "set_aside" (when
+                     any) the origins in the window left out because their score rested
+                     on a value not observed (a feature not observed at the origin, a
+                     series suspect or frozen over its horizon), also those scored
+                     before the stuck flag that showed it; no breach rests on them
+    warning         {"sum", "raised", "last", "request", "fitted_to"}: the warning sum
                      after this check, whether a warning was raised, the time of the
                      latest warning, the pre-emptive correction asked for (or null), and
                      the end of the data of the model the sum was summed for
@@ -133,10 +140,14 @@ a refused correction are {"metric", "threshold", "candidates": [{"uid", "error",
 "model": "forecast" and "forecast": {"question", "origin", "lead", "value", "reading",
 "margin", "refused"}), "question": the question whose
 residuals did (biased), "episodes": [{"since", "until", "reason", "cleared_by",
-"unknown_since"}]: every time it was suspect, "inference": the forecast made when it
-was flagged (for a smooth signal called stuck, the forecast that called it, from the
-end of the interval of its last change), {"question", "model", "tolerance", "origin",
-"origin_version",
+"unknown_since", "run_since"}]: every time it was suspect, `run_since` the end of the
+interval of the last change before a stuck flag (the readings in (run_since, since] were
+frozen), "inference": the forecast in force: made at the flag from the newest origin
+at which every input of the inferring model was observed (for a smooth signal called
+stuck, the forecast that called it), and made again at each check from a newer such
+origin when the model does not read the signal; {"question", "model", "tolerance",
+"origin", "origin_version", "chosen": {"question", "why": does_not_read_it or
+reads_it_longest_horizon},
 "horizon_steps", "values": {time: mean}, "range": {"low", "high", "declared": {"low",
 "high"}, "observed", "margin"}} or {"refused": {"code", "message"}}, "estimate":
 {"value", "t", "question", "model", "tolerance", "origin", "lead_steps"}: the inferred

@@ -12,8 +12,8 @@ run of N since its last change is improbable under the signal's own history:
    s keep their sign; with m >= 10 it is smooth when a one-sided binomial test of s
    against m/2 gives p < 0.01.
    What tells them apart is the twin's own forecast. Once a smooth signal has gone
-   n >= 3 delivering intervals without a change, the question that would infer it (the
-   predictive question on its property with an active model and the shortest horizon)
+   n >= 3 delivering intervals without a change, the question that would infer it (see
+   `check`: one whose model does not read it first, by shortest horizon, else the longest)
    forecasts it once for the run, from the end O of the interval of its last change and
    never from an inferred value; at each check of the run the forecast is read at the
    lead L (intervals since O). It is stuck when |f(O, L) - r| > m, r the unchanged

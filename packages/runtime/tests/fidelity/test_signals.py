@@ -58,7 +58,7 @@ def test_stuck_signals_are_flagged_inferred_then_unknown_and_cleared(make_plant)
     plant = make_plant(
         questions={
             "level": question("Gauge.level", 2, "level"),
-            "level_far": question("Gauge.level", 4, "level_far"),
+            "level_far": question("Gauge.level", 8, "level_far"),
         },
         models={**LEVEL_MODELS, "level_far": spec("level_far", "Gauge.level")},
     )
@@ -67,8 +67,8 @@ def test_stuck_signals_are_flagged_inferred_then_unknown_and_cleared(make_plant)
     plant.readings[("flow", G2)] = lambda i: flow(G2, 21) if i in stuck_steps else flow(G2, i)
     for i in range(1, 20):
         plant.sync(i)
-    model = plant.activate("level", "Gauge.level", fitted_to=at(18))
-    plant.activate("level_far", "Gauge.level", fitted_to=at(18))
+    plant.activate("level", "Gauge.level", fitted_to=at(18))
+    far_model = plant.activate("level_far", "Gauge.level", fitted_to=at(18))
     oracle = Oracle(plant, far_off)
     plant.check(19, oracle)
     early = plant.run(range(20, 27), oracle)
@@ -105,22 +105,27 @@ def test_stuck_signals_are_flagged_inferred_then_unknown_and_cleared(make_plant)
     assert flagged.events[2]["data"]["why"] == "no_inference"
     assert fidelity.suspects(plant.twin) == {("Gauge.level", G1), ("Gauge.flow", G2)}
 
-    # The level is inferred from the forecast the question with the shortest horizon
-    # made from the version of step 26, the reading before the flagged one: lead 1.
+    # Both models read the level's own history, so it is forecast once, by the question
+    # with the longest horizon, from step 21: its run began there, and the readings after
+    # it were frozen. Lead 6 at the flag.
     inference = signal["detail"]["inference"]
     assert (inference["question"], inference["origin"], inference["horizon_steps"]) == (
-        "level",
-        "2026-01-05T06:30:00Z",
-        2,
+        "level_far",
+        "2026-01-05T05:15:00Z",
+        8,
     )
-    assert oracle.calls[-1]["origin"] == at(26) and oracle.calls[-1]["horizon"] == 2
+    assert inference["chosen"] == {"question": "level_far", "why": "reads_it_longest_horizon"}
+    assert signal["detail"]["episodes"][-1]["run_since"] == "2026-01-05T05:15:00Z"
+    assert {"origin": at(21), "horizon": 8} in [
+        {"origin": call["origin"], "horizon": call["horizon"]} for call in oracle.calls
+    ]
     value, provenance = stored(plant, "Gauge", "level", G1, at=flagged.version)
-    assert value == level(G1, 27)
-    assert (provenance["k"], provenance["s"]) == ("inferred", model)
+    assert value == pytest.approx(level(G1, 27) + 0.01)
+    assert (provenance["k"], provenance["s"]) == ("inferred", far_model)
     assert provenance["t"].startswith("2026-01-05T06:45:00")
     inferred = flagged.check["signals"]["inferred"]
     assert [(entry["signal"], entry["question"], entry["lead_steps"]) for entry in inferred] == [
-        (LEVEL_G1, "level", 1)
+        (LEVEL_G1, "level_far", 6)
     ]
     value, provenance = stored(plant, "Gauge", "flow", G2, at=flagged.version)
     assert value is None
@@ -133,13 +138,16 @@ def test_stuck_signals_are_flagged_inferred_then_unknown_and_cleared(make_plant)
     signal = fidelity.signal(plant.twin, LEVEL_G1)
     # What the source read is kept on the signal, not written to the gauge.
     assert (signal["reading"], signal["reading_at"]) == (level(G1, 21), at(28))
-    # Lead 2, the question's horizon: the forecast made at the flag, not a new one.
-    assert stored(plant, "Gauge", "level", G1, at=later.version)[0] == level(G1, 28)
-    assert later.check["signals"]["inferred"][0]["lead_steps"] == 2
-    assert later.events == []
+    # Leads 7 and 8, the last within the question's horizon: the forecast made at the
+    # flag, not a new one.
+    for step, outcome in ((28, later), (29, plant.step(29, oracle))):
+        value = stored(plant, "Gauge", "level", G1, at=outcome.version)[0]
+        assert value == pytest.approx(level(G1, step) + 0.01)
+        assert outcome.check["signals"]["inferred"][0]["lead_steps"] == step - 21
+        assert outcome.events == []
 
-    # Lead 3 is past the horizon the question was validated for: the value is unknown.
-    passed = plant.step(29, oracle)
+    # Lead 9 is past the horizon the question was validated for: the value is unknown.
+    passed = plant.step(30, oracle)
     assert kinds(passed.events) == [(UNKNOWN, None)]
     data = passed.events[0]["data"]
     assert (data["signal"], data["why"], data["questions"]) == (
@@ -171,17 +179,17 @@ def test_stuck_signals_are_flagged_inferred_then_unknown_and_cleared(make_plant)
     assert fidelity.withheld(unknown, ["Gauge.flow"])[0]["why"] == "no_inference"
     assert fidelity.withheld(unknown, ["Gauge.level"], uids=[G2]) == []
     cleared_by_hand = fidelity.clear_signal(
-        plant.twin, FLOW_G2, by="operator", note="sensor cleaned", now=at(29)
+        plant.twin, FLOW_G2, by="operator", note="sensor cleaned", now=at(30)
     )
     assert cleared_by_hand["status"] == "ok"
     assert kinds(cleared_by_hand["events"]) == [(INCIDENT, "resolved")]
     with pytest.raises(FidelityError) as refused:
-        fidelity.clear_signal(plant.twin, FLOW_G2, by="operator", note=None, now=at(29))
+        fidelity.clear_signal(plant.twin, FLOW_G2, by="operator", note=None, now=at(30))
     assert refused.value.code == "fidelity.conflict"
 
     # Unknown it stays, said once; its series is not scored. The raw readings move
     # again from step 30: changes in 3 intervals since the flag by step 32.
-    still = plant.run(range(30, 32), oracle)
+    still = plant.run(range(31, 32), oracle)
     assert all(outcome.cleared == [] and outcome.events == [] for outcome in still.values())
     # The level's other series are scored; G1's, suspect, is left out.
     assert still[31].check["questions"]["level"]["scored"] is True
@@ -199,7 +207,8 @@ def test_stuck_signals_are_flagged_inferred_then_unknown_and_cleared(make_plant)
             "until": "2026-01-05T08:00:00Z",
             "reason": "stuck",
             "cleared_by": "check",
-            "unknown_since": "2026-01-05T07:15:00Z",
+            "unknown_since": "2026-01-05T07:30:00Z",
+            "run_since": "2026-01-05T05:15:00Z",
         }
     ]
     steps = fidelity.incident(plant.twin, incident["uid"])["steps"]
