@@ -4,6 +4,25 @@ Look up the `error.code` of a failed command here. For `validate.failed`, `accep
 
 The last column says whether the user must be asked. "No" means fix it yourself and run the command again.
 
+## The launcher
+
+`dta` is started by a launcher that runs the tool's container image, and builds the images first when they are not on the machine ("The first command on a machine" in the [skill](../SKILL.md)). When a command exits 64 or 69 and prints nothing on standard output, the launcher refused before the tool ran: look up the last line of standard error, which starts with `dta:`, by what it says.
+
+| The last line says | Meaning | What to do | Ask the user? |
+|---|---|---|---|
+| `docker is not installed or not on the PATH` | Docker is not on this machine, or not where the shell finds it. | Ask the user to install Docker: the engine, its command line and the buildx plugin (Docker Desktop has all three). | Yes. |
+| `the docker daemon is not reachable` | Docker is installed but its daemon is not running, or not at the socket the line names. | Ask the user to start Docker, then run the command again. | Yes. |
+| `docker refuses this user` | The user's account may not use Docker's socket. | Tell the user the line: they add their account to the socket's group (often `sudo usermod -aG docker "$USER"`, then log in again) or use rootless Docker. Never run `dta` with `sudo`. | Yes. |
+| `docker cannot name the daemon it talks to` | Docker's settings name no usable daemon. | Ask the user to check `DOCKER_HOST` and `DOCKER_CONTEXT`, or to run `docker context use default`. | Yes. |
+| `not to a unix socket` | Docker is set to a daemon on another machine; the tool needs the local one. | Ask the user to point Docker at the local daemon's socket. | Yes. |
+| `docker's buildx plugin, which builds the images, is not installed` | The images cannot be built without it. | Ask the user to install it (the `docker-buildx-plugin` package, or Docker Desktop). | Yes. |
+| `building <image> failed` | An image (`dta-toolkit:<version>` or `dta-runtime:<version>`) could not be built. The lines before are the end of docker's output; the line names the log that holds all of it. | Read those lines. A host that cannot be reached (a timeout, a name that does not resolve, a refused connection): ask the user for network access to the hosts that "The first command on a machine" lists, then run the command again. `no space left on device`: ask the user to free about 2 GB of disk. Anything else: show the user the last lines and the log's path, and stop. | Yes. |
+| `another dta call has been building the images for` | Another call has held the build's lock for an hour. | Tell the user: they stop that call, or, if none runs any more, remove the lock the line names. | Yes. |
+| `is not present, and its sources are not beside the launcher` | The plugin is installed without the files its images are built from. | Ask the user to install the plugin again, whole. | Yes. |
+| `is not present, and it is not built since DTA_TOOLKIT_IMAGE names it` | `DTA_TOOLKIT_IMAGE` names an image that is not on this machine. | Ask the user to build or pull that image, or to unset the variable. | Yes. |
+| `the images cannot be built` | There is no folder for the build's log and lock: neither `XDG_STATE_HOME` nor `HOME` is an absolute path, or the folder cannot be created. | Ask the user to set `HOME`, or to make the folder the line names writable. | Yes. |
+| `DTA_REBUILD` | The variable is set to something other than 1, or together with `DTA_TOOLKIT_IMAGE`. | Run the command without `DTA_REBUILD`: it is for someone who changes the tool's own sources. | No. |
+
 ## Gates
 
 `dta status` lists every gate in `result.gates`, with its `result` and `reasons`. A gate that is `stale` was recorded for a manifest that has changed since: run the command that records it again.
@@ -48,7 +67,7 @@ The last column says whether the user must be asked. "No" means fix it yourself 
 | stack.env_missing | `.env` does not set a variable the stack needs. | As `env.missing`. | Yes. |
 | stack.command_failed | A `docker compose` command failed; `error.detail` ends with its error output. | Read it. A port already in use: ask the user to choose another port in `.env`. An image that cannot be pulled: see `image.runtime_missing`. | Depends on the output. |
 | stack.timeout | A container command did not finish in time. | `dta logs --tail 100`; run the command again once. | If it repeats. |
-| image.runtime_missing | The twin's runtime image is not on this machine. | Tell the user the image named in `error.detail.runtime_image` must be installed; continue once they say it is. | Yes. |
+| image.runtime_missing | The twin's runtime image is not on this machine. | If `error.detail.runtime_image` is the default of `runtime.image` ([manifest](manifest.md)), the launcher builds it: run `dta status` once (a build of several minutes, see "The launcher" above), then the failed command again. Another image: tell the user it must be installed; continue once they say it is. | If it is not the default image. |
 | image.requirements_missing | `runtime.worker_requirements` names a file that does not exist. | Write it, or remove the field. | No. |
 | image.build_failed | The worker image could not be built from the requirements; `error.detail.pip` holds the installer's output. | Fix the package names or versions in the requirements file. | No. |
 

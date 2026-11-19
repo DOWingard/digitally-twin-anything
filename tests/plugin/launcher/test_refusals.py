@@ -18,6 +18,7 @@ from pathlib import Path
 
 import launcher_kit as kit
 import pytest
+from dta_core.manifest.models import Runtime
 
 needs_docker = pytest.mark.skipif(shutil.which("docker") is None, reason="needs the docker command")
 
@@ -33,6 +34,12 @@ def test_version_is_the_toolkits() -> None:
     assert kit.VERSION_FILE.read_text(encoding="utf-8").splitlines() == [
         project["project"]["version"]
     ]
+
+
+def test_the_runtime_image_built_is_the_one_a_manifest_names_by_default() -> None:
+    # The launcher builds dta-runtime:<VERSION>; a twin runs what runtime.image names.
+    version = kit.VERSION_FILE.read_text(encoding="utf-8").strip()
+    assert Runtime().image == f"dta-runtime:{version}"
 
 
 def test_refused_without_docker(tmp_path: Path, workdir: Path, home: Path) -> None:
