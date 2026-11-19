@@ -60,7 +60,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import numpy as np
-from scipy.stats import binomtest, chi2_contingency
 
 STUCK_MIN_CHANGES = 20
 STUCK_MIN_INTERVALS = 3
@@ -247,17 +246,28 @@ def smoothness(steps: Sequence[float | None]) -> Smoothness:
     )
     if pairs < SMOOTH_MIN_PAIRS:
         return Smoothness(pairs, kept, None)
-    return Smoothness(pairs, kept, float(binomtest(kept, pairs, 0.5, alternative="greater").pvalue))
+    # One-sided binomial tail: P(X >= kept) for X ~ Bin(pairs, 1/2).
+    tail = sum(math.comb(pairs, found) for found in range(kept, pairs + 1))
+    return Smoothness(pairs, kept, min(1.0, tail / 2.0**pairs))
 
 
 def clustering_p(cc: int, cn: int, nc: int, nn: int) -> float | None:
     """The G-test of independence of the next interval from the one before; None when a
     row or a column of the table is empty, which says nothing either way."""
-    table = np.array([[cc, cn], [nc, nn]], dtype=np.float64)
-    if (table.sum(axis=0) == 0).any() or (table.sum(axis=1) == 0).any():
+    table = ((cc, cn), (nc, nn))
+    rows = [sum(row) for row in table]
+    columns = [cc + nc, cn + nn]
+    total = sum(rows)
+    if 0 in rows or 0 in columns:
         return None
-    result = chi2_contingency(table, correction=False, lambda_="log-likelihood")
-    return float(result.pvalue)
+    # G = 2 sum O ln(O / E), with one degree of freedom: P(chi2_1 > G) = erfc(sqrt(G / 2)).
+    g = 2.0 * sum(
+        observed * math.log(observed * total / (rows[i] * columns[j]))
+        for i, row in enumerate(table)
+        for j, observed in enumerate(row)
+        if observed
+    )
+    return math.erfc(math.sqrt(max(g, 0.0) / 2.0))
 
 
 def stuck_test(
