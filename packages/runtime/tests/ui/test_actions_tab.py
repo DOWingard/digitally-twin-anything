@@ -114,6 +114,7 @@ def record_row(record: dict[str, Any]) -> dict[str, Any]:
         "action": record["action"],
         "object": record["object"],
         "params": T.params_text(record["params"]),
+        "origin": T.origin_text(record["origin"]),
         "source": record["source"],
         "fidelity": record["fidelity"] or "",
         "status": T.record_status_text(record["status"]),
@@ -168,10 +169,15 @@ def test_the_types_the_first_records_and_the_loops_are_what_the_api_says(
             "binding": action["binding"] or "",
             "bounds": T.bounds_text(action["bounds"]),
             "settle": T.duration_text(action["settle"]),
+            "on_failure": T.failure_text(action["on_failure"]),
             "status": action["status"],
         }
         for action in listing["data"]
     ]
+    # The pump's control holds when the twin fails; an action of no control says nothing.
+    failing = {row["id"]: row["on_failure"] for row in shown}
+    assert failing["set_pump"] == "holds: nothing is sent"
+    assert failing["note_valve"] == ""
     by_id = {row["id"]: row for row in shown}
     assert by_id["set_valve"]["bounds"] == "1 to 200, steps of at most 50"
     assert by_id["set_pump"]["bounds"] == "one of true, false"
@@ -327,6 +333,21 @@ def test_the_records_filter_by_status_and_action(acting: ActingWorld, browser):
         assert {row["status_key"] for row in rows} == {status}
         if action:
             assert {row["action"] for row in rows} == {action}
+
+
+def test_the_records_filter_by_origin(acting: ActingWorld, browser):
+    served = acting.served
+    open_actions(browser, served)
+    wait_loaded(browser, records_id(), 0, BLOCK, "every record")
+    choose_filter(browser, ids.RECORDS_ORIGIN, T.ORIGIN_WORDS["loop"])
+    expected = served.every("/actions/records", origin="loop")
+    assert len(expected) == len(acting.loop_run["records"]) == 2
+    query = json.dumps({"action": None, "origin": "loop", "status": None}, sort_keys=True)
+    grid_id = {"role": ids.RECORDS_GRID, "query": query}
+    rows = wait_loaded(browser, grid_id, 0, len(expected), "the records of the loop's run")
+    assert displayed_count(browser, grid_id) == len(expected)
+    assert rows == [record_row(record) for record in expected]
+    assert {row["origin"] for row in rows} == {T.ORIGIN_WORDS["loop"]}
 
 
 def test_the_records_page_past_the_first_block_to_the_last(acting: ActingWorld, browser):

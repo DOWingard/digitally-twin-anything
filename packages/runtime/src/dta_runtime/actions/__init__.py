@@ -14,6 +14,8 @@ becomes a `TwinActionRecord` on the live line, whatever becomes of it.
     records, record     read the records
     loops, control_loop, enable, disable, run_loop
                         the control loops and their runs
+    failsafe            what a control's `on_failure` sends when the twin can no longer
+                        vouch for itself: when it is due, to which objects, once per episode
 
 The caller hands in the twin's fidelity state (`unknown`, `healthy`, `correcting`,
 `failed`) and, for a proposal or a loop's run, the `kind` and `uid` of every incident it
@@ -25,7 +27,11 @@ here reads the wall clock.
 The interlock: an autonomous action is executed while the twin is `healthy` or
 `correcting` and none of its unresolved incidents is `stale` or `reconcile`, and is
 `blocked` otherwise; a supervised one waits for an approval, which is `blocked` only
-while the twin is `failed`; an advisory one is only recorded.
+while the twin is `failed`; an advisory one is only recorded. A fail-safe alone goes past
+the interlock and the autonomy; it is still judged like any proposal.
+
+A record's `origin` comes from its `source`: `failsafe` (`failsafe:<control>`), `loop`
+(a loop's uid) or `proposal` (anyone else).
 
 Uids: `twin_action:<id>` for an action type, `twin_control_loop:<id>` for a loop and
 `twin_action_record:<id>` for a record, whose id is the first 32 hexadecimal characters
@@ -57,6 +63,7 @@ A variable an executor lists and the environment lacks is a `config.missing_env`
 `HttpExecutor.from_manifest`. Errors of the store (`store.*`) pass through.
 """
 
+from . import failsafe
 from .catalog import types
 from .errors import (
     BAD_POLICY_ANSWER,
@@ -103,6 +110,7 @@ __all__ = [
     "control_loop",
     "disable",
     "enable",
+    "failsafe",
     "known",
     "loops",
     "propose",

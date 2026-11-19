@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Header, Path, Query
 from starlette.responses import Response
 
 from ... import actions
-from ...actions.records import RECORD_TYPE, action_uid, record_document
+from ...actions.records import RECORD_TYPE, action_uid, origin_filter, record_document
 from .. import acting
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, VERSION_HEADERS, errors, versioned
@@ -29,6 +29,7 @@ from ..models import (
     OperatorStep,
     ReconcileOut,
     ReconciliationStatus,
+    RecordOrigin,
 )
 from ..paging import next_cursor, offset_of, start
 from ..params import At, Cursor
@@ -90,15 +91,17 @@ CLOCK_NOTE = (
     "how it is bound (`executor`: an HTTP call the twin makes; `advisory`: a recommendation "
     "only), how long its effect takes to be observable (`settle`) and how far the observed "
     "value may lie from the value set (`tolerance`). `executable` says whether the twin can "
-    "execute it now; `executor_configured` whether the executors add-on is on.",
+    "execute it now; `executor_configured` whether the executors add-on is on; `on_failure` "
+    "what its control sends when the twin can no longer vouch for itself.",
     response_model=ActionTypeList,
     responses=versioned(400, 404),
 )
 def list_actions(services: ServicesDep, at: At = "head") -> Response:
     version = services.resolve(at, LIVE_BRANCH)
     has_executor = services.executor is not None
+    failures = acting.failures_at(services, version)
     found = [
-        acting.type_document(action, has_executor)
+        acting.type_document(action, has_executor, failures)
         for action in actions.types(services.twin, at=version)
     ]
     return json_response(
@@ -114,7 +117,9 @@ def list_actions(services: ServicesDep, at: At = "head") -> Response:
     "a decision, or advice only), `rejected` (outside its bounds, or turned down), "
     "`approved` (being sent), `blocked` (by the interlock), `executed` or `failed` (the "
     "external call). An executed action that set a control is reconciled: `pending`, then "
-    "`ok` or `mismatch`. Newest proposal first; every filter given must hold.",
+    "`ok` or `mismatch`. What a control's `on_failure` sent when the twin could no longer "
+    "vouch for itself has the source `failsafe:<control>` and the origin `failsafe`. Newest "
+    "proposal first; every filter given must hold.",
     response_model=ActionRecordList,
     responses=versioned(400, 404),
 )
@@ -134,6 +139,13 @@ def list_records(
             max_length=200,
         ),
     ] = None,
+    origin: Annotated[
+        RecordOrigin | None,
+        Query(
+            description="Only records of this origin: `failsafe` (sent by a control's "
+            "`on_failure`), `loop` (a control loop's run) or `proposal` (anyone else)"
+        ),
+    ] = None,
     reconciliation: Annotated[
         ReconciliationStatus | None, Query(description="Only records reconciled so")
     ] = None,
@@ -141,7 +153,7 @@ def list_records(
     limit: ListLimit = LIST_LIMIT_DEFAULT,
     cursor: Cursor = None,
 ) -> Response:
-    query = fingerprint("action-records", status, action, object, source, reconciliation)
+    query = fingerprint("action-records", status, action, object, source, reconciliation, origin)
     version, position = start(services, cursor, "action-records", query, at, LIVE_BRANCH)
     offset = offset_of(position)
     ontology = services.ontology(version)
@@ -158,6 +170,8 @@ def list_records(
             )
             if value is not None
         ]
+        if origin is not None:
+            conditions.extend(origin_filter(origin))
         # One row past the page tells whether another page follows.
         rows = services.store.table(
             RECORD_TYPE,
@@ -296,7 +310,11 @@ def reconcile(services: ServicesDep, idempotency_key: ReconcileKey = None) -> Re
 def one_action(services: ServicesDep, id: ActionId, at: At = "head") -> Response:
     version = services.resolve(at, LIVE_BRANCH)
     has_executor = services.executor is not None
-    found = acting.type_document(acting.action_or_404(services, id, version), has_executor)
+    found = acting.type_document(
+        acting.action_or_404(services, id, version),
+        has_executor,
+        acting.failures_at(services, version),
+    )
     return json_response(
         {"data": found, "executor_configured": has_executor, "version": version_json(version)},
         version,

@@ -8,7 +8,8 @@ for at most `drain_s`.
 
 The webhook's address is a secret: it is read from the environment, and it is never
 logged, listed or put in an error. An event's `time` is the data time of what it
-reports, never the wall clock.
+reports, never the wall clock. An event that says how urgent it is carries the extension
+attribute `severity`: `warning`, or `critical`, the highest.
 """
 
 from __future__ import annotations
@@ -35,6 +36,11 @@ EVENT_MEDIA = "application/cloudevents+json"
 DATA_MEDIA = "application/json"
 WEBHOOK = "webhook"
 LOG = "log"
+# The extension attribute that says how urgent an event is, and its values, least first.
+SEVERITY = "severity"
+WARNING = "warning"
+CRITICAL = "critical"
+SEVERITIES = (WARNING, CRITICAL)
 
 TRIES = 3
 BACKOFF_S: tuple[float, ...] = (1.0, 5.0)
@@ -79,6 +85,7 @@ class Notice:
             "type": self.event["type"],
             "subject": self.event.get("subject"),
             "time": self.event["time"],
+            "severity": self.event.get(SEVERITY),
             "status": self.status,
             "tries": self.tries,
             "http_status": self.http_status,
@@ -180,9 +187,18 @@ class Notifier:
     # -- emitting ---------------------------------------------------------------------
 
     def emit(
-        self, type: str, subject: str | None, data: Mapping[str, Any], *, time: datetime
+        self,
+        type: str,
+        subject: str | None,
+        data: Mapping[str, Any],
+        *,
+        time: datetime,
+        severity: str | None = None,
     ) -> Notice:
-        """Queue one event; `time` is the data time of what it reports."""
+        """Queue one event; `time` is the data time of what it reports, `severity` one of
+        `SEVERITIES` when the event says how urgent it is."""
+        if severity is not None and severity not in SEVERITIES:
+            raise ValueError(f"severity is one of {', '.join(SEVERITIES)}")
         event = {
             "specversion": SPEC_VERSION,
             "id": uuid.uuid4().hex,
@@ -195,6 +211,8 @@ class Notifier:
         }
         if subject is None:
             del event["subject"]
+        if severity is not None:
+            event[SEVERITY] = severity
         with self._lock:
             self._sequence += 1
             notice = Notice(self._sequence, event)

@@ -1168,6 +1168,11 @@ class NotificationOut(BaseModel):
     type: str = Field(examples=["twin.fidelity.state"])
     subject: str | None
     time: str = Field(description="Data time of what it reports")
+    severity: Literal["warning", "critical"] | None = Field(
+        default=None,
+        description="The event's `severity` extension attribute, when it says how urgent it "
+        "is; `critical` is the highest",
+    )
     status: Literal["queued", "delivered", "failed", "dropped", "logged", "unsent"]
     tries: int
     http_status: int | None = Field(description="The status of the webhook's last answer")
@@ -1194,6 +1199,7 @@ class FidelityDetail(BaseModel):
 
 ActionStatus = Literal["proposed", "rejected", "approved", "blocked", "executed", "failed"]
 ReconciliationStatus = Literal["pending", "ok", "mismatch"]
+RecordOrigin = Literal["failsafe", "loop", "proposal"]
 Autonomy = Literal["advisory", "supervised", "autonomous"]
 
 _RECORD_UID = "twin_action_record:5b1f0c2e9d4a47b8a3c6e1f0d2b4a6c8"
@@ -1231,6 +1237,16 @@ class ActionTypeOut(BaseModel):
     executable: bool = Field(
         description="Whether the twin can execute it: bound to an executor, supervised or "
         "autonomous, and an executor configured"
+    )
+    on_failure: dict[str, Any] | None = Field(
+        default=None,
+        description="What its control sends, once per failure, to each object the twin "
+        "commanded under it when the twin can no longer vouch for itself, as the manifest "
+        "says: `mode` (`hold`, `release`, `safe_value`), `action` (the action type sent; for "
+        "a safe value the control's own unless another is named), `parameters`, "
+        "`after_stale`; null when the control says nothing or it carries out no control. "
+        "This is not a safety function: a twin that is not running sends nothing",
+        examples=[{"mode": "safe_value", "action": "set_pump", "parameters": {"value": False}}],
     )
 
 
@@ -1285,7 +1301,14 @@ class ActionRecordOut(BaseModel):
     object: str | None
     params: dict[str, Any]
     reason: str | None
-    source: str | None = Field(description="Who proposed it: a name, or a control loop's uid")
+    source: str | None = Field(
+        description="Who proposed it: a name, a control loop's uid, or `failsafe:<control>` "
+        "for what a control's `on_failure` sent"
+    )
+    origin: RecordOrigin = Field(
+        description="Where it came from, as its source tells: a control's fail-safe, a control "
+        "loop's run, or anyone else's proposal"
+    )
     proposed_at: datetime | None = Field(description="The twin's clock when it was proposed")
     at_version: str | None = Field(description="Id of the head it was judged at")
     fidelity: str | None = Field(description="The twin's fidelity state it was judged in")

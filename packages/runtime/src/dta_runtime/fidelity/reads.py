@@ -18,7 +18,7 @@ from dta_core.store import EPOCH, VersionRef
 from ..twin import Twin
 from . import records
 from .errors import BAD_REQUEST, refused
-from .ladder import RESOLVED, UNRESOLVED
+from .ladder import HEALTHY, RESOLVED, UNRESOLVED
 from .records import (
     CHECK_COLUMNS,
     CHECK_TYPE,
@@ -84,6 +84,37 @@ def standing(twin: Twin, at: At = None) -> dict[str, Any]:
         elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
     )
     return {**document, "incidents": incidents, "version": version.id}
+
+
+def unhealthy_since(twin: Twin, at: At = None) -> datetime | None:
+    """When the twin last stopped being healthy: the `since` of the state that followed
+    its last healthy one, or of its first state when it never was healthy. None while it
+    is healthy, and before any check. However many states it passes through until it is
+    healthy again, the answer stays the same: it names one stretch of not being healthy.
+    """
+    started = time.perf_counter()
+    version = at if isinstance(at, VersionRef) else twin.store.resolve(_at(at))[0]
+    rows = twin.store.history(
+        STATE_UID, properties=["state", "since"], range=f"#0..{version.id}"
+    ).to_pylist()
+    rows.sort(key=lambda row: row["_seq"])
+    found: datetime | None = None
+    previous: str | None = None
+    for row in rows:
+        current = row.get("state")
+        if current == HEALTHY:
+            found = None
+        elif current != previous and (previous is None or previous == HEALTHY):
+            found = records.utc(row.get("since")) or records.utc(row.get("_t"))
+        previous = current
+    log.debug(
+        "the start of the stretch the twin has not been healthy read",
+        since=found.isoformat() if found else None,
+        states=len(rows),
+        seq=version.seq,
+        elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
+    )
+    return found
 
 
 def suspects(twin: Twin, at: At = None) -> set[Cell]:

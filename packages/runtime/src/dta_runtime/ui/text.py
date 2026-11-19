@@ -757,17 +757,26 @@ TYPE_COLUMNS = {
     "binding": "binding",
     "bounds": "bounds",
     "settle": "settle",
+    "on_failure": "when the twin fails",
     "status": "status",
 }
 EXECUTOR_ON = "An executor is configured: the twin makes the calls of the actions it may execute."
 EXECUTOR_OFF = "No executor is configured: the twin makes no external call."
 RECORDS_HEADING = "Records of the proposals, newest first"
 ACTION_FILTER_LABEL = "action"
+ORIGIN_FILTER_LABEL = "origin"
+# Where a record came from, as the API's `origin` says.
+ORIGIN_WORDS = {
+    "failsafe": "fail-safe",
+    "loop": "control loop",
+    "proposal": "proposal",
+}
 RECORD_COLUMNS = {
     "proposed_at": "proposed at",
     "action": "action",
     "object": "object",
     "params": "parameters",
+    "origin": "origin",
     "source": "source",
     "fidelity": "fidelity at the proposal",
     "status": "status",
@@ -860,10 +869,44 @@ def reason_text(found: dict[str, Any]) -> str:
     return f"{member}: {message}" if member else message
 
 
+def origin_text(origin: Any) -> str:
+    return ORIGIN_WORDS.get(str(origin), value_text(origin)) if origin else ""
+
+
+def failure_text(on_failure: dict[str, Any] | None) -> str:
+    """What a control sends when the twin fails, in words: `holds: nothing is sent`,
+    `release by release_pump with mode = local`, `the value 0 by set_pump`, each followed
+    by `, or after 2 h of old data` when old data also sends it."""
+    if not on_failure or not on_failure.get("mode"):
+        return ""
+    mode = on_failure["mode"]
+    params = dict(on_failure.get("parameters") or {})
+    if mode == "hold":
+        return "holds: nothing is sent"
+    if mode == "safe_value":
+        value = params.pop("value", None)
+        text = f"the value {value_text(value)}"
+        if on_failure.get("action"):
+            text += f" by {on_failure['action']}"
+    else:
+        text = f"release by {on_failure.get('action')}"
+    if params:
+        text += f" with {params_text(params)}"
+    if on_failure.get("after_stale"):
+        text += f", or after {duration_text(on_failure['after_stale'])} of old data"
+    return text
+
+
 def proposal_lines(record: dict[str, Any]) -> list[str]:
+    origin = record.get("origin")
+    sent_by = (
+        f"sent by the fail-safe of {str(record.get('source') or '').split(':', 1)[-1]}"
+        if origin == "failsafe"
+        else f"proposed by {record.get('source')}"
+    )
     return [
         f"{record.get('action')} on {record.get('object')}: {params_text(record.get('params'))}",
-        f"proposed by {record.get('source')} at {time_text(record.get('proposed_at'))}, "
+        f"{sent_by} at {time_text(record.get('proposed_at'))}, "
         f"the twin {record.get('fidelity') or 'unknown'}",
         f"status {record_status_text(record.get('status'))}"
         + (f", reconciliation {record['reconciliation']}" if record.get("reconciliation") else ""),

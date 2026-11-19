@@ -2,6 +2,7 @@
 
 from .notifier import (
     BACKOFF_S,
+    CRITICAL,
     DELIVERED,
     DRAIN_S,
     DROPPED,
@@ -12,9 +13,12 @@ from .notifier import (
     LOGGED,
     QUEUE_CAPACITY,
     QUEUED,
+    SEVERITIES,
+    SEVERITY,
     SPEC_VERSION,
     TRIES,
     UNSENT,
+    WARNING,
     WEBHOOK,
     Notice,
     Notifier,
@@ -25,6 +29,7 @@ SYNC_FAILED = "twin.sync.failed"
 
 __all__ = [
     "BACKOFF_S",
+    "CRITICAL",
     "DELIVERED",
     "DRAIN_S",
     "DROPPED",
@@ -35,10 +40,13 @@ __all__ = [
     "LOGGED",
     "QUEUED",
     "QUEUE_CAPACITY",
+    "SEVERITIES",
+    "SEVERITY",
     "SPEC_VERSION",
     "SYNC_FAILED",
     "TRIES",
     "UNSENT",
+    "WARNING",
     "WEBHOOK",
     "Notice",
     "Notifier",
