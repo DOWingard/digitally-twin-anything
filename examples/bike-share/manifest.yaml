@@ -1,0 +1,363 @@
+# A static twin of the bike-share export that generate.py writes: the manifest an agent
+# wrote with the build skill, without what the toolkit derives (the source's profile,
+# the ontology's signature, the record of what the user confirmed, the signature).
+manifest_version: 2
+twin:
+  id: cykelbo
+  name: Cykelbo bike share
+contract:
+  purpose: For Cykelbo operations, to see where and when stations run empty or full, so that the night
+    crew's rebalancing can be planned better, and to judge whether a short forecast of a station's bikes
+    is good enough to act on.
+  tier: static
+  questions:
+    q_level:
+      text: How many bikes and free docks did a station have at a time I name, and how did that change
+        over a period?
+      kind: descriptive
+      priority: 1
+      tolerance:
+        metric: mae
+        value: 1.0
+        unit: '1'
+      staleness: P1D
+      targets:
+      - Station.bikes_available
+      - Station.docks_available
+      function: f_series
+      example:
+        property: Station.bikes_available
+        from: '2026-03-10T06:00:00Z'
+        to: '2026-03-10T12:00:00Z'
+        uids:
+        - station:S001
+      provisional: false
+    q_empty_full:
+      text: Which stations stood empty, or full, and for how long, over a period I name?
+      kind: diagnostic
+      priority: 2
+      tolerance:
+        metric: error_rate
+        value: 0.05
+      staleness: P1D
+      targets:
+      - Station.bikes_available
+      - Station.docks_available
+      function: f_empty_full
+      example:
+        property: Station.bikes_available
+        from: '2026-03-10T06:00:00Z'
+        to: '2026-03-10T12:00:00Z'
+      provisional: false
+    q_forecast:
+      text: How many bikes will a station have one hour later?
+      kind: predictive
+      priority: 3
+      tolerance:
+        metric: mae
+        value: 2.0
+        unit: '1'
+      staleness: P1D
+      targets:
+      - Station.bikes_available
+      horizon: PT1H
+      function: q_forecast
+      example:
+        uids:
+        - station:S001
+      model: q_forecast
+      provisional: false
+    q_flows:
+      text: Between which pairs of stations do the most trips go?
+      kind: descriptive
+      priority: 4
+      tolerance:
+        metric: error_rate
+        value: 0.05
+      staleness: P1D
+      targets:
+      - Trip.route
+      function: f_flows
+      example: {}
+      provisional: false
+  controls: {}
+  boundary:
+    state:
+    - Station.bikes_available
+    - Station.docks_available
+    - Station.is_renting
+    controls: []
+    drivers:
+    - Weather.temperature
+    - Weather.rain
+    observations:
+    - Station.bikes_available
+    - Station.docks_available
+    - Station.is_renting
+    - Trip.start_station
+    - Trip.end_station
+    - Trip.route
+    - Weather.temperature
+    - Weather.rain
+  addons:
+    sdk_python: false
+    mcp: false
+    executors: false
+    llm_extraction: false
+    readonly_sql: false
+  hosting: local
+ontology:
+  path: ontology/cykelbo.yaml
+sources:
+  export:
+    description: A one-off export of the Cykelbo bike-share system (districts, stations, bikes, trips,
+      station status every 15 minutes, weather); nothing is added to it after the export.
+    connector: file
+    location: file://${CYKELBO_EXPORT_DIR}
+    env:
+    - CYKELBO_EXPORT_DIR
+    options:
+      datasets:
+        districts:
+          glob: districts.csv
+          format: csv
+        stations:
+          glob: stations.csv
+          format: csv
+        bikes:
+          glob: bikes.csv
+          format: csv
+        trips:
+          glob: trips/*.parquet
+          format: parquet
+          timezone: UTC
+        status:
+          glob: status/*.jsonl
+          format: jsonl
+          timezone: UTC
+        weather:
+          glob: weather.csv
+          format: csv
+          timezone: Europe/Stockholm
+    refresh_period: PT18S
+    edits_past: false
+    host_local: false
+    views:
+      weather_city: SELECT 'city' AS weather_station, t, temp_c, rain_mm FROM "export"."weather"
+    incremental: {}
+    mappings:
+      districts:
+        dataset: districts
+        object_type: District
+        identity:
+        - district_id
+        properties:
+          name:
+            column: name
+        kind: observed
+        mode: upsert
+      stations:
+        dataset: stations
+        object_type: Station
+        identity:
+        - station_id
+        properties:
+          name:
+            column: name
+          district:
+            column: district_id
+          lat:
+            column: lat
+            unit: deg
+          lon:
+            column: lon
+            unit: deg
+          capacity:
+            column: capacity
+            unit: '1'
+          kind:
+            column: kind
+          opened_on:
+            column: opened_on
+        kind: observed
+        mode: upsert
+      status:
+        dataset: status
+        object_type: Station
+        identity:
+        - station_id
+        properties:
+          bikes_available:
+            column: bikes_available
+            unit: '1'
+          docks_available:
+            column: docks_available
+            unit: '1'
+          is_renting:
+            column: is_renting
+        valid_time: ts
+        kind: observed
+        mode: upsert
+      bikes:
+        dataset: bikes
+        object_type: Bike
+        identity:
+        - bike_id
+        properties:
+          model:
+            column: model
+          in_service_since:
+            column: in_service_since
+        kind: observed
+        mode: upsert
+      trips:
+        dataset: trips
+        object_type: Trip
+        identity:
+        - trip_id
+        properties:
+          start_station:
+            column: start_station
+          end_station:
+            column: end_station
+          bike:
+            column: bike_id
+          started_at:
+            column: started_at
+          ended_at:
+            column: ended_at
+          member:
+            column: member
+          route:
+            expression: start_station || '>' || end_station
+        valid_time: started_at
+        kind: observed
+        mode: upsert
+      weather:
+        dataset: weather_city
+        object_type: Weather
+        identity:
+        - weather_station
+        properties:
+          temperature:
+            column: temp_c
+            unit: Cel
+          rain:
+            column: rain_mm
+            unit: mm
+        valid_time: t
+        kind: observed
+        mode: upsert
+sync:
+  interval: PT15M
+  aggregation: last
+  backfill_interval: PT15M
+  assimilation: direct
+models:
+  q_forecast:
+    question: q_forecast
+    target: Station.bikes_available
+    candidates:
+      persistence:
+        family: persistence
+        params: {}
+      seasonal:
+        family: seasonal_naive
+        params: {}
+      ets:
+        family: ets
+        params: {}
+    features: []
+    backtest:
+      scheme: walk_forward
+      initial_window: P14D
+      step: PT6H
+      min_folds: 3
+    acceptance:
+      metric: mae
+      threshold: 2.0
+    interventional: false
+functions:
+  f_series:
+    description: The history of a station property (bikes or free docks) over a range of time, per station
+    kind: builtin
+    entry: series
+    params: {}
+    complexity: O(|V| * versions)
+    latency_budget: PT10S
+    trigger: on_request
+    env: []
+  f_empty_full:
+    description: Stations whose bikes (empty) or free docks (full) stood at zero, with the times they
+      did, at one time or over a range
+    kind: builtin
+    entry: below
+    params:
+      threshold: 0.5
+    complexity: O(|V| * versions)
+    latency_budget: PT10S
+    trigger: on_request
+    env: []
+  f_flows:
+    description: Number of trips per ordered pair of stations (start>end)
+    kind: builtin
+    entry: aggregate
+    params:
+      property: Trip.route
+      op: count
+      group_by: route
+    complexity: O(|E|)
+    latency_budget: PT10S
+    trigger: on_request
+    env: []
+  q_forecast:
+    description: Forecast of each station's bikes one hour ahead by the question's selected model
+    kind: builtin
+    entry: forecast
+    params:
+      question: q_forecast
+    complexity: O(|V|)
+    latency_budget: PT1M
+    trigger: on_request
+    env: []
+actions: {}
+control_loops: {}
+interfaces:
+  base_url_env: DTA_BASE_URL
+  token_env: DTA_API_TOKEN
+  api_port_env: DTA_API_PORT
+  ui_port_env: DTA_UI_PORT
+  ui: true
+env:
+  DTA_MCP_PORT:
+    description: Host port of the twin's MCP adapter
+    secret: false
+  DTA_SQL_PORT:
+    description: Host port of read-only SQL over the twin's store
+    secret: false
+  DTA_SQL_READER_PASSWORD:
+    description: Password of the store user twin_reader
+  DTA_BASE_URL:
+    description: Address of the twin's API
+    secret: false
+  DTA_API_TOKEN:
+    description: Bearer token of the twin's API
+    secret: true
+  DTA_API_PORT:
+    description: Host port of the twin's API
+    secret: false
+  DTA_UI_PORT:
+    description: Host port of the twin's UI
+    secret: false
+  CYKELBO_EXPORT_DIR:
+    description: Absolute path of the folder holding the Cykelbo export (description.md, stations.csv,
+      trips/, status/ ...)
+    secret: false
+runtime:
+  store_image: dolthub/dolt-sql-server:2.7.3
+  image: dta-runtime:0.1.0
+  clock: wall
+  networks: []
+  scheduler_poll: PT1S
+  worker_cpus: 1.0
+  worker_memory_mb: 2048

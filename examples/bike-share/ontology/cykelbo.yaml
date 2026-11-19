@@ -1,0 +1,160 @@
+id: https://example.org/dta/cykelbo
+name: cykelbo
+description: The Cykelbo bike-share scheme in one city - its districts, docking stations with their bikes and free docks over time, the fleet of bikes, the trips between stations, and the city's weather.
+prefixes:
+  linkml: https://w3id.org/linkml/
+  cb: https://example.org/dta/cykelbo/
+default_prefix: cb
+default_range: string
+imports:
+  - linkml:types
+
+enums:
+  StationKind:
+    permissible_values:
+      home: {}
+      work: {}
+  BikeModel:
+    permissible_values:
+      classic: {}
+      electric: {}
+
+classes:
+  District:
+    description: One of the districts of the service area.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      name:
+        required: true
+        description: Name of the district.
+
+  Station:
+    description: A docking station, in one district, with its bikes and free docks over time.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      name:
+        required: true
+        description: Name of the station.
+      district:
+        range: District
+        required: true
+        description: District the station is in.
+      lat:
+        range: float
+        minimum_value: -90
+        maximum_value: 90
+        description: Latitude of the station.
+        unit:
+          ucum_code: deg
+      lon:
+        range: float
+        minimum_value: -180
+        maximum_value: 180
+        description: Longitude of the station.
+        unit:
+          ucum_code: deg
+      capacity:
+        range: integer
+        minimum_value: 0
+        description: Number of docks at the station.
+        unit:
+          ucum_code: "1"
+      kind:
+        range: StationKind
+        description: Whether the station mostly serves homes or workplaces.
+      opened_on:
+        range: date
+        description: Day the station opened.
+      bikes_available:
+        range: integer
+        minimum_value: 0
+        description: Bikes that can be taken from the station, as it reported at the end of each 15 minutes.
+        unit:
+          ucum_code: "1"
+        annotations:
+          dta_role: state
+      docks_available:
+        range: integer
+        minimum_value: 0
+        description: Free docks at the station, as it reported at the end of each 15 minutes.
+        unit:
+          ucum_code: "1"
+        annotations:
+          dta_role: state
+      is_renting:
+        range: boolean
+        description: Whether the station was renting; a station that is not renting neither gives nor takes bikes.
+        annotations:
+          dta_role: state
+
+  Bike:
+    description: One bike of the fleet.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      model:
+        range: BikeModel
+        description: Classic or electric.
+      in_service_since:
+        range: date
+        description: Day the bike entered service.
+
+  Trip:
+    description: One trip, taking one bike from a start station to an end station.
+    annotations:
+      link_source: start_station
+      link_target: end_station
+      dta_event: true
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      start_station:
+        range: Station
+        required: true
+        description: Station the trip started at.
+      end_station:
+        range: Station
+        required: true
+        description: Station the trip ended at.
+      bike:
+        range: Bike
+        description: Bike ridden.
+      started_at:
+        range: datetime
+        description: When the trip started (UTC).
+      ended_at:
+        range: datetime
+        description: When the trip ended (UTC).
+      member:
+        range: boolean
+        description: Whether the rider was a member.
+      route:
+        description: The ordered pair of stations, written start station id, '>', end station id.
+
+  Weather:
+    description: The city's weather station, read every hour.
+    attributes:
+      uid:
+        identifier: true
+        required: true
+      temperature:
+        range: float
+        description: Air temperature.
+        unit:
+          ucum_code: Cel
+        annotations:
+          dta_role: state
+      rain:
+        range: float
+        minimum_value: 0
+        description: Rain in the hour.
+        unit:
+          ucum_code: mm
+        annotations:
+          dta_role: state
