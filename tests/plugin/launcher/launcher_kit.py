@@ -74,6 +74,67 @@ needs_runtime = pytest.mark.skipif(
 )
 
 
+def _buildx_present() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    return subprocess.run(["docker", "buildx", "version"], capture_output=True).returncode == 0
+
+
+needs_buildx = pytest.mark.skipif(
+    not _buildx_present(), reason="needs docker with its buildx plugin, which builds the images"
+)
+
+# What the launcher runs besides docker and the shell's own builtins; flock is
+# used when present and is left out here.
+LAUNCHER_TOOLS = (
+    *("env", "sed", "ls", "id", "readlink", "mkdir"),
+    *("tee", "tail", "date", "sleep", "rm", "rmdir"),
+)
+
+# The tags the rest of this machine's work depends on: no test builds or removes them.
+PROTECTED_TAGS = frozenset(
+    f"{repository}:{tag}"
+    for repository in ("dta-toolkit", "dta-runtime")
+    for tag in ("0.1.0", "main")
+)
+# What the launcher's build reads from the plugin's root; the tests are left out.
+_SOURCES = ("pyproject.toml", "uv.lock", "docker")
+_NOT_SOURCES = shutil.ignore_patterns("tests", "__pycache__", "*.pyc", ".venv", ".*_cache")
+
+
+def image_present(name: str) -> bool:
+    return _image_present(name)
+
+
+def plugin_copy(root: Path, version: str, *, sources: bool = True) -> Path:
+    """A copy of the plugin whose VERSION is `version`, with the sources of its images
+    beside the launcher unless told otherwise; returns the copy's launcher."""
+    assert version not in {tag.split(":")[1] for tag in PROTECTED_TAGS}, version
+    (root / "bin").mkdir(parents=True)
+    launcher = root / "bin" / "dta"
+    shutil.copy2(LAUNCHER, launcher)
+    (root / "bin" / "VERSION").write_text(version + "\n", encoding="utf-8")
+    if sources:
+        for name in _SOURCES:
+            source = REPO / name
+            if source.is_dir():
+                shutil.copytree(source, root / name)
+            else:
+                shutil.copy2(source, root / name)
+        shutil.copytree(REPO / "packages", root / "packages", ignore=_NOT_SOURCES)
+    return launcher
+
+
+def remove_tags(*names: str) -> None:
+    """Remove these images by repository:tag, never by id and never forced: an image
+    that holds other tags only loses this one."""
+    for name in names:
+        assert name not in PROTECTED_TAGS, name
+        done = _docker("image", "rm", name)
+        if done.returncode != 0 and "No such image" not in done.stderr:
+            log.warn("a test image could not be removed", image=name, stderr=done.stderr[-500:])
+
+
 def environment(home: Path, **extra: str) -> dict[str, str]:
     """The launcher's whole environment: PATH, a temporary HOME, the image under test."""
     env = {
