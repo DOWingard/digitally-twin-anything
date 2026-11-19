@@ -13,7 +13,8 @@ import yaml
 
 from .errors import DtaError, ManifestTooNew
 from .log import Log
-from .manifest import Manifest, dump_manifest, parse_manifest
+from .manifest import Manifest, parse_manifest
+from .manifest.io import VERSION_FIELD, to_plain
 
 log = Log("core.bundle")
 
@@ -32,9 +33,13 @@ class Bundle:
     ontology_text: str
 
     def to_json(self) -> str:
-        return json.dumps(
-            {"manifest": dump_manifest(self.manifest), "ontology": self.ontology_text}
-        )
+        plain = to_plain(self.manifest)
+        if plain.get(VERSION_FIELD) == 1:
+            # A runtime from before manifests named their version reads version 1 and knows
+            # no such field; a newer one reads the manifest the same without it.
+            del plain[VERSION_FIELD]
+        text = yaml.safe_dump(plain, sort_keys=False, allow_unicode=True)
+        return json.dumps({"manifest": text, "ontology": self.ontology_text})
 
     @classmethod
     def from_json(cls, text: str) -> Bundle:

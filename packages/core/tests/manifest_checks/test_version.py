@@ -100,6 +100,16 @@ def test_the_version_is_in_no_hash():
     assert contract_hash(one) == contract_hash(two)
 
 
+def test_a_bundle_of_version_1_is_one_a_runtime_from_before_versions_reads():
+    """Such a runtime knows no manifest_version field; the version is left out for it."""
+    one = Bundle(manifest=parse_manifest({"manifest_version": 1, **TWIN}), ontology_text="")
+    sent = yaml.safe_load(json.loads(one.to_json())["manifest"])
+    assert "manifest_version" not in sent
+    assert manifest_hash(Bundle.from_json(one.to_json()).manifest) == manifest_hash(one.manifest)
+    two = Bundle(manifest=parse_manifest({"manifest_version": 2, **TWIN}), ontology_text="")
+    assert yaml.safe_load(json.loads(two.to_json())["manifest"])["manifest_version"] == 2
+
+
 def test_a_bundle_newer_than_this_software_is_refused_as_too_new():
     manifest_text = yaml.safe_dump({"manifest_version": 3, **TWIN, "later": {}})
     text = json.dumps({"manifest": manifest_text, "ontology": "id: x"})
