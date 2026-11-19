@@ -17,7 +17,33 @@ from fidelity_testkit import Oracle, at, kinds, model_row, model_uid, no_offset,
 INCIDENT = "twin.fidelity.incident"
 REMODEL = "twin.fidelity.remodel_requested"
 STATE = "twin.fidelity.state"
-REFUSED = CorrectionResult(accepted=False, model=None, fitted_to=None, error=0.9)
+# What an evaluation that accepted nothing reports: the rule's code, its words and the
+# numbers it judged by.
+NUMBERS = {
+    "metric": "mae",
+    "threshold": 0.5,
+    "candidates": [
+        {
+            "uid": "twin_model:level/naive",
+            "error": 0.9,
+            "baseline_error": 0.7,
+            "skill": -0.29,
+            "accepted": False,
+            "reasons": ["the mae of 0.9 is above the threshold of 0.5"],
+        }
+    ],
+}
+REFUSED = CorrectionResult(
+    accepted=False,
+    model=None,
+    fitted_to=None,
+    error=0.9,
+    detail={
+        "reason_code": "not_accepted",
+        "reason": "no candidate is accepted over the recent history",
+        "numbers": NUMBERS,
+    },
+)
 
 
 def breaching(make_plant, correction):
@@ -105,6 +131,18 @@ def test_the_whole_ladder_up_to_the_retry_budget_and_a_retry(make_plant):
     assert ladder.asked(again) == [("reselect", 1, 2)]
     assert kinds(again.events) == [(INCIDENT, "changed")]
     assert ladder.record()["status"] == "open"
+    # Every correction not accepted carries why on its step.
+    results = [step for step in ladder.record()["steps"] if step["action"] == "result"]
+    assert results and all(step["accepted"] is False for step in results)
+    assert all(
+        step["reason"]
+        == {
+            "code": "not_accepted",
+            "message": "no candidate is accepted over the recent history",
+            "numbers": NUMBERS,
+        }
+        for step in results
+    )
     # That came to nothing too: cycle 3 is due two intervals after cycle 2 ended.
     assert ladder.step(15).corrections == []
     assert ladder.record()["detail"]["next_cycle_at"] == "2026-01-05T04:15:00Z"

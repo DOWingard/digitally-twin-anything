@@ -705,7 +705,11 @@ def step_outcome(step: dict[str, Any]) -> str:
             fitted_to = step.get("fitted_to")
             fitted = f", fitted to {time_text(fitted_to)}" if fitted_to else ""
             return f"accepted: {step.get('model')}{fitted}"
-        return "not accepted"
+        return refused_text(step.get("reason"))
+    if action == "unknown":
+        questions = step.get("questions") or []
+        unanswered = f"; without an answer: {', '.join(questions)}" if questions else ""
+        return f"value unknown ({step.get('why')}): {step.get('message') or ''}{unanswered}"
     if action == "request":
         return "asked for"
     if action in ("held", "recovered", "resolved", "not_held"):
@@ -740,8 +744,44 @@ def step_outcome(step: dict[str, Any]) -> str:
     if action == "flagged":
         return f"flagged {step.get('reason') or ''}".strip()
     if action == "cleared":
-        return f"cleared by {step.get('by') or 'a check'}"
+        return f"cleared by {step.get('by') or 'a check'}{cleared_evidence(step)}"
     return str(action or "")
+
+
+def refused_text(reason: Any) -> str:
+    """Why a correction was not accepted: the evaluation's code and words, the
+    acceptance rule and each candidate's numbers."""
+    if not isinstance(reason, dict) or not (reason.get("code") or reason.get("message")):
+        return "not accepted"
+    text = f"not accepted ({reason.get('code') or 'no code'}): {reason.get('message') or ''}"
+    numbers = reason.get("numbers") if isinstance(reason.get("numbers"), dict) else {}
+    if numbers.get("metric") is not None:
+        text += f"; accepted at {numbers['metric']} <= {numbers.get('threshold')}"
+    for item in numbers.get("candidates") or []:
+        parts = [f"{item.get('uid')}: error {number_text(item.get('error'))}"]
+        if item.get("baseline_error") is not None:
+            parts.append(f"baseline {number_text(item.get('baseline_error'))}")
+        if item.get("skill") is not None:
+            parts.append(f"skill {number_text(item.get('skill'))}")
+        text += f"; {', '.join(parts)}"
+    return text
+
+
+def cleared_evidence(step: dict[str, Any]) -> str:
+    """What a check cleared a signal on: the raw readings moving again, or a reading
+    agreeing with the inferred value."""
+    if step.get("changes") is not None:
+        return (
+            f": {plural(int(step['changes']), 'change')} of the raw readings since the flag, "
+            f"{plural(int(step.get('run') or 0), 'interval')} without one"
+        )
+    if step.get("reading") is not None and step.get("inferred") is not None:
+        return (
+            f": the reading {number_text(step['reading'])} within "
+            f"{number_text(2.0 * float(step.get('tolerance') or 0.0))} of the inferred "
+            f"{number_text(step['inferred'])}"
+        )
+    return ""
 
 
 # -- the actions tab ------------------------------------------------------------------------------

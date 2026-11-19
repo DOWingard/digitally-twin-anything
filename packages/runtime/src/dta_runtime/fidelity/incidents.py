@@ -209,6 +209,19 @@ def corrected(
             "detail": dict(result.detail),
         }
         updated["detail"] = detail
+        # Why a correction was not accepted, as its evaluation gave it: what an operator
+        # reads on the step without the job's record.
+        why = (
+            {}
+            if result.accepted
+            else {
+                "reason": {
+                    "code": result.detail.get("reason_code"),
+                    "message": result.detail.get("reason"),
+                    "numbers": result.detail.get("numbers"),
+                }
+            }
+        )
         updated["steps"] = [
             *document["steps"],
             _step(
@@ -222,6 +235,7 @@ def corrected(
                 error=result.error,
                 cycle=moved.cycle,
                 next_cycle_at=iso(moved.due),
+                **why,
             ),
         ]
         version, events = _write(

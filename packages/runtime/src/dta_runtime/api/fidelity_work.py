@@ -35,7 +35,7 @@ from ..fidelity import CorrectionRequest, CorrectionResult, Freshness
 from ..fidelity.outcome import corrections_of
 from ..fidelity.reading import floor_to
 from ..protocol import InterventionRef
-from . import evaluating, failing, predicting
+from . import evaluating, failing, predicting, registry
 from .jobs import JobsClosed, Outcome, Work
 from .live import ClockReading, HeadState, sync_document
 from .problems import ApiError
@@ -138,6 +138,8 @@ def predictor_for(services: Services, known: VersionRef) -> fidelity.Predictor:
             budget_s=budget,
             wait_until=time.monotonic() + budget,
             known=known,
+            # The check leaves out every origin at which an input was unknown.
+            guard=False,
         )
         return table
 
@@ -383,6 +385,7 @@ def correction_work(services: Services, request: CorrectionRequest, budget_s: fl
                 "scope": evaluating.RECENT,
                 "reason": found.get("reason"),
                 "reason_code": found.get("reason_code"),
+                "numbers": verdict_numbers(found),
                 "frame": _plain(found.get("frame")),
                 "version": found.get("version"),
                 "duration_ms": found.get("duration_ms"),
@@ -425,6 +428,35 @@ def correction_work(services: Services, request: CorrectionRequest, budget_s: fl
         return Outcome(result=document)
 
     return work
+
+
+def verdict_numbers(found: Mapping[str, Any]) -> dict[str, Any] | None:
+    """What the acceptance rule judged a correction's candidates by: the `metric` and
+    its `threshold`, and per candidate its `error`, the `baseline_error`, the `skill`,
+    whether it was `accepted` and the rule's `reasons`; None when nothing was judged."""
+    candidates = [
+        {
+            "uid": item["uid"],
+            "error": registry.finite(item.get("error")),
+            "baseline_error": registry.finite(
+                (item.get("baseline_scores") or {}).get(
+                    (found.get("acceptance") or {}).get("metric") or ""
+                )
+            ),
+            "skill": registry.finite(item.get("skill")),
+            "accepted": bool(item.get("accepted")),
+            "reasons": list(item.get("reasons") or []) or [str(item.get("note") or "")],
+        }
+        for item in ((found.get("summary") or {}).get("candidates") or [])
+    ]
+    if not candidates and not found.get("acceptance"):
+        return None
+    acceptance = found.get("acceptance") or {}
+    return {
+        "metric": acceptance.get("metric"),
+        "threshold": registry.finite(acceptance.get("threshold")),
+        "candidates": candidates,
+    }
 
 
 def _plain(value: Any) -> Any:
