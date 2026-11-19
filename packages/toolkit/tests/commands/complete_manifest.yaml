@@ -3,6 +3,7 @@
 # an executor action, and a control loop. It has no gaps once every user-owned
 # field is confirmed, and no findings. Tests derive every failing case from it by
 # one small change.
+manifest_version: 2
 twin:
   id: pump-station
   name: Pump Station

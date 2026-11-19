@@ -54,6 +54,7 @@ from .. import addons, workerimage
 from ..acceptance import ApiUnavailable, Context, TwinApi, probe_health, service_url, smoke
 from ..envfile import read_env
 from ..output import command, emit, session
+from ..runtimecheck import require_image_reads
 from ..sdk import ensure_sdk, remove_sdk
 from ..stack import (
     API_SERVICE,
@@ -1002,6 +1003,7 @@ def build(
         _refuse_unless_ready(ctx, workspace, manifest)
         start = STEPS.index(from_step) if from_step else len(STEPS)
         run = Build(workspace, manifest, start=start, force=force, models_timeout=models_timeout)
+        require_image_reads(session(ctx), run.stack, manifest)
         outcomes: list[dict[str, Any]] = []
         for name in STEPS:
             keep, why = run.reusable(name)
