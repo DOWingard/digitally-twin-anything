@@ -343,6 +343,35 @@ dta control list | enable LOOP --by NAME | disable LOOP --by NAME | run LOOP
 dta notifications
 ```
 
+### When the twin fails, and manifest versions
+
+A twin whose fidelity state is `failed` executes nothing, so the real system
+keeps the last thing the twin set. Each control therefore carries the user's
+choice, `contract.controls.<control>.on_failure`, in the signed contract:
+
+| `mode` | What is sent, once per failure, to each object the twin commanded |
+|---|---|
+| `hold` | Nothing. |
+| `release` | A declared action that hands the object back to the real system's own control. |
+| `safe_value` | The control's own action with a constant inside the control's bounds. |
+
+It goes past the interlock and the control's autonomy and uses no model;
+`after_stale` sends it as well when the twin's data has been too old for that
+long. An autonomous control whose action calls the real system must make the
+choice. This is not a safety function: a twin that is stopped or cut off sends
+nothing, so protection against that belongs in the real system.
+
+While a breach incident waits for a managing agent to re-model, the twin keeps
+correcting on newer data: up to `fidelity.correction.retry_budget` cycles, each
+after a wait that doubles from `retry_backoff`. Only the request's time-out
+fails the twin.
+
+`manifest_version` states which version of the manifest's format a manifest is
+written in (now 2). A field newer than the stated version is refused, a
+manifest newer than the toolkit is refused (`manifest.too_new`), and before
+`dta build`, `dta up` and an import start anything the toolkit asks the runtime
+image what it reads and refuses an older one (`runtime.too_old`).
+
 ### Moving a twin, and the add-ons
 
 ```sh
