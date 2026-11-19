@@ -157,6 +157,19 @@ def test_stuck_signals_are_flagged_inferred_then_unknown_and_cleared(make_plant)
     assert incident["steps"][-1]["action"] == "unknown"
     assert incident["steps"][-1]["why"] == "horizon_passed"
     assert fidelity.state(plant.twin)["state"] == "correcting"
+    # What the interlock and the readers of values are handed: G2's flow has been unknown
+    # since its flag, no question inferring it.
+    standing = fidelity.standing(plant.twin)
+    withheld = [found["withheld"] for found in standing["incidents"] if "withheld" in found]
+    assert sorted(withheld, key=lambda cell: cell["property"]) == [
+        {"signal": FLOW_G2, "property": "Gauge.flow", "object": G2},
+        {"signal": LEVEL_G1, "property": "Gauge.level", "object": G1},
+    ]
+    unknown = fidelity.unknown(plant.twin)
+    assert sorted(unknown) == [("Gauge.flow", G2), ("Gauge.level", G1)]
+    assert fidelity.withheld(unknown, ["Gauge.level"], uids=[G1])[0]["why"] == "horizon_passed"
+    assert fidelity.withheld(unknown, ["Gauge.flow"])[0]["why"] == "no_inference"
+    assert fidelity.withheld(unknown, ["Gauge.level"], uids=[G2]) == []
     cleared_by_hand = fidelity.clear_signal(
         plant.twin, FLOW_G2, by="operator", note="sensor cleaned", now=at(29)
     )

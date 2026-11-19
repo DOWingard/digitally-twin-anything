@@ -42,6 +42,7 @@ from .reads import (
     errors,
     incident,
     incidents,
+    model_properties,
     observed_reading,
     signal,
     signals,
@@ -49,6 +50,8 @@ from .reads import (
     state,
     suspects,
     unhealthy_since,
+    unknown,
+    withheld,
     withhold,
 )
 from .records import incident_uid, signal_uid
@@ -80,6 +83,7 @@ __all__ = [
     "incident",
     "incident_uid",
     "incidents",
+    "model_properties",
     "observed_reading",
     "open_incident",
     "resolve",
@@ -91,5 +95,7 @@ __all__ = [
     "state",
     "suspects",
     "unhealthy_since",
+    "unknown",
+    "withheld",
     "withhold",
 ]

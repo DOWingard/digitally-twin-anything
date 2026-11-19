@@ -119,13 +119,14 @@ def check_state(state: str) -> None:
         )
 
 
-def check_incidents(incidents: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
-    """The incidents not resolved as the gate reads them, `{"kind", "uid"}` each; refused
-    when one is not an incident of a kind the twin has."""
+def check_incidents(incidents: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The incidents not resolved as the gate reads them, `{"kind", "uid"}` each, with
+    the `withheld` cell (`{signal, property, object}`) of a signal incident whose value
+    is unknown; refused when one is not an incident of a kind the twin has."""
     if isinstance(incidents, str | bytes | Mapping):
         log.error("the incidents handed in are not a list", given=type(incidents).__name__)
         raise refused(BAD_STATE, "the incidents are a list of {kind, uid}")
-    found: list[dict[str, str]] = []
+    found: list[dict[str, Any]] = []
     for index, incident in enumerate(incidents):
         kind = incident.get("kind") if isinstance(incident, Mapping) else None
         uid = incident.get("uid") if isinstance(incident, Mapping) else None
@@ -142,7 +143,22 @@ def check_incidents(incidents: Iterable[Mapping[str, Any]]) -> list[dict[str, st
                 f"{', '.join(INCIDENT_KINDS)}",
                 index=index,
             )
-        found.append({"kind": kind, "uid": uid})
+        cell = incident.get("withheld")
+        if cell is None:
+            found.append({"kind": kind, "uid": uid})
+            continue
+        names = ("signal", "property", "object")
+        if not isinstance(cell, Mapping) or not all(
+            isinstance(cell.get(name), str) and cell.get(name) for name in names
+        ):
+            log.error("a withheld cell handed in is not one", index=index, uid=uid)
+            raise refused(
+                BAD_STATE,
+                f"incidents[{index}].withheld is not {{signal, property, object}}",
+                index=index,
+            )
+        withheld = {name: str(cell[name]) for name in names}
+        found.append({"kind": kind, "uid": uid, "withheld": withheld})
     return found
 
 
@@ -556,17 +572,27 @@ def propose_with(
 
         decision = (
             gate.on_proposal(
-                document, has_executor=executor is not None, state=state, incidents=unresolved
+                document,
+                has_executor=executor is not None,
+                state=state,
+                incidents=unresolved,
+                object_uid=str(object_uid),
             )
             if interlock
             else gate.EXECUTE
         )
-        blocking = [found["uid"] for found in gate.blocking(unresolved)]
+        blocking = [found["uid"] for found in gate.blocking(unresolved, document, str(object_uid))]
         if decision == gate.BLOCK:
             row.update(
                 status=BLOCKED,
                 reasons=canonical(
-                    gate.blocked_reasons(state, approval=False, incidents=unresolved)
+                    gate.blocked_reasons(
+                        state,
+                        approval=False,
+                        incidents=unresolved,
+                        action=document,
+                        object_uid=str(object_uid),
+                    )
                 ),
             )
         else:

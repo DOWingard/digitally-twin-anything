@@ -16,11 +16,30 @@ BREACH = {"kind": "breach", "uid": "twin_incident:breach-20260105T003000Z-0a1b2c
 SIGNAL = {"kind": "signal", "uid": "twin_incident:signal-20260105T003000Z-1b2c3d4e5f"}
 STALE = {"kind": "stale", "uid": "twin_incident:stale-20260105T003000Z-2c3d4e5f60"}
 RECONCILE = {"kind": "reconcile", "uid": "twin_incident:reconcile-20260105T003000Z-3d4e5f6071"}
+# A signal incident whose value is unknown: the pump's `running`, or the valve's setting.
+RUNNING_UNKNOWN = {
+    **SIGNAL,
+    "withheld": {
+        "signal": "twin_signal:0a1b2c3d4e5f60718293",
+        "property": "Pump.running",
+        "object": PUMP,
+    },
+}
+SETTING_UNKNOWN = {
+    **SIGNAL,
+    "withheld": {
+        "signal": "twin_signal:1b2c3d4e5f6071829304",
+        "property": "Valve.setting",
+        "object": VALVE,
+    },
+}
 # The state and the incidents not resolved of each cell of the table.
-CELLS: dict[str, tuple[str, list[dict[str, str]]]] = {
+CELLS: dict[str, tuple[str, list[dict[str, Any]]]] = {
     "healthy": ("healthy", []),
     "correcting, a breach": ("correcting", [BREACH]),
     "correcting, a signal": ("correcting", [SIGNAL]),
+    "correcting, the target unknown": ("correcting", [RUNNING_UNKNOWN]),
+    "correcting, another value unknown": ("correcting", [SETTING_UNKNOWN]),
     "correcting, a stale": ("correcting", [STALE]),
     "correcting, a reconcile": ("correcting", [RECONCILE]),
     "correcting, a breach and a reconcile": ("correcting", [BREACH, RECONCILE]),
@@ -46,6 +65,8 @@ EXPECTED = {
         "healthy": "executed",
         "correcting, a breach": "executed",
         "correcting, a signal": "executed",
+        "correcting, the target unknown": "blocked",
+        "correcting, another value unknown": "executed",
         "correcting, a stale": "blocked",
         "correcting, a reconcile": "blocked",
         "correcting, a breach and a reconcile": "blocked",
@@ -57,6 +78,12 @@ EXPECTED = {
 }
 # What the reason of each block names.
 NAMED = {
+    "correcting, the target unknown": [
+        SIGNAL["uid"],
+        "Pump.running",
+        PUMP,
+        "twin_signal:0a1b2c3d4e5f60718293",
+    ],
     "correcting, a stale": ["stale", STALE["uid"]],
     "correcting, a reconcile": ["reconcile", RECONCILE["uid"]],
     "correcting, a breach and a reconcile": ["reconcile", RECONCILE["uid"]],

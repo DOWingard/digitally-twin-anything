@@ -25,9 +25,10 @@ executors add-on is off) and, for a loop, what runs its policy (a `Policy`). Not
 here reads the wall clock.
 
 The interlock: an autonomous action is executed while the twin is `healthy` or
-`correcting` and none of its unresolved incidents is `stale` or `reconcile`, and is
-`blocked` otherwise; a supervised one waits for an approval, which is `blocked` only
-while the twin is `failed`; an advisory one is only recorded. A fail-safe alone goes past
+`correcting`, none of its unresolved incidents is `stale` or `reconcile` and no signal
+incident leaves its control's target on its object unknown, and is `blocked` otherwise;
+a supervised one waits for an approval, which is `blocked` only while the twin is
+`failed`; an advisory one is only recorded. A fail-safe alone goes past
 the interlock and the autonomy; it is still judged like any proposal.
 
 A record's `origin` comes from its `source`: `failsafe` (`failsafe:<control>`), `loop`
