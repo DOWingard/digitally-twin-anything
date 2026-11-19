@@ -278,6 +278,7 @@ def acting_manifest(*, acts: bool = True) -> Manifest:
                 "bounds": {"allowed": [True, False]},
                 "autonomy": "autonomous",
                 "action": "set_pump",
+                "on_failure": {"mode": "hold"},
             }
         }
         contract["objective"] = {

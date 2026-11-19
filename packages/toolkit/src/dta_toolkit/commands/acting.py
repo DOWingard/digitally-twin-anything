@@ -21,6 +21,9 @@ import httpx
 import typer
 from dta_core.errors import CheckFailed, DtaError
 from dta_core.log import Log
+from dta_core.manifest.checks.summary import failure_text
+from dta_core.manifest.models import Control, OnFailure
+from pydantic import ValidationError
 
 from ..acceptance import TwinApi
 from ..output import command, emit
@@ -440,15 +443,42 @@ _RECORD_COLUMNS = [
     "action",
     "object",
     "status",
+    "origin",
     "source",
     "proposed_at",
     "reconciliation",
 ]
+_ORIGINS = ("failsafe", "loop", "proposal")
+
+
+def _failure_words(on_failure: Any) -> str:
+    """What a control sends when the twin fails, in the words of the manifest summary;
+    empty for an action type that carries out no control or whose control says nothing."""
+    if not isinstance(on_failure, Mapping):
+        return ""
+    try:
+        found = OnFailure.model_validate(on_failure)
+    except ValidationError as exc:
+        log.warn(
+            "the API told an on_failure this toolkit cannot read; it is shown as it came",
+            error=str(exc),
+        )
+        return json.dumps(on_failure, sort_keys=True)
+    return failure_text(Control(action=found.action, on_failure=found))
 
 
 def _record_text(record: Mapping[str, Any]) -> str:
     lines = [f"Record   {record.get('uid')}"]
-    for name in ("action", "object", "params", "source", "status", "fidelity", "reason"):
+    for name in (
+        "action",
+        "object",
+        "params",
+        "origin",
+        "source",
+        "status",
+        "fidelity",
+        "reason",
+    ):
         lines.append(f"{name:<15} {_brief(record.get(name))}")
     for name in ("reasons", "approval", "execution", "reconciliation", "observed"):
         if record.get(name):
@@ -458,7 +488,8 @@ def _record_text(record: Mapping[str, Any]) -> str:
 
 @command
 def actions_list(ctx: typer.Context) -> None:
-    """The action types: what each acts on, its control's bounds and autonomy, its binding."""
+    """The action types: what each acts on, its control's bounds and autonomy, its binding,
+    and what its control sends when the twin fails."""
     with _api(ctx) as (_manifest, api, secrets):
         found, _ = _call(api, "GET", ACTIONS, "GET /actions")
     rows = [
@@ -472,6 +503,7 @@ def actions_list(ctx: typer.Context) -> None:
             "settle": action.get("settle"),
             "status": action.get("status"),
             "executable": action.get("executable"),
+            "on_failure": _failure_words(action.get("on_failure")),
         }
         for action in found.get("data") or []
     ]
@@ -533,9 +565,28 @@ def actions_records(
         typer.Option("--status", help="proposed, rejected, approved, blocked, executed or failed."),
     ] = None,
     action: Annotated[str | None, typer.Option("--action", help="Only this action type.")] = None,
+    origin: Annotated[
+        str | None,
+        typer.Option(
+            "--origin",
+            help="failsafe (sent by a control's on_failure), loop or proposal.",
+        ),
+    ] = None,
 ) -> None:
-    """What became of the proposals, newest first."""
-    params = {key: value for key, value in (("status", status), ("action", action)) if value}
+    """What became of the proposals, newest first; what a control's fail-safe sent has the
+    origin failsafe."""
+    if origin is not None and origin not in _ORIGINS:
+        log.warn("an origin that does not exist was asked for", given=origin)
+        raise DtaError(
+            f"--origin is one of {', '.join(_ORIGINS)}, not {origin!r}",
+            code=BAD_PARAM,
+            detail={"origin": origin},
+        )
+    params = {
+        key: value
+        for key, value in (("status", status), ("action", action), ("origin", origin))
+        if value
+    }
     with _api(ctx) as (_manifest, api, secrets):
         found = computeops.read_all(api, f"{ACTIONS}/records", params)
     _say(ctx, {"records": found}, table(found, _RECORD_COLUMNS, _IDS), secrets)
@@ -712,6 +763,7 @@ def notifications(ctx: typer.Context) -> None:
         {
             "time": notice.get("time"),
             "type": notice.get("type"),
+            "severity": notice.get("severity") or "",
             "subject": notice.get("subject"),
             "status": notice.get("status"),
             "tries": notice.get("tries"),

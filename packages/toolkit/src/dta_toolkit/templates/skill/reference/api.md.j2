@@ -122,10 +122,10 @@ What the twin may do to the real system, and what became of each proposal. An ac
 
 | Endpoint | Returns |
 |---|---|
-| `GET /actions?at=` | the action types: `control`, `target`, `object_type`, `binding` (`executor` or `advisory`), `autonomy`, `parameters`, `bounds` (`minimum`, `maximum`, `allowed`, `max_step`), `settle`, `tolerance`, `executable`; and `executor_configured` |
+| `GET /actions?at=` | the action types: `control`, `target`, `object_type`, `binding` (`executor` or `advisory`), `autonomy`, `parameters`, `bounds` (`minimum`, `maximum`, `allowed`, `max_step`), `settle`, `tolerance`, `executable`, `on_failure` (what the control sends when the twin fails: `mode`, `action`, `parameters`, `after_stale`); and `executor_configured` |
 | `GET /actions/{id}?at=` | one action type |
 | `POST /actions/{id}/propose` body `{"object", "params", "reason", "source"}`, optional header `Idempotency-Key` | judges the proposal at the head and records it: `201` with the record (`200` with the record the key made before); `status` is `proposed` (waiting for an approval, or advice only), `executed`, `failed` or `blocked`. An execution is one HTTP call made inside the request (up to 30 s and two retries of a connection). A refusal is `422` with every reason in `errors` and the record's uid in `record` |
-| `GET /actions/records?status=&action=&object=&source=&reconciliation=&limit=&cursor=` | the records, newest proposal first |
+| `GET /actions/records?status=&action=&object=&source=&origin=&reconciliation=&limit=&cursor=` | the records, newest proposal first; `origin` is `failsafe` (sent by a control's `on_failure`, source `failsafe:<control>`), `loop` or `proposal` |
 | `GET /actions/records/{uid}` | one record: what was proposed and judged, the decision, the call and its answer, and whether its effect was observed (`reconciliation`: `pending`, `ok`, `mismatch`) |
 | `POST /actions/records/{uid}/approve` body `{"by", "note"}` | approves a proposed supervised action and executes it; `blocked` while the twin's fidelity is `failed` |
 | `POST /actions/records/{uid}/reject` body `{"by", "note"}` | turns a proposed action down |

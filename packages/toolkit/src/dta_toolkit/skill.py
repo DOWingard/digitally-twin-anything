@@ -21,6 +21,7 @@ import yaml
 from dta_core.errors import DtaError
 from dta_core.log import Log
 from dta_core.manifest import Manifest
+from dta_core.manifest.checks.summary import failure_text
 from jinja2 import Environment, StrictUndefined
 
 from . import addons
@@ -199,6 +200,7 @@ def _acting(manifest: Manifest) -> dict[str, Any]:
             "reselect": correction.reselect,
             "agent_remodel": correction.agent_remodel,
             "retry_budget": correction.retry_budget,
+            "retry_backoff": _duration(correction.retry_backoff or fidelity.interval),
             "remodel_timeout": _duration(correction.remodel_timeout),
             "scored": scored,
             "stale": any(question.staleness is not None for question in questions.values()),
@@ -215,6 +217,7 @@ def _acting(manifest: Manifest) -> dict[str, Any]:
             "bounds": _bounds(control),
             "autonomy": control.autonomy.value if control.autonomy is not None else "-",
             "action": control.action,
+            "on_failure": _cell(failure_text(control)),
         }
         for cid, control in sorted(controls.items())
     ]

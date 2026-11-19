@@ -1,6 +1,6 @@
 # When the {{ twin_name }} twin asks for a new model
 
-The twin asks for this when a forecast question stayed outside its tolerance after it re-fitted its model{% if fidelity.reselect %} and tried every candidate of the specification{% endif %}: what it can do by itself did not hold. You see it as an incident in status `remodel_requested`, or as the notification `twin.fidelity.remodel_requested`. The twin waits {{ fidelity.remodel_timeout }} from the request (`requested_at`); then the incident is `failed`, and so is the twin.
+The twin asks for this when a forecast question stayed outside its tolerance after it re-fitted its model{% if fidelity.reselect %} and tried every candidate of the specification{% endif %}: what it can do by itself did not hold. You see it as an incident in status `remodel_requested`, or as the notification `twin.fidelity.remodel_requested`. The twin waits {{ fidelity.remodel_timeout }} from the request (`requested_at`); then the incident is `failed`, and so is the twin. Meanwhile, for as many of its {{ fidelity.retry_budget }} rounds as are left, it goes on with its own rounds of re-fitting{% if fidelity.reselect %} and reselecting{% endif %}, each after a longer wait (the incident's `detail.next_cycle_at` says when the next is due); one that holds resolves the incident, and the request with it.
 
 Questions this can concern:
 

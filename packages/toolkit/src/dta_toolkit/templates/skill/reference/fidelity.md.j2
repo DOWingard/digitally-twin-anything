@@ -45,14 +45,14 @@ A `breach` incident takes one step per check, each a job of its own (kind `corre
 2. Reselect: evaluate every candidate of the specification on recent data; the best accepted one is made active.
 {% endif %}
 {% if fidelity.agent_remodel %}
-3. Ask the managing agent to revise the model: the incident is `remodel_requested` and the notification `twin.fidelity.remodel_requested` goes out (`reference/remodel.md`). A model of the specification registered or changed after the request sends the incident back to reselecting; nothing within {{ fidelity.remodel_timeout }} makes it `failed`.
+3. Ask the managing agent to revise the model: the incident is `remodel_requested` and the notification `twin.fidelity.remodel_requested` goes out (`reference/remodel.md`). A model of the specification registered or changed after the request sends the incident back to reselecting; meanwhile the twin goes on with whatever is left of its own rounds of steps 1 and 2, and only {{ fidelity.remodel_timeout }} without a model that holds makes it `failed`.
 {% endif %}
 
 "Recent data" is the frame from c − (the specification's initial window + W) to c, with forecast origins in [c − W, c − h], judged exactly as the specification's acceptance says; the backtest is recorded with scope `recent` (`GET /models/{uid}/backtests`).
 
-Evidence: once a correction made a model active whose data ends at f (the incident's `awaiting`), the twin waits for n′ ≥ 3 scored origins with o ≥ f. Their mean E′ ≤ ε resolves the incident; E′ > ε means the correction did not hold, and the next step is taken. A round that ends without a resolution starts again from the first step on newer data; after {{ fidelity.retry_budget }} rounds the incident is `failed`. A failed incident resolves when a model fitted after the failure has 3 scored origins with a mean ≤ ε, or by `POST /fidelity/incidents/{id}/retry`.
+Evidence: once a correction made a model active whose data ends at f (the incident's `awaiting`), the twin waits for n′ ≥ 3 scored origins with o ≥ f. Their mean E′ ≤ ε resolves the incident; E′ > ε means the correction did not hold, and the next step is taken. A round (`cycle`) that ends without a resolution is followed by the next, from the first step on newer data: round c ≥ 2 starts g·2^(c−2) after the previous one ended, with g = {{ fidelity.retry_backoff }}, at most {{ fidelity.retry_budget }} rounds. {% if fidelity.agent_remodel %}While a request to revise the model is open, the rounds go on and spending them does not fail the incident: only {{ fidelity.remodel_timeout }} from the request does. Otherwise, after{% else %}After{% endif %} the last round the incident is `failed`. A failed incident resolves when a model fitted after the failure has 3 scored origins with a mean ≤ ε, or by `POST /fidelity/incidents/{id}/retry`.
 
-Read: `GET /fidelity/incidents/{id}`: `rung`, `attempt`, `cycle`, `awaiting`, `requested_at`, and `steps`, every step with its outcome.
+Read: `GET /fidelity/incidents/{id}`: `rung`, `attempt`, `cycle`, `awaiting`, `requested_at`, `detail.next_cycle_at` (when the next round is due, if one is), and `steps`, every step with its outcome, its `cycle` and `next_cycle_at`.
 {% endif %}
 
 ## Staleness
