@@ -1,8 +1,7 @@
 """The toolkit refuses to start a stack whose runtime image is older than the manifest.
 
 What an image reads is asked at one boundary, `runtimecheck.answer`; most tests put
-the image's answer there, and one asks a real image built before the runtime could
-say what it reads.
+the image's answer there, and one asks the real image built from this tree.
 """
 
 from __future__ import annotations
@@ -21,6 +20,7 @@ from dta_core.manifest.models import MANIFEST_VERSION
 from dta_toolkit import runtimecheck
 from dta_toolkit.commands import portability
 from dta_toolkit.output import Session
+from dta_toolkit.stack import StackError
 from dta_toolkit.workspace import Workspace
 
 TOO_OLD = "runtime.too_old"
@@ -172,22 +172,43 @@ def test_the_second_run_of_import_is_refused_before_it_starts_the_store(
 
 
 @kit.needs_stack
-def test_a_real_image_that_knows_no_version_command_reads_1(make_twin, monkeypatch):
-    """The image named by DTA_TEST_RUNTIME_IMAGE predates the version command."""
-    asked: list[str] = []
+def test_the_real_image_says_it_reads_this_manifest_version(make_twin, monkeypatch):
+    """The image named by DTA_TEST_RUNTIME_IMAGE is built from this tree: asked for real,
+    once within the command, it reads what the toolkit writes, and the build goes on."""
+    asked: list[tuple[str, dict[str, Any] | None]] = []
 
     def ask(stack: Any, image: str) -> dict[str, Any] | None:
-        asked.append(image)
-        return runtimecheck.ask_image(stack, image)
+        answered = runtimecheck.ask_image(stack, image)
+        asked.append((image, answered))
+        return answered
 
     monkeypatch.setattr(runtimecheck, "answer", ask)
     twin = make_twin()
     twin.prepare()
-    before = kit.leftovers(twin.project)
-    error = twin.failed(TOO_OLD, "build", exit_code=2)
-    assert error["detail"]["image"] == kit.RUNTIME_IMAGE
-    assert error["detail"]["image_reads"] == 1
-    assert error["detail"]["manifest_version"] == MANIFEST_VERSION
-    assert asked == [kit.RUNTIME_IMAGE], "asked once within the command"
-    assert kit.leftovers(twin.project) == before, "the build started nothing"
-    assert twin.gates()["build"] != "passed"
+    twin.ok("build")
+    [(image, answered)] = asked
+    assert image == kit.RUNTIME_IMAGE
+    assert answered is not None and answered["manifest_version"] == MANIFEST_VERSION
+
+
+class _NoVersionCommand:
+    """A stack whose image answers as a runtime built before the version command did."""
+
+    def __init__(self, exit_code: int, stderr: str) -> None:
+        self.exit_code, self.stderr = exit_code, stderr
+
+    def run_image(self, image: str, *args: str, timeout: float) -> dict[str, Any]:
+        error = StackError(
+            "the command printed no document",
+            detail={"exit_code": self.exit_code, "stderr": self.stderr},
+        )
+        error.code = "stack.bad_output"
+        raise error
+
+
+def test_an_image_that_knows_no_version_command_reads_1_and_any_other_failure_is_raised():
+    usage = "Usage: dta-runtime [OPTIONS] COMMAND [ARGS]...\nError: No such command 'version'."
+    assert runtimecheck.ask_image(_NoVersionCommand(2, usage), "old:image") is None
+    for exit_code, stderr in ((1, usage), (2, "Error: Missing option"), (125, "no such image")):
+        with pytest.raises(StackError):
+            runtimecheck.ask_image(_NoVersionCommand(exit_code, stderr), "old:image")
