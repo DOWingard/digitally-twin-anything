@@ -29,7 +29,9 @@ written with sorted keys and no spaces.
                      no_tolerance, not_fitted,
                      already_scored, before_fit, no_version, ahead_of_data, deadline,
                      predictor_refused, predictor_failed, bad_prediction,
-                     no_observations, metric_undefined
+                     no_observations, metric_undefined, input_unknown
+    withheld         [signal uid]: the inputs whose value was unknown at the origin
+                     (with input_unknown)
     error, n         the origin's error and its number of points (when scored)
     series           {uid: d}: the mean signed residual (observed less predicted) per
                      series (when scored)
@@ -54,7 +56,13 @@ written with sorted keys and no spaces.
     flagged    [{"signal", "property", "object", "reason", "detail"}]
     cleared    [signal uid]
     suspect    [signal uid]: suspect after the check
-    inferred   [{"signal", "property", "object", "value", "t", "question", "model"}]
+    inferred   [{"signal", "property", "object", "value", "t", "question", "model",
+               "origin", "lead_steps"}]: the forecast made at the flag from `origin`,
+               read `lead_steps` steps ahead
+    unknown    [{"signal", "property", "object", "why", "message", "questions"}]: the
+               signals whose value became unknown at this check; `why` is
+               horizon_passed, not_finite, out_of_range or no_inference, `questions`
+               those left without an answer
     alarming   {question id: {"tested", "alarming", "biased"}}: "biased" are the series
                the question's own test calls; one is flagged only when the question
                would infer it and every other question on its property bears it out
@@ -92,22 +100,35 @@ written with sorted keys and no spaces.
                specification when the re-model was asked for (breach)
     failed_at  when it failed
     signal, property, object     (signal)
+    unknown    {"since", "why", "message", "questions"} once the signal's value is
+               unknown (signal)
+    unanswered the questions left without an answer while it is (signal)
     resolved_by                  who resolved it by hand, or null
 
 `TwinIncident.steps`: every step in order, each {"at", "action", ...}; the actions are
 opened, request {key, rung, attempt, cycle}, result {key, accepted, model, fitted_to,
-error}, held, not_held, recovered {n, error}, remodel_requested {timeout_s},
-remodelled, cycle {cycle}, cycle_ended {cycle, next_cycle}, cycles_spent {cycles},
-failed {reason}, resolved, stale {count}, fresh {count}, flagged, cleared, retry {by,
-note}, resolve {by, note}, closed. A step taken at a check carries its uid as `check`;
-a step of a breach incident's ladder carries the cycle it belongs to as `cycle` and
-when the next cycle is due as `next_cycle_at` (null when none is).
+error, and when not accepted reason {code, message, numbers}}, held, not_held,
+recovered {n, error}, remodel_requested {timeout_s}, remodelled, cycle {cycle},
+cycle_ended {cycle, next_cycle}, cycles_spent {cycles}, failed {reason}, resolved,
+stale {count}, fresh {count}, flagged, unknown {why, message, questions}, cleared {by,
+and from a check: changes, run (stuck) or reading, inferred, tolerance (biased)}, retry
+{by, note}, resolve {by, note}, closed. A step taken at a check carries its uid as
+`check`; a step of a breach incident's ladder carries the cycle it belongs to as `cycle`
+and when the next cycle is due as `next_cycle_at` (null when none is). The `numbers` of
+a refused correction are {"metric", "threshold", "candidates": [{"uid", "error",
+"baseline_error", "skill", "accepted", "reasons"}]}, or null when nothing was judged.
 
 `TwinSignal.value_at_flag` and `reading` hold the value as JSON. `TwinSignal.detail`:
 {"test": the numbers of the test that flagged it, "question": the question whose
-residuals did (biased), "episodes": [{"since", "until", "reason", "cleared_by"}]: every
-time it was suspect, "estimate": {"value", "t", "question", "model", "tolerance"}: the
-latest inferred value}.
+residuals did (biased), "episodes": [{"since", "until", "reason", "cleared_by",
+"unknown_since"}]: every time it was suspect, "inference": the forecast made when it
+was flagged, {"question", "model", "tolerance", "origin", "origin_version",
+"horizon_steps", "values": {time: mean}, "range": {"low", "high", "declared": {"low",
+"high"}, "observed", "margin"}} or {"refused": {"code", "message"}}, "estimate":
+{"value", "t", "question", "model", "tolerance", "origin", "lead_steps"}: the inferred
+value in force, null once it is unknown, "unknown": {"since", "why", "message",
+"questions"} while its value is unknown}. While unknown the property's value is null,
+its provenance `inferred` from the signal's uid with confidence 0.
 
 `opened_version` of an incident is the version its opening was decided at: the id of
 the version that writes it is not known before it is written.

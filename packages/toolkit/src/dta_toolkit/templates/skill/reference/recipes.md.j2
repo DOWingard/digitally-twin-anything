@@ -468,7 +468,7 @@ else:
 ```
 
 - `status` `proposed`: advice only, or waiting for a person's approval. Give the user the record's uid and stop; approving is the user's (`POST /actions/records/{uid}/approve` with `by` the user, only when the user says so for that record).
-- `status` `blocked`: the interlock refused it: the twin is `unknown` or `failed`, or a `stale` or `reconcile` incident is open; `reasons` names which. Final: never work around it; tell the user why.
+- `status` `blocked`: the interlock refused it: the twin is `unknown` or `failed`, a `stale` or `reconcile` incident is open, or the control's target is unknown on the object (a suspect signal with no inferred value left); `reasons` names which. Final: never work around it; tell the user why.
 - `status` `executed`: the call was made; `execution` holds its HTTP status and when it takes effect. `reconciliation` becomes `ok` or `mismatch` once its settle time has passed and a sync run has read the result.
 - `status` `failed`: the call failed; `execution` says how. Do not propose it again in a loop; report it.
 - The same `Idempotency-Key` with the same proposal gives back the same record (200); a new proposal needs a new key.

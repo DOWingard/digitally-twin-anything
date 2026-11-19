@@ -133,7 +133,7 @@ Each thing that goes wrong is one incident (`GET /fidelity/incidents?status=unre
 {% if fidelity.stale %}
 - `stale`: a question whose data is older than agreed. It resolves when fresh data arrives, and fails after {{ fidelity.retry_budget }} stale checks in a row.
 {% endif %}
-- `signal`: a sensor whose readings look stuck or biased. Sync stops writing its value{% if fidelity.scored %}, the twin writes an inferred one where a forecast question covers it,{% endif %} and the raw readings are kept on the signal (`GET /fidelity/signals`). It clears itself after 3 checks with plausible readings.
+- `signal`: a sensor whose readings look stuck or biased. Sync stops writing its value{% if fidelity.scored %}, the twin writes the forecast made when it was flagged where a forecast question covers it, for as far ahead as that question was validated,{% endif %} and the raw readings are kept on the signal (`GET /fidelity/signals`). Then its value is `unknown` until it clears: no value, and whatever reads it is refused with `fidelity.input_unknown`; the incident names the questions left without an answer. A stuck signal clears itself once its raw readings move again{% if fidelity.scored %}, a biased one after 3 checks agreeing with the inferred value{% endif %}.
 {% if executes %}
 - `reconcile`: an executed action whose effect was not observed within its settle time. It resolves when a later action on the same control and object is observed to take effect.
 {% endif %}
@@ -186,7 +186,7 @@ The interlock decides what becomes of a proposal, from the control's autonomy, t
 | supervised | `proposed`; executed when a person approves it | same | same | same | an approval gives `blocked` |
 | autonomous | executed at once | executed at once | `blocked` | `blocked` | `blocked` |
 
-A `stale` incident means the data is too old to decide on{% if executes %}, a `reconcile` incident that an earlier command did not take effect{% endif %}, and `unknown` that no check has vouched for the twin yet. A breach or a suspect signal does not stop an autonomous action: the twin corrects those itself.
+A `stale` incident means the data is too old to decide on{% if executes %}, a `reconcile` incident that an earlier command did not take effect{% endif %}, and `unknown` that no check has vouched for the twin yet. A breach or a suspect signal does not stop an autonomous action: the twin corrects those itself; but an autonomous action whose control's target is unknown on its object (a suspect signal with no inferred value left) is `blocked`, and a loop whose policy reads an unknown value fails its run (`fidelity.input_unknown`).
 
 Never work around a blocked action. Do not propose it again under another action or in smaller steps, do not ask for it through a loop, and do not reach the real system by any other route. A `blocked` record is final: tell the user that it was blocked and why (the record's `fidelity` and `reasons`: the state, or the kind and uid of each incident that blocks it), and propose it again only once that is resolved and the user still wants it.
 

@@ -113,12 +113,12 @@ Whether the twin still keeps what it promised, measured on its own clock at ever
 | `POST /fidelity/incidents/{id}/retry` body `{"by", "note"}` | starts a failed incident's corrections again from the first rung |
 | `POST /fidelity/incidents/{id}/resolve` body `{"by", "note"}` | resolves an incident of kind `signal` or `reconcile` by hand |
 | `POST /fidelity/corrections` body `{"question", "rung"}` (`recalibrate` or `reselect`) | one correction by hand, as a job: the question's models are evaluated again on recent data |
-| `GET /fidelity/signals?status=` | the observed signals found suspect (`stuck` or `biased`), each with the raw `reading` that is kept and not written to the object |
+| `GET /fidelity/signals?status=` | the observed signals found suspect (`stuck` or `biased`), each with the raw `reading` that is kept and not written to the object, and `value`: `inferred` (the forecast made at the flag stands in) or `unknown` (no value; `unknown` says why and which questions are left without an answer) |
 | `POST /fidelity/signals/{uid}/clear` body `{"by", "note"}` | takes a signal off the suspect list; its readings are written again |
 
 ## Actions
 
-What the twin may do to the real system, and what became of each proposal. An action type carries out a control (`autonomy`: `advisory` is a recommendation only, `supervised` waits for an approval, `autonomous` is executed at once) or only advises. The interlock: an autonomous action is executed at once only while the twin's fidelity is `healthy`, or `correcting` with no `stale` or `reconcile` incident unresolved; it is `blocked` while the twin is `unknown` or `failed` or such an incident is open, and its `reasons` name the state or each incident's kind and uid. An approval is blocked only while the twin is `failed`. Every proposal is recorded, whatever became of it.
+What the twin may do to the real system, and what became of each proposal. An action type carries out a control (`autonomy`: `advisory` is a recommendation only, `supervised` waits for an approval, `autonomous` is executed at once) or only advises. The interlock: an autonomous action is executed at once only while the twin's fidelity is `healthy`, or `correcting` with no `stale` or `reconcile` incident unresolved and its control's target known on its object; it is `blocked` while the twin is `unknown` or `failed`, such an incident is open, or a suspect signal leaves its target without a value, and its `reasons` name the state or each incident's kind and uid (and the signal). An approval is blocked only while the twin is `failed`. Every proposal is recorded, whatever became of it.
 
 | Endpoint | Returns |
 |---|---|
