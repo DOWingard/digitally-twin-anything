@@ -44,9 +44,11 @@ EXPECTED_CODES = {
     "grid.horizon",
     "grid.backtest_step",
     "sync.mapping_invalid",
+    "model.reads_undeclared",
 }
 WARNINGS = {
     "manifest.version_unset",
+    "model.reads_undeclared",
     "ref.env_unused",
     "tier.static_extras",
     "status.stale",

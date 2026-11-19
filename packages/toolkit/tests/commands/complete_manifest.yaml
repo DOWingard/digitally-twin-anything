@@ -146,6 +146,7 @@ models:
     candidates:
       linear: {family: policies:PumpPower}
     features: [Pump.speed]
+    reads: []
     backtest: {initial_window: P30D, step: P1D, min_folds: 3}
     acceptance: {metric: mae, threshold: 1.5}
     interventional: true

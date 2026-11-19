@@ -244,6 +244,8 @@ def _property_refs(view: ManifestView) -> Iterator[tuple[str, str]]:
             yield model.target, f"models.{mid}.target"
         for ref in model.features or []:
             yield ref, f"models.{mid}.features"
+        for ref in model.reads or []:
+            yield ref, f"models.{mid}.reads"
 
 
 @check("ref.property_format")

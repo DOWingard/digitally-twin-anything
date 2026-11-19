@@ -192,7 +192,27 @@ CASES = [
         put(f"{TANKS}/properties/name", {"column": "name", "unit": "m"}),
         ("ontology.unit", "warning", "sources.registry.mappings.tanks.properties.name"),
     ),
+    (
+        "feature with an unknown property",
+        put("models", {"m": {"target": "Tank.level", "features": ["Tank.depth"]}}),
+        ("ontology.unknown_property", "error", "models.m.features"),
+    ),
+    (
+        "read with an unknown property",
+        put("models", {"m": {"target": "Tank.level", "reads": ["Tank.depth"]}}),
+        ("ontology.unknown_property", "error", "models.m.reads"),
+    ),
+    (
+        "read of an unknown type",
+        put("models", {"m": {"target": "Tank.level", "reads": ["Basin.level"]}}),
+        ("ontology.unknown_type", "error", "models.m.reads"),
+    ),
 ]
+
+
+def test_what_a_model_reads_is_checked_as_its_features_are():
+    model = {"target": "Tank.level", "features": ["Junction.demand"], "reads": ["Tank.level"]}
+    assert findings(put("models", {"m": model})) == []
 
 
 def function(entry: str, **params: Any):

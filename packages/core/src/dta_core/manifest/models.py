@@ -461,6 +461,15 @@ class ModelSpec(Base):
     # None are needed by a family that predicts a target from its own history, or by one
     # that reads what it needs from the twin itself.
     features: list[str] = opt(Owner.agent, "Ontology properties used as inputs", list)
+    # Features become columns of the training frame; what a prediction reads from the
+    # twin by itself (the state a simulation starts from, its drivers) is declared here.
+    # Absent is not declared: code of the twin's own is then taken to read every property.
+    reads: list[str] | None = opt(
+        Owner.agent,
+        "Every observed property a prediction of this model reads from the twin, other than "
+        "its features, as Type.property",
+        since=2,
+    )
     backtest: Backtest | None = req(Owner.agent, "How candidates are evaluated")
     acceptance: Acceptance | None = req(Owner.agent, "When a candidate is good enough")
     interventional: bool = opt(Owner.agent, "Valid for what-if changes to controls", False)

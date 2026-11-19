@@ -147,7 +147,9 @@ def manifest(
     correction: Mapping[str, Any] | None = None,
     window_steps: int = 6,
     sources: Mapping[str, Any] | None = None,
+    reads: list[str] | None = None,
 ) -> Any:
+    """`reads`: what the hold model declares its prediction reads; None declares none."""
     question = {
         "text": "How full will each tank be in half an hour?",
         "kind": "predictive",
@@ -170,6 +172,7 @@ def manifest(
                 "target": "Tank.level",
                 "candidates": {"hold": {"family": f"{CODE_MODULE}:hold"}},
                 "features": [],
+                **({"reads": list(reads)} if reads is not None else {}),
                 "backtest": {"initial_window": "PT2H", "step": "PT15M", "min_folds": 3},
                 "acceptance": {"metric": "mae", "threshold": TOLERANCE},
             }
@@ -404,10 +407,12 @@ def serve_checked(
     levels: Levels | None = None,
     synced: bool = False,
     window_steps: int = 6,
+    reads: list[str] | None = None,
 ) -> Iterator[Checked]:
     """Install the twin, write its data up to BUILT, serve its API and a worker, keep its
     code and evaluate its models at BUILT. `synced`: the levels come from a folder of CSV
-    files through real sync runs."""
+    files through real sync runs. `reads`: what the hold model declares its prediction
+    reads (None: nothing declared)."""
     text = ontology_text
     scada: Folder | None = None
     sources = None
@@ -424,6 +429,7 @@ def serve_checked(
             correction=correction,
             window_steps=window_steps,
             sources=sources,
+            reads=reads,
         ),
         ontology_text=text,
     )

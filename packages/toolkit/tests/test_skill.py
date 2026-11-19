@@ -386,6 +386,8 @@ def test_a_live_twin_without_actions_is_told_of_its_fidelity_only():
     assert "|f(O, L) − r| > m" in fidelity and "ε/2·|r| for mape" in fidelity
     assert "the value is **unknown** until the signal clears" in fidelity
     assert "`does_not_read_it`, `reads_it_longest_horizon`" in fidelity
+    assert "what its specification lists in `reads`" in fidelity
+    assert "lists no `reads` is taken to read every property" in fidelity
     assert "stays suspect until an operator clears it" in fidelity
     # A series is biased only when every forecast question on its property agrees.
     assert "every other forecast question on the same property tested it" in fidelity

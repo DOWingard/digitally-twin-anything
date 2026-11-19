@@ -29,17 +29,18 @@ log = Log("runtime.api.withheld")
 def refuse_unknown(
     services: Services,
     version: VersionRef,
-    properties: Iterable[str],
+    properties: Iterable[str] | None,
     *,
     uids: Sequence[str] | None = None,
     subject: Mapping[str, Any],
 ) -> None:
     """Raise `fidelity.input_unknown` when any of `properties` (`Type.property`; an
-    abstract type stands for its concrete types), of the objects `uids` when given, is
-    unknown at `version`. `subject` names what was refused, as the problem's detail
-    carries it."""
-    wanted = [text for text in properties if text]
-    if not wanted:
+    abstract type stands for its concrete types; None for every property, as code of
+    the twin's own that declares no `reads` is taken to read), of the objects `uids`
+    when given, is unknown at `version`. `subject` names what was refused, as the
+    problem's detail carries it."""
+    wanted = None if properties is None else [text for text in properties if text]
+    if wanted is not None and not wanted:
         return
     cells = fidelity.unknown(services.twin, version)
     if not cells:

@@ -8,10 +8,11 @@ incidents, the checks and the errors measured, at the head or at a version.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from typing import Any
 
+from dta_core.families import FAMILIES
 from dta_core.log import Log
 from dta_core.store import EPOCH, VersionRef
 
@@ -163,11 +164,10 @@ def unknown(twin: Twin, at: At = None) -> dict[Cell, dict[str, Any]]:
     return found
 
 
-def model_properties(model: Mapping[str, Any]) -> list[str]:
-    """What a model record computes from, as `Type.property`: its target and the
-    property of each feature (a bare `Type.property`, or the JSON of a feature naming
-    one)."""
-    found = [str(model["target"])] if model.get("target") else []
+def _features(model: Mapping[str, Any]) -> list[str]:
+    """The property of each feature of a model record: a bare `Type.property`, or the
+    JSON of a feature naming one."""
+    found = []
     for text in model.get("features") or []:
         text = str(text)
         if text.lstrip().startswith("{"):
@@ -177,27 +177,72 @@ def model_properties(model: Mapping[str, Any]) -> list[str]:
     return found
 
 
+def model_inputs(model: Mapping[str, Any]) -> list[str] | None:
+    """What a prediction of a model record reads from the twin besides the series it
+    forecasts, as written (`Type.property`, an abstract type allowed): its features and
+    what it declares in `reads`. None for code of the twin's own that declares no
+    `reads`: it is taken to read every property."""
+    declared = model.get("reads")
+    if declared is None and model.get("family") not in FAMILIES:
+        return None
+    return _features(model) + [str(text) for text in declared or []]
+
+
+def reads_property(
+    model: Mapping[str, Any],
+    property_text: str,
+    concrete: Callable[[str], Iterable[str]] | None = None,
+) -> bool:
+    """Whether a prediction of a model record reads a property (a concrete
+    `Type.property`). A shipped family reads its target, its features and what it
+    declares in `reads`; code of the twin's own reads its features and what it
+    declares; code that declares nothing is taken to read every property. `concrete`
+    gives the concrete properties a written one stands for (an abstract type stands for
+    its concrete types); a written one stands for itself when absent."""
+    written = model_inputs(model)
+    if written is None:
+        return True
+    if model.get("family") in FAMILIES and model.get("target"):
+        written = [*written, str(model["target"])]
+    expand = concrete or (lambda text: (text,))
+    return any(property_text in expand(text) for text in written)
+
+
+def model_properties(model: Mapping[str, Any]) -> list[str] | None:
+    """What a model record computes from, as `Type.property`: its target, the property
+    of each feature and what it declares it reads. None for code of the twin's own that
+    declares no `reads`: every property."""
+    inputs = model_inputs(model)
+    if inputs is None:
+        return None
+    return ([str(model["target"])] if model.get("target") else []) + inputs
+
+
 def withheld(
     cells: Mapping[Cell, Mapping[str, Any]],
-    properties: Iterable[str],
+    properties: Iterable[str] | None,
     *,
     uids: Iterable[str] | None = None,
     concrete: Mapping[str, Iterable[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """The unknown signals among `cells` (as `unknown` gives them) on any of `properties`
-    (`Type.property`; an abstract type stands for its concrete types in `concrete`), of
-    the objects `uids` when given: what a computation reading those properties may not
-    compute from, as `{signal, property, object, since, why}`."""
-    names: set[str] = set()
-    for text in properties:
-        type_name, _, name = str(text).partition(".")
-        names.add(text)
-        for found in (concrete or {}).get(type_name, ()):
-            names.add(f"{found}.{name}")
+    (`Type.property`; an abstract type stands for its concrete types in `concrete`; None
+    for every property), of the objects `uids` when given: what a computation reading
+    those properties may not compute from, as `{signal, property, object, since, why}`."""
+    names: set[str] | None = None
+    if properties is not None:
+        names = set()
+        for text in properties:
+            type_name, _, name = str(text).partition(".")
+            names.add(text)
+            for found in (concrete or {}).get(type_name, ()):
+                names.add(f"{found}.{name}")
     only = None if uids is None else set(uids)
     hits = []
     for (property_text, uid), document in sorted(cells.items()):
-        if property_text not in names or (only is not None and uid not in only):
+        if (names is not None and property_text not in names) or (
+            only is not None and uid not in only
+        ):
             continue
         state = records.unknown_of(document) or {}
         hits.append(

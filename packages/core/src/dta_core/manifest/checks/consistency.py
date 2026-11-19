@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ...families import FAMILIES
+from ...functions import REGISTERED_ENTRY
 from ..models import Autonomy
 from ..status import stale_status_entries
 from .findings import Issue, Severity, check
@@ -69,6 +71,32 @@ def static_control(view: ManifestView) -> Iterator[Issue]:
                 f"contract.controls.{cid}.autonomy",
                 f"a static twin may only advise, but control '{cid}' is {control.autonomy.value}",
             )
+
+
+@check("model.reads_undeclared", Severity.warning)
+def reads_undeclared(view: ManifestView) -> Iterator[Issue]:
+    """Code of the twin's own that does not say what its prediction reads is taken to read
+    every property: sound, but then a suspect signal anywhere keeps its inferences from
+    being made again and its origins from being scored."""
+    for mid, model in sorted(view.models.items()):
+        if model.reads is not None:
+            continue
+        code = sorted(
+            cid
+            for cid, candidate in (model.candidates or {}).items()
+            if candidate.family is not None
+            and candidate.family not in FAMILIES
+            and REGISTERED_ENTRY.match(candidate.family)
+        )
+        if not code:
+            continue
+        yield Issue(
+            f"models.{mid}.reads",
+            f"code of the twin's own ({', '.join(code)}) with no reads: the twin takes it to "
+            "read every property, so it forecasts a suspect signal once and none of its "
+            "origins is scored while any signal is suspect; list every observed property a "
+            "prediction of it reads, other than its features",
+        )
 
 
 @check("tier.static_extras", Severity.warning)

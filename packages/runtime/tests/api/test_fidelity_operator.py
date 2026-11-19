@@ -140,7 +140,7 @@ def stuck(key: str, step: int) -> float:
 def test_stuck_signals_are_flagged_withheld_by_sync_and_written_again_once_cleared(
     checked: Callable[..., Checked], log_lines: Path
 ) -> None:
-    world = checked(levels=stuck, synced=True, window_steps=24)
+    world = checked(levels=stuck, synced=True, window_steps=24, reads=[T1_LEVEL])
     steps = world.run(BUILT + 1, BUILT + 6)
     told = story(steps)
     # Changed in each of the 24 intervals up to step 25, never otherwise: p0 = 1/26, and
@@ -152,20 +152,32 @@ def test_stuck_signals_are_flagged_withheld_by_sync_and_written_again_once_clear
         found["object"]: found for found in world.ok("/fidelity/signals", status="suspect")["data"]
     }
     assert sorted(signals) == ["node:T1", "node:T2"], told
+    # The hold model, code of the twin's own, declares it reads the levels: it forecasts
+    # them once, from the last origin at which no level was frozen, before the run that
+    # began at BUILT + 1. Its horizon of 2 steps has passed by the flag: the values are
+    # unknown at once, and what reads them is refused, naming the signals.
     for key, found in signals.items():
         assert (found["property"], found["reason"]) == (T1_LEVEL, "stuck")
         assert found["value_at_flag"] == STUCK[key.split(":")[1]] + 0.3
-        assert (found["value"], found["unknown"]) == ("inferred", None)
+        assert (found["value"], found["unknown"]["why"]) == ("unknown", "horizon_passed")
+        assert found["unknown"]["questions"] == [QUESTION]
+        assert found["detail"]["inference"]["chosen"]["why"] == "reads_it_longest_horizon"
         assert found["detail"]["test"]["n"] == 5
+    events = steps[flagged_at][0]["result"]["events"]
+    assert events.count("twin.fidelity.signal_unknown") == 2, events
     briefs = world.fidelity()["suspect_signals"]
     assert {brief["uid"] for brief in briefs} == {found["uid"] for found in signals.values()}
-    assert {brief["value"] for brief in briefs} == {"inferred"}
+    assert {brief["value"] for brief in briefs} == {"unknown"}
     opened = {found["subject"]: found for found in world.incidents(kind="signal")}
     assert set(opened) == {found["uid"] for found in signals.values()}
     assert world.ok("/meta/health")["fidelity_detail"]["suspect_signals"] == 2
-    # What the model forecast from the step before the flag stands in for the readings.
     tanks = world.store_rows("Tank")
-    assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (5.0, 3.0)
+    assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (None, None)
+    problem = world.refused(
+        world.post(f"/models/{HOLD}/predict", json={"horizon": 2}), 409, "fidelity.input_unknown"
+    )
+    assert sorted(found["object"] for found in problem["signals"]) == ["node:T1", "node:T2"]
+    assert {found["why"] for found in problem["signals"]} == {"horizon_passed"}
 
     # The next run leaves the readings out of the graph and keeps them on the signals.
     world.step(BUILT + 7)
@@ -178,20 +190,8 @@ def test_stuck_signals_are_flagged_withheld_by_sync_and_written_again_once_clear
     )
     assert kept["node:T2"]["reading"] == 3.3
     tanks = world.store_rows("Tank")
-    assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (5.0, 3.0)
-
-    # The hold model, code of the twin's own, declares no input: it does not read the
-    # levels, so they are forecast again at every check from the step before, and past
-    # the question's horizon of 2 steps from the flag they are still inferred.
-    job, _ = world.step(BUILT + 8)
-    events = job["result"]["events"]
-    assert "twin.fidelity.signal_unknown" not in events, events
-    inferred = world.ok("/fidelity/signals", status="suspect")["data"]
-    assert {found["value"] for found in inferred} == {"inferred"}
-    assert {found["detail"]["inference"]["origin"] for found in inferred} == {iso(at(BUILT + 7))}
-    assert {found["detail"]["inference"]["chosen"]["why"] for found in inferred} == {
-        "does_not_read_it"
-    }
+    assert (tanks["node:T1"]["level"], tanks["node:T2"]["level"]) == (None, None)
+    world.step(BUILT + 8)
     assert world.fidelity()["state"] == "correcting"
 
     # One signal cleared, the other's incident resolved, which clears its signal with it.
