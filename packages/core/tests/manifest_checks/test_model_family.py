@@ -61,7 +61,9 @@ def test_code_that_declares_no_reads_is_warned_of_and_nothing_else_is():
     assert "read every property" in message and "none of its origins is scored" in message
     finding = next(f for f in run_checks(undeclared) if f.code == "model.reads_undeclared")
     assert finding.severity.value == "warning"
-    for fine in (spec([], b=code), spec(["Tank.level"], b=code), spec(None, a="theta")):
+    # A name that is neither a family nor code is reported by ref.model_family alone.
+    quiet = (spec([], b=code), spec(["Tank.level"], b=code), spec(None, a="theta", p="prophet"))
+    for fine in quiet:
         assert (
             _findings(_manifest(models=fine, runtime={"code": "code"}), "model.reads_undeclared")
             == []

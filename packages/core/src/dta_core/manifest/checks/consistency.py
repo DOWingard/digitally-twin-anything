@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from ...families import FAMILIES
+from ...functions import REGISTERED_ENTRY
 from ..models import Autonomy
 from ..status import stale_status_entries
 from .findings import Issue, Severity, check
@@ -83,7 +84,9 @@ def reads_undeclared(view: ManifestView) -> Iterator[Issue]:
         code = sorted(
             cid
             for cid, candidate in (model.candidates or {}).items()
-            if candidate.family is not None and candidate.family not in FAMILIES
+            if candidate.family is not None
+            and candidate.family not in FAMILIES
+            and REGISTERED_ENTRY.match(candidate.family)
         )
         if not code:
             continue
