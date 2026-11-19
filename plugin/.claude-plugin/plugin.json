@@ -1,5 +1,15 @@
 {
   "name": "digitally-twin-anything",
   "version": "0.1.0",
-  "description": "Build, accept and hand over a digital twin of any system whose data lives in databases, APIs or files, with the dta command line tool: a typed graph with full history, served by an API, a browser UI and an operator skill."
+  "description": "Build, accept and hand over a digital twin of any system whose data lives in databases, APIs or files, with the dta command line tool: a typed graph with full history, served by an API, a browser UI and an operator skill.",
+  "author": {
+    "name": "Derek Wingard"
+  },
+  "network": {
+    "hosts": [
+      "127.0.0.1",
+      "pypi.org",
+      "files.pythonhosted.org"
+    ]
+  }
 }
