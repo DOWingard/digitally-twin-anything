@@ -41,6 +41,16 @@ class ManifestError(DtaError):
     code = "manifest.invalid"
 
 
+class ManifestTooNew(ManifestError):
+    """The manifest is written in a newer version of the format than this software reads.
+
+    `detail` holds `manifest_version` (the manifest's) and `reads` (the newest this
+    software reads), so a caller can say which side is older.
+    """
+
+    code = "manifest.too_new"
+
+
 class WorkspaceError(DtaError):
     """The twin workspace is missing, damaged or in an unexpected state."""
 

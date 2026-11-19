@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from .models import Manifest, Owner, QuestionKind, Status, Tier
+from .models import Autonomy, Manifest, Owner, QuestionKind, Status, Tier
 
 OPEN = frozenset({Status.unknown, Status.proposed})
 
@@ -58,6 +58,16 @@ def _is_executor(_manifest: Manifest, parent: BaseModel) -> bool:
     return getattr(parent, "binding", None) == "executor"
 
 
+def _is_autonomous_executor(manifest: Manifest, parent: BaseModel) -> bool:
+    """A control the twin acts on by itself, through an action that calls the real system:
+    what it leaves behind when the twin fails has to be chosen."""
+    if getattr(parent, "autonomy", None) != Autonomy.autonomous:
+        return False
+    action_id = getattr(parent, "action", None)
+    action = manifest.actions.get(action_id) if action_id else None
+    return action is not None and action.binding == "executor"
+
+
 # Named conditions a required field can depend on. Each takes the whole manifest
 # and the object that holds the field.
 def _is_live_series(manifest: Manifest, node: BaseModel) -> bool:
@@ -80,6 +90,7 @@ CONDITIONS: dict[str, Callable[[Manifest, BaseModel], bool]] = {
     "objective": _needs_objective,
     "webhook": _is_webhook,
     "executor": _is_executor,
+    "autonomous_executor": _is_autonomous_executor,
 }
 
 

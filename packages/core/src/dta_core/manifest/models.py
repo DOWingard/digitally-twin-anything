@@ -5,6 +5,12 @@ still being filled in. Whether a field is required, who owns it and under which
 condition are carried as field metadata and evaluated in `status.py`. Collections
 are maps keyed by id, so every field has a stable dotted path
 (`contract.questions.q1.tolerance.value`).
+
+The format is versioned: `MANIFEST_VERSION` is the newest version this software
+reads, and every field carries the version that introduced it (`since`, 1 for the
+fields of the first version). A manifest names the version it is written in, so a
+reader older than the manifest can say so instead of failing on fields it does not
+know, and a manifest cannot use a field newer than the version it claims.
 """
 
 from __future__ import annotations
@@ -14,10 +20,11 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.fields import FieldInfo
 
 from ..schema import FactKind
 
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 _ID = r"^[a-z][a-z0-9_-]{0,62}$"
 
 
@@ -68,15 +75,26 @@ class ConnectorKind(StrEnum):
     custom = "custom"
 
 
-def req(owner: Owner, description: str, when: str | None = None, **kwargs: Any) -> Any:
-    """A required field. `when` names a condition from `status.CONDITIONS`."""
-    meta = {"required": True, "owner": owner.value, "when": when}
+class FailureMode(StrEnum):
+    hold = "hold"
+    release = "release"
+    safe_value = "safe_value"
+
+
+def req(
+    owner: Owner, description: str, when: str | None = None, *, since: int = 1, **kwargs: Any
+) -> Any:
+    """A required field. `when` names a condition from `status.CONDITIONS`; `since` is the
+    manifest version that introduced it."""
+    meta = {"required": True, "owner": owner.value, "when": when, "since": since}
     return Field(default=None, description=description, json_schema_extra={"dta": meta}, **kwargs)
 
 
-def opt(owner: Owner, description: str, default: Any = None, **kwargs: Any) -> Any:
-    """An optional field; never a gap."""
-    meta = {"required": False, "owner": owner.value, "when": None}
+def opt(
+    owner: Owner, description: str, default: Any = None, *, since: int = 1, **kwargs: Any
+) -> Any:
+    """An optional field; never a gap. `since` is the manifest version that introduced it."""
+    meta = {"required": False, "owner": owner.value, "when": None, "since": since}
     if callable(default):
         return Field(
             default_factory=default,
@@ -87,6 +105,13 @@ def opt(owner: Owner, description: str, default: Any = None, **kwargs: Any) -> A
     return Field(
         default=default, description=description, json_schema_extra={"dta": meta}, **kwargs
     )
+
+
+def since_of(info: FieldInfo) -> int:
+    """The manifest version that introduced a field; 1 for a field without metadata."""
+    extra = info.json_schema_extra
+    meta = extra.get("dta") if isinstance(extra, dict) else None
+    return int(meta.get("since", 1)) if isinstance(meta, dict) else 1
 
 
 class Base(BaseModel):
@@ -133,12 +158,59 @@ class Bounds(Base):
     max_step: float | None = opt(Owner.user, "Largest change in one action")
 
 
+class OnFailure(Base):
+    """What a control sends to the real system when the twin can no longer vouch for itself."""
+
+    mode: FailureMode | None = req(
+        Owner.user,
+        "hold: nothing is sent and the real system keeps the twin's last command; release: an "
+        "action that hands the object back is sent; safe_value: a fixed value is sent",
+        since=2,
+    )
+    action: str | None = opt(
+        Owner.user,
+        "Id of the action type sent: for release, one that hands the object back (required); "
+        "for safe_value, the control's own action when absent",
+        since=2,
+    )
+    parameters: dict[str, Any] = opt(
+        Owner.user,
+        "Constants the action is sent with, every parameter it takes; for safe_value, `value` "
+        "is the value sent",
+        dict,
+        since=2,
+    )
+    after_stale: timedelta | None = opt(
+        Owner.user,
+        "Also send it once an incident of data too old for a question has been open this long",
+        since=2,
+        gt=timedelta(0),
+    )
+
+    def action_of(self, control_action: str | None) -> str | None:
+        """The action type sent: none for hold; for safe_value, the control's own action
+        (`control_action`) unless another is named."""
+        if self.mode == FailureMode.release:
+            return self.action
+        if self.mode == FailureMode.safe_value:
+            return self.action or control_action
+        return None
+
+
 class Control(Base):
     description: str | None = req(Owner.user, "What the twin is responsible for controlling")
     target: str | None = req(Owner.user, "Ontology property the control sets, as Type.property")
     bounds: Bounds | None = req(Owner.user, "Limits the twin must stay inside")
     autonomy: Autonomy | None = req(Owner.user, "Advisory, supervised or autonomous")
     action: str | None = req(Owner.agent, "Id of the action type that carries it out")
+    on_failure: OnFailure | None = req(
+        Owner.user,
+        "What is sent, once per failure, to each object the twin commanded under this control "
+        "when the twin's fidelity state becomes failed. This is not a safety function: a twin "
+        "that is not running sends nothing",
+        when="autonomous_executor",
+        since=2,
+    )
 
 
 class Constraint(Base):
@@ -479,12 +551,23 @@ class Correction(Base):
     reselect: bool = opt(Owner.agent, "May switch among the declared candidates", True)
     agent_remodel: bool = opt(Owner.agent, "May ask the managing agent to re-model", True)
     retry_budget: int = opt(
-        Owner.agent, "Correction cycles before the twin is declared failed", 3, ge=1
+        Owner.agent,
+        "Correction cycles an incident is given; once they are spent it fails, unless a "
+        "request to re-model is pending",
+        3,
+        ge=1,
     )
     remodel_timeout: timedelta = opt(
         Owner.agent,
         "How long a request to re-model may stay unanswered before the twin is declared failed",
         timedelta(hours=24),
+    )
+    retry_backoff: timedelta | None = opt(
+        Owner.agent,
+        "Wait after a correction cycle before the next one, doubled after each further cycle; "
+        "the fidelity interval when absent",
+        since=2,
+        gt=timedelta(0),
     )
 
 
@@ -558,7 +641,14 @@ class Twin(Base):
 
 
 class Manifest(Base):
-    manifest_version: Literal[1] = MANIFEST_VERSION
+    manifest_version: int | None = Field(
+        default=None,
+        ge=1,
+        le=MANIFEST_VERSION,
+        strict=True,
+        description="Version of the manifest's format it is written in; a field newer than it "
+        "is refused. Absent, it reads as the newest version this software reads",
+    )
     twin: Twin | None = req(Owner.agent, "Identity of the twin")
     contract: Contract | None = req(Owner.user, "What the twin must do and within which limits")
     ontology: OntologyRef | None = req(Owner.agent, "Domain ontology")
@@ -579,3 +669,8 @@ class Manifest(Base):
     field_status: dict[str, Status] = Field(
         default_factory=dict, description="Explicit status per dotted field path"
     )
+
+    @property
+    def version(self) -> int:
+        """The version the manifest is read as: the one it names, else the newest."""
+        return self.manifest_version or MANIFEST_VERSION
