@@ -28,9 +28,10 @@ pytestmark = kit.needs_buildx
 # A first build with an empty cache takes minutes; with this machine's cache, seconds.
 BUILD_TIMEOUT_S = 1800.0
 STATUS = ["--json", "status"]
-# Docker's plain progress prints a step again when it ends, if it took a while; only the
-# line that says it is done counts.
-_TAGGED = re.compile(r"naming to docker\.io/library/(\S+) [\d.]+s done$", re.MULTILINE)
+# Docker's plain progress prints a quick step once ("naming to X done"), and a slower one
+# twice, the second time with its duration ("naming to X 0.1s done"); only the line that
+# says it is done counts.
+_TAGGED = re.compile(r"naming to docker\.io/library/(\S+)(?: [\d.]+s)? done$", re.MULTILINE)
 
 
 @dataclass
