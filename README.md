@@ -1,4 +1,19 @@
-# digitally-twin-anything
+<h1 align="center">DTA: Digitally Twin Anything</h1>
+
+<h3 align="center">One agent plugin for building a working digital twin of anything a dataset can describe.</h3>
+
+<p align="center"><b>Point an agent at your data. Get a twin that answers your questions within the error you accept, checks itself, and corrects itself.</b></p>
+
+<p align="center">
+  <img alt="version 0.1.0" src="https://img.shields.io/badge/version-v0.1.0-cb3837?style=flat-square">
+  <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-5a4fcf?style=flat-square">
+  <img alt="skill: build-twin" src="https://img.shields.io/badge/skill-build--twin-000000?style=flat-square">
+  <img alt="requires Docker" src="https://img.shields.io/badge/Docker-required-2ea44f?style=flat-square&logo=docker&logoColor=white">
+  <img alt="platform: Linux" src="https://img.shields.io/badge/platform-Linux-555555?style=flat-square&logo=linux&logoColor=white">
+  <img alt="license: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-f5c518?style=flat-square">
+</p>
+
+---
 
 An agent plugin that builds a working digital twin of anything that can be
 described by a large enough dataset, then keeps it accurate and manages it.
@@ -648,7 +663,8 @@ docker compose -p dta-store-dev --env-file .env -f packages/core/tests/store/com
 The version is in five places that tests hold together: `bin/VERSION` (the
 image tags the launcher builds and runs), `.claude-plugin/plugin.json`, the
 three packages' `pyproject.toml`, and the default of `runtime.image` in the
-manifest's models. Change them together. A plugin installed from a
+manifest's models. Change them together, and the version badge at the top of
+this file with them. A plugin installed from a
 marketplace stays on the copy it has until the version in `plugin.json`
 changes, so a change that users should get needs a new version.
 
