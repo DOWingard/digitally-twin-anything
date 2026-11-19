@@ -5,15 +5,22 @@
 #   dta-runtime install   create the twin or bring it in line with a manifest (one-off)
 #   dta-runtime load      read every source once (one-off)
 #
-# Build with the repository root as context:
+# The plugin's launcher builds it the first time it is used, from the plugin's
+# root (the repository's root) as context; by hand:
 #
 #   docker build -f docker/runtime.Dockerfile -t dta-runtime:0.1.0 .
 #
-# What the build may read is limited by docker/runtime.Dockerfile.dockerignore.
-# Every setting, and every secret, reaches a container through its environment;
-# nothing is baked into the image.
+# What the build may read is limited by docker/runtime.Dockerfile.dockerignore;
+# it needs only committed files. What it pulls: the base image, by digest; the
+# third-party packages, by the lock file's versions and hashes; the installer,
+# by version; the build backend of the project's own packages (hatchling) at
+# its newest version, the one thing not pinned. Every setting, and every
+# secret, reaches a container through its environment; nothing is baked into
+# the image.
 
-FROM python:3.12-slim
+# The same base as the toolkit's image, by digest, so that a build next year
+# starts from the same files.
+FROM python:3.12.16-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 # dlt reports usage unless told not to; a twin never reports anything.
 ENV PYTHONUNBUFFERED=1 \
