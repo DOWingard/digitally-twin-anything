@@ -309,6 +309,11 @@ classes:
         description: What is predicted, as Type.property.
       features:
         multivalued: true
+      reads:
+        multivalued: true
+        description: >-
+          Every observed property a prediction reads from the twin besides its
+          features, as Type.property; absent when the model declares none.
       interventional:
         range: boolean
         required: true

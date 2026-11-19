@@ -64,7 +64,8 @@ NOT_MEASURED = "not measured yet"
 CODE_MEDIA = "application/zip"
 # A function that states no latency budget is given this long.
 DEFAULT_LATENCY_S = 30.0
-# What a change to resets a model: its fitted state was made for another one.
+# What a change to resets a model: its fitted state was made for another one. What a
+# prediction reads besides its features (`reads`) is not: declaring it changes no fit.
 _MODEL_IDENTITY = ("family", "code", "params", "target", "features")
 _MODEL_STATE = ("fitted", "fitted_from", "fitted_to", "fitted_at_version", "validity")
 _DURATION = TypeAdapter(timedelta)
@@ -292,6 +293,7 @@ def model_document(record: Mapping[str, Any]) -> dict[str, Any]:
         "question": record.get("question"),
         "target": record["target"],
         "features": list(record.get("features") or []),
+        "reads": None if record.get("reads") is None else list(record["reads"]),
         "interventional": bool(record["interventional"]),
         "origin": record["origin"],
         "status": record["status"],
@@ -445,6 +447,7 @@ def _wanted(manifest: Manifest, code: str | None) -> tuple[dict, dict, dict]:
                 "question": spec.question,
                 "target": spec.target,
                 "features": list(spec.features or []),
+                "reads": None if spec.reads is None else list(spec.reads),
                 "interventional": spec.interventional,
                 "origin": MANIFEST,
             }
@@ -704,8 +707,10 @@ def add_model(
     features: Sequence[str],
     question: str | None,
     interventional: bool,
+    reads: Sequence[str] | None = None,
 ) -> tuple[dict[str, Any], VersionRef]:
-    """Register one candidate while the twin runs."""
+    """Register one candidate while the twin runs. `reads`: what its prediction reads
+    from the twin besides its features; None when it declares none."""
     code = artifact is not None and entry is not None
     if (family is not None) == code or (artifact is None) != (entry is None):
         raise ApiError(
@@ -735,6 +740,8 @@ def add_model(
                     code="api.bad_request",
                 ) from exc
             _check_property(ontology, ref.property, f"features[{index}]")
+        for index, read in enumerate(reads or []):
+            _check_property(ontology, read, f"reads[{index}]")
         uid = model_uid(spec, candidate)
         if services.store.get(uid, at=head) is not None:
             raise _refuse("model.exists", f"a model {uid} is registered already")
@@ -756,6 +763,7 @@ def add_model(
                 "question": bare(question_uid(question)) if question is not None else None,
                 "target": target,
                 "features": list(features),
+                "reads": None if reads is None else list(reads),
                 "interventional": interventional,
                 "origin": RUNTIME,
                 "status": "candidate",

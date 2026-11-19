@@ -164,6 +164,7 @@ def register_model(services: ServicesDep, body: ModelRegistration) -> Response:
         features=body.features,
         question=body.question,
         interventional=body.interventional,
+        reads=body.reads,
     )
     return json_response(
         {"data": registry.model_document(record), "version": version_json(version)},

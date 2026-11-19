@@ -4,14 +4,15 @@ does not read the signal, forecast once when it does; and what no score rests on
 
 G3's level sensor reads 2 m high from step 10 to 29. `level` (2 steps ahead) has a
 model of the shipped persistence family, which reads the level's own history;
-`level_far` (4 steps ahead), in the tests that have it, has code of the twin's own that
-declares the flow as its only input.
+`level_far` (4 steps ahead), in the tests that have it, has code of the twin's own whose
+feature is the flow and which declares in `reads` what else its prediction reads.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from dta_runtime import fidelity
 from dta_runtime.fidelity.records import signal_uid
 from fidelity_testkit import (
@@ -42,13 +43,16 @@ def biased_g3(start: int, end: int):
     return lambda i: level(G3, i) + 2.0 if start <= i < end else level(G3, i)
 
 
-def code_model(plant, uid: str, features: list[str]) -> None:
-    plant.register({"TwinModel": [{"uid": uid, "family": CODE, "features": features}]})
+def code_model(plant, uid: str, features: list[str], reads: list[str] | None) -> None:
+    """Make a model code of the twin's own; `reads` None declares nothing."""
+    row = {"uid": uid, "family": CODE, "features": features, "reads": reads}
+    plant.register({"TwinModel": [row]})
 
 
-def two_questions(make_plant, end: int):
+def two_questions(make_plant, end: int, reads: tuple[str, ...] | None = ()):
     """Both questions on the level, G3 biased from 20 (both have a clean baseline of
-    origins by then, and bear each other out) to before `end`."""
+    origins by then, and bear each other out) to before `end`. `level_far`'s code reads
+    the flow as a feature and declares it reads `reads` besides (None: declares none)."""
     plant = make_plant(
         questions={
             "level": question("Gauge.level", 2, "level"),
@@ -61,7 +65,7 @@ def two_questions(make_plant, end: int):
         plant.sync(i)
     plant.activate("level", "Gauge.level", fitted_to=at(4))
     far = plant.activate("level_far", "Gauge.level", fitted_to=at(4))
-    code_model(plant, far, ["Gauge.flow"])
+    code_model(plant, far, ["Gauge.flow"], None if reads is None else list(reads))
     return plant
 
 
@@ -167,7 +171,7 @@ def test_an_origin_with_an_inferred_feature_is_not_scored_and_opens_no_breach(ma
         plant.sync(i)
     level_model = plant.activate("level", "Gauge.level", fitted_to=at(18))
     plant.register({"TwinModel": [{"uid": level_model, "features": ["Gauge.flow"]}]})
-    code_model(plant, plant.activate("flow", "Gauge.flow", fitted_to=at(18)), [])
+    code_model(plant, plant.activate("flow", "Gauge.flow", fitted_to=at(18)), [], [])
 
     def off(model, uid, origin):
         return 3.0 if model["uid"] == level_model and origin >= at(27) else 0.0
@@ -215,3 +219,49 @@ def test_origins_in_the_run_before_a_stuck_flag_leave_the_window_and_open_no_bre
     assert not any(
         found["kind"] == "breach" for found in fidelity.incidents(plant.twin, status="unresolved")
     )
+
+
+@pytest.mark.parametrize("reads", [("Gauge.level",), None], ids=["declares_it", "declares_none"])
+def test_code_that_reads_the_signal_or_declares_nothing_forecasts_it_once(make_plant, reads):
+    plant = two_questions(make_plant, 40, reads)
+    outcomes = plant.run(range(6, 40), Oracle(plant))
+    flagged = flag_step(outcomes, LEVEL_G3)
+    chosen = fidelity.signal(plant.twin, LEVEL_G3)["detail"]["inference"]["chosen"]
+    assert chosen == {"question": "level_far", "why": "reads_it_longest_horizon"}
+    origins = origins_of(outcomes, LEVEL_G3)
+    assert set(origins.values()) == {stamp(flagged - 1)}
+    assert sorted(origins) == list(range(flagged, flagged + 4))
+    unknown = outcomes[flagged + 4].check["signals"]["unknown"]
+    assert [(entry["signal"], entry["why"]) for entry in unknown] == [(LEVEL_G3, "horizon_passed")]
+
+
+@pytest.mark.parametrize("reads", [[], None], ids=["declares_none_read", "declares_nothing"])
+def test_code_that_declares_nothing_is_not_scored_while_any_signal_is_suspect(make_plant, reads):
+    # The level's model is code without features. G2's flow sticks from step 22 (its last
+    # change at 21) and is flagged at 27; no question infers it, so it is unknown from then.
+    # Code that declares it reads nothing is scored throughout; code that declares nothing
+    # is taken to read the flow too.
+    plant = make_plant()
+    plant.readings[("flow", G2)] = lambda i: flow(G2, 21) if i >= 22 else flow(G2, i)
+    for i in range(1, 20):
+        plant.sync(i)
+    code_model(plant, plant.activate("level", "Gauge.level", fitted_to=at(18)), [], reads)
+    outcomes = plant.run(range(19, 33), Oracle(plant))
+    assert flag_step(outcomes, FLOW_G2) == 27
+    window = outcomes[27].check["questions"]["level"]["window"]
+    # Each check scores the origin two steps back: 26 held a frozen flow, 27 on none.
+    for i in range(28, 33):
+        entry = outcomes[i].check["questions"]["level"]
+        if reads is None:
+            code = "input_frozen" if i == 28 else "input_unknown"
+            assert (entry["scored"], entry["reason"]["code"], entry["withheld"]) == (
+                False,
+                code,
+                [FLOW_G2],
+            )
+        else:
+            assert entry["scored"], entry
+    if reads is None:
+        assert window["set_aside"] == [stamp(step) for step in range(22, 26)]
+    else:
+        assert "set_aside" not in window

@@ -153,6 +153,41 @@ def test_a_changed_candidate_is_a_candidate_again_and_what_is_gone_is_retired(
     assert "twin_function:tank_report" in again["functions"]["changed"]
 
 
+def test_declaring_what_a_model_reads_keeps_its_fit(small: Callable[..., Small]) -> None:
+    api, code, _ = registered(small)
+    state = api.upload(b"a fitted state")
+    services = api.services
+    plant = "twin_model:whatif/plant"
+    fitted = {
+        "status": "active",
+        "fitted": f"twin_artifact:{state}",
+        "fitted_at_version": api.twin.store.head().id,
+    }
+    registry.commit(
+        services,
+        {
+            "TwinArtifact": [
+                registry.artifact_row(services, state, "application/octet-stream", "a state")
+            ],
+            "TwinModel": [{"uid": plant, **fitted}],
+        },
+        note="fitted by the test",
+    )
+    revised = models()
+    revised["whatif"]["reads"] = ["Tank.level"]
+    api.revise(2, functions=functions(), models=revised)
+
+    answer = api.register(code)
+
+    # The record says what its prediction reads; nothing it was fitted for changed.
+    assert answer["models"]["changed"] == [plant]
+    found = api.store_rows("TwinModel")[plant]
+    assert found["reads"] == ["Tank.level"]
+    assert {name: found[name] for name in fitted} == fitted
+    assert api.ok(f"/models/{plant}")["data"]["reads"] == ["Tank.level"]
+    assert api.ok("/models/twin_model:level/naive")["data"]["reads"] is None
+
+
 def test_functions_are_registered_and_disabled_while_the_twin_runs(
     small: Callable[..., Small],
 ) -> None:
@@ -279,12 +314,15 @@ def test_models_are_registered_and_retired_while_the_twin_runs(
             "entry": "compute_plant:balance",
             "target": "Tank.level",
             "features": ["Junction.demand"],
+            "reads": ["Tank.level"],
             "interventional": True,
         },
     )
     assert own.status_code == 201, own.text
     assert own.json()["data"]["family"] == "compute_plant:balance"
     assert own.json()["data"]["code"] == code
+    assert own.json()["data"]["reads"] == ["Tank.level"]
+    assert data["reads"] is None
 
     head = api.twin.store.head()
     api.refused(api.post("/models", json=body), 409, "model.exists")
@@ -297,6 +335,11 @@ def test_models_are_registered_and_retired_while_the_twin_runs(
     )
     api.refused(
         api.post("/models", json={**other, "target": "Nothing.level"}), 400, "ontology.unknown_type"
+    )
+    api.refused(
+        api.post("/models", json={**other, "reads": ["Tank.nothing"]}),
+        400,
+        "ontology.unknown_property",
     )
     api.refused(
         api.post("/models", json={**other, "question": "nothing"}), 404, "question.not_found"

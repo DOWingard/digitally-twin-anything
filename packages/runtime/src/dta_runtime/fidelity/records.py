@@ -31,7 +31,9 @@ written with sorted keys and no spaces.
                      predictor_refused, predictor_failed, bad_prediction,
                      no_observations, metric_undefined, input_unknown, input_inferred,
                      input_frozen
-    withheld         [signal uid]: the model's features whose value was unknown, inferred,
+    withheld         [signal uid]: the inputs of the model (what its prediction reads
+                     besides the series: its features and `reads`, every property for
+                     code that declares no `reads`) whose value was unknown, inferred,
                      or a frozen reading of the run before a stuck flag, at the
                      origin, for any object (with input_unknown, input_inferred,
                      input_frozen); a series whose own
@@ -47,7 +49,7 @@ written with sorted keys and no spaces.
     window           {"error", "n", "breach", "set_aside"}: the window error over origins
                      the model had not seen, and whether it breaches; "set_aside" (when
                      any) the origins in the window left out because their score rested
-                     on a value not observed (a feature not observed at the origin, a
+                     on a value not observed (an input not observed at the origin, a
                      series suspect or frozen over its horizon), also those scored
                      before the stuck flag that showed it; no breach rests on them
     warning         {"sum", "raised", "last", "request", "fitted_to"}: the warning sum

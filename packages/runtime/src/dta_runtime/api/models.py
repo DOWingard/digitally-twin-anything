@@ -732,6 +732,12 @@ class ModelOut(BaseModel):
     question: str | None
     target: str
     features: list[str]
+    reads: list[str] | None = Field(
+        default=None,
+        description="Every observed property a prediction reads from the twin besides its "
+        "features; absent when not declared, and code of the twin's own is then taken to "
+        "read every property",
+    )
     interventional: bool
     origin: Literal["manifest", "runtime"]
     status: Literal["candidate", "active", "rejected", "retired"]
@@ -790,6 +796,13 @@ class ModelRegistration(BaseModel):
         default_factory=list,
         max_length=200,
         description="Each a `Type.property`, or the JSON of a feature (property, lag, via, agg)",
+    )
+    reads: list[Annotated[str, Field(max_length=200)]] | None = Field(
+        default=None,
+        max_length=200,
+        description="Each a `Type.property`: every observed property a prediction reads from "
+        "the twin besides its features. Absent, code of the twin's own is taken to read "
+        "every property",
     )
     question: str | None = Field(default=None, max_length=100)
     interventional: bool = False

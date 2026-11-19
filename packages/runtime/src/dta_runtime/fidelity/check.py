@@ -35,6 +35,7 @@ from .errors import BAD_REQUEST, OUT_OF_ORDER, refused
 from .ladder import FAILED, OPEN, REMODEL_REQUESTED, RESOLVED, UNRESOLVED
 from .outcome import corrections_of, incident_events, state_event, unknown_events
 from .reading import QuestionSetup, Scored, Setup
+from .reads import model_inputs, reads_property
 from .records import (
     BIASED,
     BREACH,
@@ -234,51 +235,49 @@ def _concrete(setup: Setup, text: str) -> set[str]:
     return {f"{found}.{name}" for found in setup.ontology.abstract.get(type_name, ())}
 
 
-def _feature_properties(model: Mapping[str, Any] | None) -> list[str]:
-    """The properties a model record reads as features: each a bare `Type.property` or
-    the JSON of a feature naming one."""
-    found = []
-    for text in (model or {}).get("features") or []:
-        text = str(text)
-        if text.lstrip().startswith("{"):
-            text = (records.loads(text, {}) or {}).get("property") or ""
-        if text:
-            found.append(text)
-    return found
-
-
-def _input_properties(setup: Setup, question: QuestionSetup) -> set[str]:
-    """What a predictive question computes from: its target's cells and its active
-    model's features, as concrete `Type.property`."""
-    texts = {f"{type_name}.{name}" for type_name, name in question.cells}
-    for text in _feature_properties(question.model):
-        texts |= _concrete(setup, text)
-    return texts
-
-
-def _feature_inputs(setup: Setup, question: QuestionSetup) -> set[str]:
-    """The properties a question's active model reads as features, as concrete
-    `Type.property`. An unknown value of one, of whichever object, keeps every series of
-    an origin from being forecast; an unknown value of the target only its own series,
-    which is suspect and left out as every suspect series is."""
+def _inputs(setup: Setup, question: QuestionSetup) -> set[str] | None:
+    """What a prediction of the question's active model reads from the twin besides the
+    series it forecasts (its features and what it declares in `reads`), as concrete
+    `Type.property`; None for every property (code of the twin's own that declares no
+    `reads`). A value of one not observed at an origin, of whichever object, keeps every
+    series of the origin from being scored; one of the target only its own series, which
+    is suspect and left out as every suspect series is."""
+    if question.model is None:
+        return set()
+    written = model_inputs(question.model)
+    if written is None:
+        return None
     texts: set[str] = set()
-    for text in _feature_properties(question.model):
+    for text in written:
         texts |= _concrete(setup, text)
     return texts
+
+
+def _among(inputs: set[str] | None, property_text: str) -> bool:
+    """Whether a property is among `inputs`; None holds every property."""
+    return inputs is None or property_text in inputs
+
+
+def _reads(setup: Setup, question: QuestionSetup, property_text: str) -> bool:
+    """Whether a prediction of the question's active model reads a property."""
+    if question.model is None:
+        return False
+    return reads_property(question.model, property_text, lambda text: _concrete(setup, text))
 
 
 def _unanswered(setup: Setup, property_text: str) -> list[str]:
-    """The questions of the contract that compute from a property: its targets, or its
-    active model's target and features."""
+    """The questions of the contract that compute from a property: its targets, or what
+    a prediction of its active model reads."""
     contract = setup.manifest.contract
     found = set()
     for qid, question in sorted(((contract.questions if contract else None) or {}).items()):
         texts: set[str] = set()
         for text in question.targets or []:
             texts |= _concrete(setup, text)
-        if qid in setup.questions:
-            texts |= _input_properties(setup, setup.questions[qid])
-        if property_text in texts:
+        known = setup.questions.get(qid)
+        if known is not None:
+            texts |= {f"{type_name}.{name}" for type_name, name in known.cells}
+        if property_text in texts or (known is not None and _reads(setup, known, property_text)):
             found.add(qid)
     return sorted(found)
 
@@ -334,13 +333,13 @@ def _measure(context: _Context, question: QuestionSetup, earlier: list[Scored]) 
     if version is None:
         entry["reason"] = _reason("no_version", "the live line has no version at the origin")
         return measured
-    inputs = _feature_inputs(setup, question)
+    inputs = _inputs(setup, question)
     states: dict[str, list[str]] = {}
     for (property_text, uid), spans in context.spans.items():
-        state = _suspect_at(spans, origin) if property_text in inputs else None
+        state = _suspect_at(spans, origin) if _among(inputs, property_text) else None
         if state is not None:
             states.setdefault(state, []).append(records.signal_uid(property_text, uid))
-    # An unknown feature first, then an inferred one, then a frozen reading of a stuck run.
+    # An unknown input first, then an inferred one, then a frozen reading of a stuck run.
     for state, code, said in (
         (UNKNOWN, "input_unknown", "unknown at the origin; nothing is computed from it"),
         (INFERRED, "input_inferred", "inferred at the origin; no score rests on it"),
@@ -350,7 +349,7 @@ def _measure(context: _Context, question: QuestionSetup, earlier: list[Scored]) 
         if not withheld:
             continue
         log.info(
-            "a feature of the question was not observed at the origin; not scored",
+            "an input of the question's model was not observed at the origin; not scored",
             question=question.id,
             origin=iso_utc(origin),
             state=state,
@@ -677,12 +676,12 @@ def _rests_on_suspect(
     question: QuestionSetup,
     found: Scored,
 ) -> bool:
-    """Whether a scored origin rests on a value that was not observed: a feature of the
-    model (of any object) not observed at the origin, or a series it scored suspect or
-    frozen in (origin, origin + horizon]."""
-    inputs = _feature_inputs(setup, question)
+    """Whether a scored origin rests on a value that was not observed: an input of the
+    model (of any object; every property for code that declares no `reads`) not observed
+    at the origin, or a series it scored suspect or frozen in (origin, origin + horizon]."""
+    inputs = _inputs(setup, question)
     if any(
-        text in inputs and _suspect_at(found_spans, found.origin) is not None
+        _among(inputs, text) and _suspect_at(found_spans, found.origin) is not None
         for (text, _), found_spans in spans.items()
     ):
         return True
@@ -815,22 +814,13 @@ def _caller(measurement: _Measurement, property_text: str) -> Measured | None:
     )
 
 
-def _reads_itself(setup: Setup, question: QuestionSetup, property_text: str) -> bool:
-    """Whether the question's active model reads the property it would infer for a
-    series: a shipped family forecasts a series from its own history; code of the twin's
-    own reads only the features it declares."""
-    model = question.model or {}
-    if model.get("family") in FAMILIES:
-        return True
-    return property_text in _feature_inputs(setup, question)
-
-
 def _choice(measurement: _Measurement, property_text: str) -> tuple[Measured | None, str | None]:
     """The question that infers a suspect signal of a property, and why: of those with an
-    active model and validated, first one whose model does not read the signal (its
-    forecast can be made again from newer observed origins), the shortest horizon
-    first; else the one with the longest horizon (forecast once, its value stands only
-    up to the horizon, and the question's error vouches for all of it)."""
+    active model and validated, first one whose model declares it does not read the
+    signal (its forecast can be made again from newer observed origins), the shortest
+    horizon first; else the one with the longest horizon (forecast once, its value
+    stands only up to the horizon, and the question's error vouches for all of it). A
+    shipped family reads its target; code that declares no `reads` reads everything."""
     setup = measurement.setup
     able = [
         found
@@ -839,7 +829,7 @@ def _choice(measurement: _Measurement, property_text: str) -> tuple[Measured | N
         and found.setup.steps is not None
         and setup.question_status.get(found.setup.id) == VALIDATED
     ]
-    fresh = [found for found in able if not _reads_itself(setup, found.setup, property_text)]
+    fresh = [found for found in able if not _reads(setup, found.setup, property_text)]
     if fresh:
         return fresh[0], DOES_NOT_READ_IT
     if able:
@@ -958,11 +948,11 @@ def _infer(
             origin=iso_utc(origin),
         )
         return {"refused": _reason("no_version", "the live line has no version at the origin")}
-    inputs = _feature_inputs(setup, question)
+    inputs = _inputs(setup, question)
     withheld = sorted(
         records.signal_uid(text, found)
         for (text, found), spans in context.spans.items()
-        if text in inputs and _unknown_at(spans, origin)
+        if _among(inputs, text) and _unknown_at(spans, origin)
     )
     if withheld:
         log.warn(
@@ -1089,16 +1079,17 @@ def _admissible(
     oldest: datetime,
 ) -> datetime | None:
     """The newest origin in (oldest, newest] at which every input of the question's model
-    for the series was observed: its features (of every object) and, for a shipped
-    family, the series' own history; none suspect, inferred, unknown or frozen in the
-    run before a stuck flag."""
+    for the series was observed: what its prediction reads besides the series (of every
+    object; every signal for code that declares no `reads`) and, for a shipped family,
+    the series' own history; none suspect, inferred, unknown or frozen in the run before
+    a stuck flag."""
     setup = context.setup
-    features = _feature_inputs(setup, question)
+    inputs = _inputs(setup, question)
     own = (question.model or {}).get("family") in FAMILIES
     watched = [
         spans
         for (text, found), spans in context.spans.items()
-        if text in features or (own and text == property_text and found == uid)
+        if _among(inputs, text) or (own and text == property_text and found == uid)
     ]
     moment = newest
     while moment > oldest:
@@ -1126,7 +1117,7 @@ def _refresh(
             continue
         property_text, uid = document["property"], document["object"]
         chosen = _inferring(measurement, property_text)
-        if chosen is None or _reads_itself(setup, chosen.setup, property_text):
+        if chosen is None or _reads(setup, chosen.setup, property_text):
             continue
         present = records.parse_time((detail.get("inference") or {}).get("origin"))
         oldest = present if present is not None else now - setup.window
@@ -1487,7 +1478,7 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
         tolerance = question.tolerance
         # Only what the active model, as fitted now, predicted after the end of its data:
         # a recalibration keeps the model's uid and moves the end of its data.
-        # Origins whose score rests on a value that was not observed (a feature inferred,
+        # Origins whose score rests on a value that was not observed (an input inferred,
         # unknown or frozen; a series frozen in the run before a stuck flag) are set aside,
         # also those scored before the flag showed it: no breach or correction rests on them.
         active = _active(measured)

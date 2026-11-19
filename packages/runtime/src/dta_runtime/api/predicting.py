@@ -98,8 +98,10 @@ def predict(
     latest backtest as of `known` (the version the model's record was read at; the
     predicted-from version when absent), when it has one.
 
-    Refused (`fidelity.input_unknown`) when the value of its target or of a feature, of
-    the objects predicted, is unknown at `version`; `guard` false leaves that to a caller
+    Refused (`fidelity.input_unknown`) when the value of its target, of a feature or of
+    what it declares in `reads` (of any property, for code of the twin's own that
+    declares no `reads`), of the objects predicted, is unknown at `version`; `guard`
+    false leaves that to a caller
     that judges it itself (the fidelity check does, per origin).
     """
     uid = model["uid"]
