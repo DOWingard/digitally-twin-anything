@@ -19,24 +19,26 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pyarrow as pa
 from dta_runtime import fidelity
 from dta_runtime.fidelity import reading
 from dta_runtime.fidelity.records import signal_uid
-from fidelity_testkit import (
-    TIME,
-    Oracle,
-    at,
-    gauge,
-    level,
-    question,
-)
+from fidelity_testkit import TIME, Oracle, at, gauge, level, question
 
 G1, G3 = gauge("G1"), gauge("G3")
 LEVEL_G1 = signal_uid("Gauge.level", G1)
 LEVEL_G3 = signal_uid("Gauge.level", G3)
+SCHEMA = pa.schema(
+    [
+        ("unique_id", pa.string()),
+        ("ds", TIME),
+        ("mean", pa.float64()),
+        ("lo_80", pa.float64()),
+        ("hi_80", pa.float64()),
+    ]
+)
 
 
 def smooth_level(i: int) -> float:
@@ -70,12 +72,16 @@ def test_a_level_flat_at_its_turning_point_is_not_called_stuck(make_plant):
 
 
 class Echo:
-    """A forecaster of the series' own recent values, as the store holds them at the
+    """A forecaster of a series' own recent values, as the store holds them at the
     origin: the last value carried on along its last slope, three times as steep. Fed
-    its own forecasts it runs away."""
+    its own forecasts it runs away. Series other than `uids`, and origins before
+    `since`, are predicted by the plant's rules."""
 
-    def __init__(self, plant) -> None:
+    def __init__(self, plant, uids: Sequence[str], since: datetime | None = None) -> None:
         self.plant = plant
+        self.uids = set(uids)
+        self.since = since or at(0)
+        self.rules = Oracle(plant)
         self.origins: list[tuple] = []
 
     def __call__(
@@ -88,61 +94,99 @@ class Echo:
         interventions: Sequence[object],
         deadline_s: float,
     ) -> pa.Table:
+        table = self.rules(
+            model,
+            origin=origin,
+            horizon=horizon,
+            step=step,
+            interventions=interventions,
+            deadline_s=deadline_s,
+        ).to_pylist()
+        if origin.t < self.since:
+            return pa.Table.from_pylist(table, schema=SCHEMA)
         store = self.plant.store
         before = reading.version_at(self.plant.twin, origin.t - step) or origin
         now = {row["uid"]: row["level"] for row in store.table("Gauge", at=origin).to_pylist()}
         then = {row["uid"]: row["level"] for row in store.table("Gauge", at=before).to_pylist()}
-        self.origins.append((origin.t, now.get(G1)))
-        uids, times, means = [], [], []
-        for uid in sorted(now):
-            last, previous = now[uid], then.get(uid)
+        rows = [row for row in table if row["unique_id"] not in self.uids]
+        for uid in sorted(self.uids):
+            self.origins.append((origin.t, now.get(uid)))
+            last, previous = now.get(uid), then.get(uid)
             if last is None or previous is None:
                 continue
-            for j in range(1, horizon + 1):
-                uids.append(uid)
-                times.append(origin.t + j * step)
-                means.append(last + 3.0 * j * (last - previous))
-        return pa.table(
-            {
-                "unique_id": pa.array(uids, pa.string()),
-                "ds": pa.array(times, TIME),
-                "mean": pa.array(means, pa.float64()),
-            }
-        )
+            rows.extend(
+                {
+                    "unique_id": uid,
+                    "ds": origin.t + j * step,
+                    "mean": last + 3.0 * j * (last - previous),
+                    "lo_80": None,
+                    "hi_80": None,
+                }
+                for j in range(1, horizon + 1)
+            )
+        return pa.Table.from_pylist(rows, schema=SCHEMA)
+
+
+def held(plant, uid: str, outcomes: Mapping[int, object]) -> list[float | None]:
+    """The level of a gauge as each check left it."""
+    return [
+        row["level"]
+        for outcome in outcomes.values()
+        for row in plant.store.table(
+            "Gauge", columns=["level"], filter=[("uid", "=", uid)], at=outcome.version
+        ).to_pylist()
+    ]
+
+
+def test_an_inferred_value_never_rests_on_inferred_values(make_plant):
+    # G3 is predicted from its own stored values from origin 14 on: off by more than the
+    # tolerance, alone, it is called biased at check 16. Forecast from each check's
+    # origin, its inferred values would be forecasts of forecasts.
+    plant = make_plant()
+    for i in range(1, 6):
+        plant.sync(i)
+    plant.activate("level", "Gauge.level", fitted_to=at(4))
+    echo = Echo(plant, [G3], since=at(14))
+    outcomes = plant.run(range(6, 31), echo)
+    assert [found["object"] for i in range(6, 31) for found in outcomes[i].flagged] == [G3]
+    assert outcomes[16].flagged
+    # Made once, from step 15, the reading before the flagged one; refused there, as it
+    # lies outside the range G3 was observed in: unknown from the flag on.
+    signal = fidelity.signal(plant.twin, LEVEL_G3)
+    inference = signal["detail"]["inference"]
+    assert inference["origin"] == "2026-01-05T03:45:00Z"
+    assert signal["detail"]["unknown"]["why"] == "out_of_range"
+    values = held(plant, G3, {i: outcomes[i] for i in range(16, 31)})
+    assert all(value is None for value in values)
+    assert all(abs(value) < 100 for value in held(plant, G3, outcomes) if value is not None)
 
 
 def test_an_inferred_value_rests_on_observed_values_and_a_moving_reading_clears(make_plant):
+    # G1 sticks at 11.7 from step 22, a value it did not read before: forecast from the
+    # stored values of each check's origin it would run away from there.
     plant = make_plant()
     stuck_steps = range(22, 34)
-    plant.readings[("level", G1)] = lambda i: level(G1, 21) if i in stuck_steps else level(G1, i)
+    plant.readings[("level", G1)] = lambda i: 11.7 if i in stuck_steps else level(G1, i)
     for i in range(1, 20):
         plant.sync(i)
     plant.activate("level", "Gauge.level", fitted_to=at(18))
-    echo = Echo(plant)
+    echo = Echo(plant, [G1])
     outcomes = plant.run(range(19, 41), echo)
-    flagged_at = next(i for i, outcome in outcomes.items() if outcome.flagged)
-    assert flagged_at == 27
+    # Changed at step 22 for the last time: k = 22, p0 = 1/24, (1/24)^6 = 5.2e-9.
+    assert [i for i, outcome in outcomes.items() if outcome.flagged] == [28]
     # Whatever the forecaster makes of it, the gauge holds an observed value, a value
     # inside the range it was observed in, or no value; never a runaway.
-    held = [
-        row["level"]
-        for i in range(19, 41)
-        for row in plant.store.table(
-            "Gauge", columns=["level"], filter=[("uid", "=", G1)], at=outcomes[i].version
-        ).to_pylist()
-    ]
-    assert all(value is None or 10.25 <= value <= 13.25 for value in held)
-    # The forecast that stood in for the readings was made from step 26, the reading
+    assert all(value is None or 10.25 <= value <= 13.25 for value in held(plant, G1, outcomes))
+    # The forecast that stood in for the readings was made from step 27, the reading
     # before the flagged one: an observed value, the value it was stuck at.
-    signal = fidelity.signal(plant.twin, LEVEL_G1)
-    assert signal["detail"]["episodes"][0]["since"] == "2026-01-05T06:45:00Z"
-    inferred = [entry for i in range(27, 41) for entry in outcomes[i].check["signals"]["inferred"]]
-    assert inferred and {entry["origin"] for entry in inferred} == {"2026-01-05T06:30:00Z"}
-    assert (at(26), level(G1, 21)) in echo.origins
+    inferred = [entry for i in range(28, 41) for entry in outcomes[i].check["signals"]["inferred"]]
+    assert {(entry["origin"], entry["value"]) for entry in inferred} == {
+        ("2026-01-05T06:45:00Z", 11.7)
+    }
+    assert (at(27), 11.7) in echo.origins
     # Readings move again from step 34: three changes by step 36, cleared there.
-    cleared_at = next(i for i, outcome in outcomes.items() if outcome.cleared)
-    assert cleared_at == 36
-    assert signal["status"] == "ok"
+    assert [i for i, outcome in outcomes.items() if outcome.cleared] == [36]
+    assert fidelity.signal(plant.twin, LEVEL_G1)["status"] == "ok"
 
 
 def test_a_biased_signal_clears_on_agreement_with_its_inferred_value(make_plant):
