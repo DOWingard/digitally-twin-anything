@@ -1,11 +1,23 @@
 # Only the workspace's package sources and its lock file are needed.
+#
+# The context is the plugin's root, which on a user's machine may be a clone
+# with local files beside the committed ones: everything is excluded unless it
+# is named here, and inside what is named, whatever a clone may hold that is
+# not part of the sources (secrets, environments, caches, notes, tests) is
+# excluded again.
 *
 !pyproject.toml
 !uv.lock
 !packages
-packages/*/tests
-**/__pycache__
-**/*.pyc
+**/tests
+**/testbed*
+**/CONTEXT
+**/.git
+**/.claude
 **/.venv
 **/.env
 **/.env.*
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache

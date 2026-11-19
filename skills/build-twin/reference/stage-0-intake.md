@@ -36,6 +36,8 @@ You decide these; do not ask, but tell the user what you chose.
 dta status
 ```
 
+If this is the first `dta` command on the machine, it first builds the tool's images: tell the user it takes several minutes and give it a 10-minute timeout, as "The first command on a machine" in the [skill](../SKILL.md) says. Exit 64 or 69 with nothing on standard output: the launcher refused; look up the last line of standard error under "The launcher" in [troubleshooting](troubleshooting.md).
+
 - Exit 2, code `workspace.missing`: create it:
 
   ```sh

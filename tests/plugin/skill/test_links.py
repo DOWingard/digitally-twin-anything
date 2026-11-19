@@ -61,7 +61,8 @@ def test_every_file_is_reachable_from_skill_md() -> None:
 
 
 def test_nothing_points_outside_the_plugin() -> None:
-    texts = [*skill_files(), PLUGIN / ".claude-plugin" / "plugin.json"]
+    texts = [*skill_files(), *sorted((PLUGIN / ".claude-plugin").glob("*.json"))]
+    assert len(texts) > len(skill_files()) + 1
     found = []
     for path in texts:
         for number, line in enumerate(read(path).splitlines(), start=1):

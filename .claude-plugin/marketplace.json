@@ -1,0 +1,15 @@
+{
+  "name": "digitally-twin-anything",
+  "description": "The digitally-twin-anything plugin: build, accept and hand over a digital twin of a real system with the dta command line tool.",
+  "owner": {
+    "name": "Derek Wingard"
+  },
+  "plugins": [
+    {
+      "name": "digitally-twin-anything",
+      "source": "./",
+      "description": "Build, accept and hand over a digital twin of any system whose data lives in databases, APIs or files, with the dta command line tool: a typed graph with full history, served by an API, a browser UI and an operator skill.",
+      "category": "development"
+    }
+  ]
+}

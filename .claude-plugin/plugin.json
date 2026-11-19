@@ -10,7 +10,10 @@
     "hosts": [
       "127.0.0.1",
       "pypi.org",
-      "files.pythonhosted.org"
+      "files.pythonhosted.org",
+      "registry-1.docker.io",
+      "auth.docker.io",
+      "production.cloudfront.docker.com"
     ]
   }
 }

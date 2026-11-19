@@ -2,7 +2,7 @@
 
 Every command the toolkit's own flow test uses, up to `build`, `accept` and
 `install-skill`, then `down --destroy-data`: run as the plugin runs them, by
-`plugin/bin/dta` on the toolkit image, never by the toolkit in this
+`bin/dta` on the toolkit image, never by the toolkit in this
 environment. Its limits are fixed here before any measurement.
 """
 

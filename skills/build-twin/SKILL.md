@@ -24,11 +24,21 @@ What the user gets at the end:
 
 - This file is the map. Each stage has a reference file under `reference/`; open it when you reach that stage and follow it step by step.
 - `dta` is on your PATH. Every `dta` command in this skill is written without global options. Run each one as `dta --json -w <workspace> <command>`, for example `dta --json -w <workspace> status`. With `--json`, standard output is one JSON document: `{"ok": true, "result": {...}}` or `{"ok": false, "error": {"code": ..., "message": ..., "detail": {...}}}`. The JSON lines on standard error are the tool's log; read the document on standard output.
-- Exit codes: 0 the command did its work; 1 a check or gate ran and failed; 2 the command could not run. On 1 or 2, look up `error.code` in [troubleshooting](reference/troubleshooting.md).
+- Exit codes: 0 the command did its work; 1 a check or gate ran and failed; 2 the command could not run. On 1 or 2, look up `error.code` in [troubleshooting](reference/troubleshooting.md). 64 or 69 with nothing on standard output: the launcher that starts `dta` refused before the tool ran, and the last line of standard error, which starts with `dta:`, says why; look it up under "The launcher" in troubleshooting.
 - Text in angle brackets is a value you substitute: `<workspace>` is the twin's workspace directory, `<question>` a question id, `<source>` a source id. Never type the brackets.
 - A field path such as `contract.questions.<question>.tolerance.value` names one field of `manifest.yaml`: each dot is one level of YAML nesting, and `<question>` is a key you chose.
 - You write `manifest.yaml`, the ontology file, the twin's code directory and `discussion.md` with your file tools. Everything else in the workspace is written by `dta`. Commands that write to `manifest.yaml` rewrite the whole file, so read it again before you edit it after one.
 - [manifest.md](reference/manifest.md) lists every manifest field, who owns it and when it is required. It is generated from the tool and always current.
+
+## The first command on a machine
+
+`dta` runs from two container images that are built on the user's machine, not downloaded ready-made. The first `dta` command there, usually the `dta status` of "Start or resume", builds them before it does its own work:
+
+- It takes several minutes. It needs Docker running and network access to Docker Hub (`registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com`) and to the Python package index (`pypi.org`, `files.pythonhosted.org`). It downloads about 0.6 GB, and the images take about 1.8 GB of disk.
+- Before you run it, tell the user in one or two sentences: the first command builds the twin tool's images on this machine, which takes several minutes and about 0.6 GB of downloads; later commands start within seconds.
+- Give that call a timeout of 10 minutes (600000 ms), or the longest your shell tool allows. Docker's progress goes to standard error; standard output is still the one JSON document.
+- If the call is cut off, run the same command again: docker keeps the build steps that finished. Only one build runs at a time; a second `dta` command started meanwhile waits for it and then uses the images.
+- A failed build exits 69 with nothing on standard output; the last line of standard error starts with `dta: building` and names the log file. Do what "The launcher" in [troubleshooting](reference/troubleshooting.md) says.
 
 ## Ground rules
 
@@ -84,7 +94,7 @@ Recorded gates go stale when the manifest changes. Gate 4 (design) is recorded b
 
 ## Start or resume
 
-1. Run `dta status`.
+1. Run `dta status`. On a machine where `dta` has never run, this call builds the images first: see "The first command on a machine" above.
    - Exit 2 with code `workspace.missing`: there is no workspace yet. Go to [stage 0](reference/stage-0-intake.md).
    - Exit 0: read `result.stage.number`. If it is a number, open that stage's reference file and continue there. If `result.stage.name` is `complete`, every gate passed: the twin is handed over; go to "After handover" below.
 2. If the user named a workspace directory, use it; if they did not, and a directory under the current one holds `manifest.yaml` and `.dta/`, use that one and say so.

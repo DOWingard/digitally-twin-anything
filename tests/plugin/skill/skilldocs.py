@@ -29,7 +29,7 @@ from typer._click.core import Context
 log = Log("skill.docs")
 
 ROOT = Path(__file__).resolve().parents[3]
-PLUGIN = ROOT / "plugin"
+PLUGIN = ROOT
 SKILL = PLUGIN / "skills" / "build-twin"
 SKILL_MD = SKILL / "SKILL.md"
 REFERENCE = SKILL / "reference"

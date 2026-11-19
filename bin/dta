@@ -1,0 +1,603 @@
+#!/bin/sh
+# dta: runs the twin toolkit's container image on the workspace in the working
+# directory, so that the toolkit needs no Python environment on this machine.
+#
+# The toolkit hands paths inside the workspace (compose files, their bind
+# mounts, build contexts) to the host's docker daemon, which resolves them on
+# the host; the workspace is therefore mounted at its own absolute (physical)
+# path. The container uses the host's docker socket and network (the toolkit
+# reaches a twin's API on the loopback address) and runs as the calling user,
+# so that whatever it writes belongs to the caller. Its own file system is
+# read-only: a write outside the mounted directories fails instead of
+# vanishing with the container.
+#
+# The images are built on this machine, never pulled ready-made: the toolkit's,
+# dta-toolkit:<VERSION>, and the one a twin's own services run from,
+# dta-runtime:<VERSION>, VERSION being the file beside the launcher. When one
+# of them is absent, the launcher builds it from the plugin's own sources, the
+# folder above its own (docker/*.Dockerfile with that folder as the context),
+# then runs the command. The first build takes several minutes and needs
+# network access to what the Dockerfiles pull from; later ones reuse docker's
+# layer cache. Progress goes to stderr, never to stdout, which carries only
+# the command's own output; docker's whole output also goes to build.log in
+# the state folder ($XDG_STATE_HOME/dta, or $HOME/.local/state/dta), next to
+# the lock that makes calls made at once build only once: the others wait for
+# it, then find the images. Without those sources, an absent toolkit image is
+# refused; an absent runtime image is left to the toolkit to report when a
+# command needs it. Two docker calls are made before the container on every
+# run: one for the daemon's address and one listing which images are present.
+#
+# Environment:
+#   DTA_TOOLKIT_IMAGE  the image to run instead, which must be present: it is
+#                      never built, and the runtime image is not looked at
+#   DTA_REBUILD        1: build both images again, even when present (after a
+#                      change to the sources); not together with
+#                      DTA_TOOLKIT_IMAGE
+#   DTA_HOME           the directory to mount instead of the working directory;
+#                      it must contain the working directory
+#   DTA_MOUNTS         more absolute directories, separated by colons, mounted
+#                      at their own physical paths
+#   DTA_WORKSPACE      the toolkit's workspace when --workspace is not given;
+#                      it must lie in a mounted directory
+#   DTA_*              every exported variable so named reaches the toolkit,
+#                      passed by name; nothing else of the environment does
+#   XDG_STATE_HOME     where the state folder dta/ is; $HOME/.local/state when
+#                      unset
+#   HOME               the caller's home: the state folder's default parent,
+#                      and where `install-skill` puts the skill by default
+#   DOCKER_HOST, DOCKER_CONTEXT, DOCKER_CONFIG
+#                      read by docker, as everywhere: the daemon must be on a
+#                      unix socket, which the container is given
+#
+# `install-skill` also mounts where the skill goes: its --target, or else the
+# caller's $HOME/.claude/skills, with HOME passed on. A workspace named with
+# --workspace or DTA_WORKSPACE must lie in a mounted directory.
+#
+# Exit status: 64 wrong use; 69 docker, its daemon or an image not available,
+# a failed build included; dta's own status otherwise.
+
+set -u
+unset CDPATH
+
+EX_USAGE=64
+EX_UNAVAILABLE=69
+NL='
+'
+DEFAULT_IFS=" 	$NL"
+
+refuse() {
+	status=$1
+	shift
+	IFS=' '
+	printf 'dta: %s\n' "$*" >&2
+	exit "$status"
+}
+
+# Sets `resolved` to the physical absolute path of $1, which need not exist
+# yet: its longest existing ancestor with symbolic links resolved, the rest
+# appended as written. A relative path is taken from the working directory.
+physical() {
+	pending=$1
+	case $pending in
+	/*) ;;
+	*) pending=$cwd/$pending ;;
+	esac
+	tail=
+	while [ ! -d "$pending" ]; do
+		tail=/${pending##*/}$tail
+		pending=${pending%/*}
+		[ -n "$pending" ] || pending=/
+	done
+	resolved=$(cd -P -- "$pending" && pwd -P) || return 1
+	resolved=${resolved%/}$tail
+}
+
+# Succeeds when the path in `resolved` lies in one of the directories in
+# `mounts`, the newline-separated list of what is mounted at its own path.
+is_mounted() {
+	found=1
+	IFS=$NL
+	set -f
+	for mounted in $mounts; do
+		case $resolved/ in
+		"$mounted"/*) found=0 ;;
+		esac
+	done
+	set +f
+	IFS=$DEFAULT_IFS
+	return "$found"
+}
+
+# Fails unless the path in `resolved` is mounted; $1 names it for the message.
+require_mounted() {
+	is_mounted || refuse "$EX_USAGE" "$1 ($resolved) is not inside a mounted directory" \
+		"($root or DTA_MOUNTS): what the toolkit wrote there would be lost with its container"
+}
+
+add_mount() {
+	resolved=$1
+	is_mounted || mounts=$mounts$NL$1
+}
+
+# Sets `field` to $1 as one field of docker's --mount value, which docker
+# reads as CSV: in double quotes, a double quote doubled.
+csv_field() {
+	rest=$1
+	field=
+	while :; do
+		case $rest in
+		*\"*)
+			field=$field${rest%%\"*}\"\"
+			rest=${rest#*\"}
+			;;
+		*)
+			field=\"$field$rest\"
+			return
+			;;
+		esac
+	done
+}
+
+# Sets `bind` to the --mount value that binds the host's $1 at $2, whatever
+# characters (a comma, say) the paths hold.
+bind_value() {
+	csv_field "source=$1"
+	bind=type=bind,$field
+	csv_field "target=$2"
+	bind=$bind,$field
+}
+
+# -- what the toolkit is asked to do --------------------------------------------
+
+# Only the options the launcher must act on are looked at: the workspace the
+# toolkit is pointed at, and where `install-skill` puts the operator skill.
+subcommand=
+workspace_arg=
+target=
+scope=
+help=
+pending_option=
+for arg do
+	if [ -n "$pending_option" ]; then
+		case $pending_option in
+		workspace) workspace_arg=$arg ;;
+		target) target=$arg ;;
+		scope) scope=$arg ;;
+		esac
+		pending_option=
+		continue
+	fi
+	[ "$arg" != --help ] || help=1
+	if [ -z "$subcommand" ]; then
+		case $arg in
+		--workspace | -w) pending_option=workspace ;;
+		--workspace=*) workspace_arg=${arg#--workspace=} ;;
+		-w?*) workspace_arg=${arg#-w} ;;
+		-*) ;;
+		*) subcommand=$arg ;;
+		esac
+	else
+		case $arg in
+		--target) pending_option=target ;;
+		--target=*) target=${arg#--target=} ;;
+		--scope) pending_option=scope ;;
+		--scope=*) scope=${arg#--scope=} ;;
+		esac
+	fi
+done
+
+# -- what is mounted --------------------------------------------------------------
+
+cwd=$(pwd -P) || refuse "$EX_USAGE" "the working directory cannot be read"
+if [ -n "${DTA_HOME:-}" ]; then
+	root=$(cd -P -- "$DTA_HOME" 2>/dev/null && pwd -P) ||
+		refuse "$EX_USAGE" "DTA_HOME ($DTA_HOME) is not a directory"
+else
+	root=$cwd
+fi
+[ "$root" != / ] ||
+	refuse "$EX_USAGE" "/ cannot be mounted as the workspace; work from a directory below it"
+case $cwd/ in
+"$root"/*) ;;
+*) refuse "$EX_USAGE" "the working directory $cwd is not inside DTA_HOME ($root)" ;;
+esac
+mounts=
+add_mount "$root"
+
+# Like the working directory, each is mounted at its physical path.
+IFS=:
+set -f
+for entry in ${DTA_MOUNTS:-}; do
+	[ -n "$entry" ] || continue
+	case $entry in
+	/*) ;;
+	*) refuse "$EX_USAGE" "DTA_MOUNTS: $entry is not an absolute path" ;;
+	esac
+	directory=$(cd -P -- "$entry" 2>/dev/null && pwd -P) ||
+		refuse "$EX_USAGE" "DTA_MOUNTS: $entry does not exist or is not a directory"
+	[ "$directory" != / ] || refuse "$EX_USAGE" "DTA_MOUNTS: / cannot be mounted"
+	add_mount "$directory"
+done
+set +f
+IFS=$DEFAULT_IFS
+
+# The toolkit takes its workspace from --workspace, else from DTA_WORKSPACE.
+if [ -n "$workspace_arg" ]; then
+	physical "$workspace_arg" ||
+		refuse "$EX_USAGE" "the workspace $workspace_arg cannot be resolved"
+	require_mounted "the workspace"
+elif [ -n "${DTA_WORKSPACE:-}" ]; then
+	physical "$DTA_WORKSPACE" ||
+		refuse "$EX_USAGE" "DTA_WORKSPACE ($DTA_WORKSPACE) cannot be resolved"
+	require_mounted "DTA_WORKSPACE"
+fi
+
+# The operator skill is installed on the host: into --target, or by default
+# into the caller's personal skills, which the toolkit finds under HOME. The
+# directory is created once docker is known to be there.
+skills=
+if [ "$subcommand" = install-skill ] && [ -z "$help" ]; then
+	if [ -n "$target" ]; then
+		# A quoted ~ reaches the toolkit as written, which expands it with HOME.
+		# shellcheck disable=SC2088
+		case $target in
+		"~") target=${HOME:-} ;;
+		"~/"*) target=${HOME:-}/${target#"~/"} ;;
+		esac
+		physical "$target" ||
+			refuse "$EX_USAGE" "install-skill: --target $target cannot be resolved"
+		skills=$resolved
+	elif [ "$scope" != project ]; then
+		case ${HOME:-} in
+		/?*) ;;
+		*) refuse "$EX_USAGE" "install-skill: HOME is not set to an absolute path" ;;
+		esac
+		skills=$HOME/.claude/skills
+	fi
+fi
+
+# -- docker and the images --------------------------------------------------------
+
+command -v docker >/dev/null 2>&1 ||
+	refuse "$EX_UNAVAILABLE" "docker is not installed or not on the PATH: install Docker" \
+		"(the engine and its command line with the buildx plugin), then run the command again"
+
+case ${DTA_REBUILD:-} in
+"" | 0) rebuild= ;;
+1) rebuild=1 ;;
+*) refuse "$EX_USAGE" "DTA_REBUILD is '$DTA_REBUILD': set it to 1 to build the images again," \
+	"or leave it unset" ;;
+esac
+
+# The launcher's own folder, through any links to it: VERSION is there, and the
+# sources the images are built from are in the folder above it.
+self=$0
+while [ -L "$self" ]; do
+	link=$(readlink -- "$self") || break
+	case $link in
+	/*) self=$link ;;
+	*)
+		case $self in
+		*/*) self=${self%/*}/$link ;;
+		*) self=$link ;;
+		esac
+		;;
+	esac
+done
+case $self in
+*/*) self_dir=${self%/*} ;;
+*) self_dir=. ;;
+esac
+
+if [ -n "${DTA_TOOLKIT_IMAGE:-}" ]; then
+	[ -z "$rebuild" ] ||
+		refuse "$EX_USAGE" "DTA_REBUILD builds dta-toolkit:<VERSION>, but DTA_TOOLKIT_IMAGE names" \
+			"the image to run instead: unset one of the two"
+	image=$DTA_TOOLKIT_IMAGE
+	runtime_image=
+else
+	version=
+	[ -r "$self_dir/VERSION" ] && read -r version <"$self_dir/VERSION"
+	[ -n "$version" ] ||
+		refuse "$EX_UNAVAILABLE" "the launcher's VERSION file is missing; set DTA_TOOLKIT_IMAGE"
+	image=dta-toolkit:$version
+	runtime_image=dta-runtime:$version
+fi
+
+# The socket the docker command uses here is the one mounted into the container.
+endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null) ||
+	refuse "$EX_UNAVAILABLE" "docker cannot name the daemon it talks to (docker context" \
+		"inspect failed): check DOCKER_HOST and DOCKER_CONTEXT, or run docker context use default"
+case $endpoint in
+unix://?*) socket=${endpoint#unix://} ;;
+*) refuse "$EX_USAGE" "docker talks to $endpoint, not to a unix socket; the toolkit's" \
+	"container can only be given a local socket (DOCKER_HOST=unix:///path/to/docker.sock)" ;;
+esac
+[ -S "$socket" ] ||
+	refuse "$EX_UNAVAILABLE" "the docker daemon is not reachable: no socket at $socket; start" \
+		"Docker (or point DOCKER_HOST at the socket of a running daemon), then run the command again"
+# POSIX has no other way to read a file's group id; the path is the socket's own.
+# shellcheck disable=SC2012
+socket_group=$(ls -lnLd -- "$socket" 2>/dev/null | {
+	read -r _mode _links _owner group _rest && printf '%s' "$group"
+})
+
+# Refuses for a docker command that failed with $1 as its output: the daemon
+# could not be asked at all.
+refuse_daemon() {
+	case $1 in
+	*"ermission denied"*)
+		refuse "$EX_UNAVAILABLE" "docker refuses this user: no permission on its socket $socket;" \
+			"add the user to the socket's group (often: sudo usermod -aG docker \"\$USER\", then" \
+			"log in again) or use rootless Docker, then run the command again" ;;
+	*)
+		refuse "$EX_UNAVAILABLE" "the docker daemon is not reachable: ${1%%"$NL"*}; start" \
+			"Docker, then run the command again" ;;
+	esac
+}
+
+# Sets `missing` to those of the two images that are not on this machine, as
+# a blank-separated list; one docker call for both, on every run.
+find_missing() {
+	missing=
+	listed=$(docker image ls --format '{{.Repository}}:{{.Tag}}' \
+		--filter "reference=$image" --filter "reference=$runtime_image" 2>&1) ||
+		refuse_daemon "$listed"
+	for wanted in "$image" "$runtime_image"; do
+		case $NL$listed$NL in
+		*"$NL$wanted$NL"*) ;;
+		*) missing="$missing $wanted" ;;
+		esac
+	done
+	missing=${missing# }
+}
+
+# Says $* on stderr, and in the build's log once this call holds the lock.
+note() {
+	IFS=' '
+	printf 'dta: %s\n' "$*" >&2
+	[ -z "$log_open" ] || printf 'dta: %s\n' "$*" >>"$log"
+	IFS=$DEFAULT_IFS
+}
+log_open=
+
+# How long a call waits for another one's build before giving up: longer than a
+# first build over a slow connection takes.
+LOCK_WAIT_S=3600
+
+# Waits one second for the build's lock, refusing once LOCK_WAIT_S have passed;
+# $1 says what to do then.
+wait_for_lock() {
+	if [ "$waited" -eq 0 ]; then
+		note "another dta call is building the images; waiting for it to finish" \
+			"(at most $((LOCK_WAIT_S / 60)) minutes; its log: $log)"
+	fi
+	if [ "$waited" -ge "$LOCK_WAIT_S" ]; then
+		refuse "$EX_UNAVAILABLE" "another dta call has been building the images for" \
+			"$((LOCK_WAIT_S / 60)) minutes (its log: $log); $1, then run the command again"
+	fi
+	sleep 1
+	waited=$((waited + 1))
+}
+
+# One build at a time on this machine, for this user: with flock(1) on a file,
+# which the system releases with its holder, else by an atomic mkdir whose
+# holder's process id lets a later call take over the lock of a call that died.
+acquire_lock() {
+	waited=0
+	lock=
+	# `command` keeps a failed redirection from ending the shell.
+	if command -v flock >/dev/null 2>&1 && command exec 9>>"$state/build.lock"; then
+		lock=flock
+		while :; do
+			flock -n 9 && return 0
+			[ "$?" -eq 1 ] || break # not a lock someone holds: flock cannot lock here
+			wait_for_lock "wait for that call or stop it"
+		done
+		exec 9>&-
+		lock=
+	fi
+	lock_dir=$state/build.lock.d
+	until mkdir -- "$lock_dir" 2>/dev/null; do
+		holder=
+		[ -r "$lock_dir/pid" ] && read -r holder <"$lock_dir/pid"
+		if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null &&
+			mkdir -- "$lock_dir.takeover" 2>/dev/null; then
+			# One call at a time takes over, and only the lock it found dead: by now
+			# another may have taken it over and hold it.
+			again=
+			[ -r "$lock_dir/pid" ] && read -r again <"$lock_dir/pid"
+			if [ "$again" = "$holder" ]; then
+				rm -rf -- "$lock_dir"
+				note "took over the build's lock of process $holder, which no longer runs"
+			fi
+			rmdir -- "$lock_dir.takeover"
+			continue
+		fi
+		wait_for_lock "if no dta call is building any more, remove $lock_dir"
+	done
+	lock=mkdir
+	printf '%s\n' "$$" >"$lock_dir/pid"
+	trap 'release_lock' EXIT
+	trap 'release_lock; exit 129' HUP
+	trap 'release_lock; exit 130' INT
+	trap 'release_lock; exit 143' TERM
+}
+
+release_lock() {
+	case $lock in
+	flock) exec 9>&- ;;
+	mkdir)
+		rm -rf -- "$lock_dir"
+		trap - EXIT HUP INT TERM
+		;;
+	esac
+	lock=
+}
+
+# Builds the image $1 from the plugin's docker/$2.Dockerfile with the plugin's
+# root as context; docker's output goes to stderr and to the log. Returns
+# docker's exit status.
+build_image() {
+	printf '== docker buildx build --file docker/%s.Dockerfile --tag %s\n' "$2" "$1" >>"$log"
+	built=$({ { docker buildx build --load --progress plain \
+		--file "$plugin_root/docker/$2.Dockerfile" --tag "$1" "$plugin_root" \
+		</dev/null 2>&1 3>&-; echo "$?" >&3; } | tee -a "$log" >&2; } 3>&1)
+	return "$built"
+}
+
+if [ -z "$runtime_image" ]; then
+	# An image named by DTA_TOOLKIT_IMAGE is run as it is, never built.
+	if ! failure=$(docker image inspect --format '{{.Id}}' "$image" 2>&1 >/dev/null); then
+		case $failure in
+		*"No such image"* | *"No such object"*)
+			refuse "$EX_UNAVAILABLE" "the image $image is not present, and it is not built since" \
+				"DTA_TOOLKIT_IMAGE names it: build it from the plugin's docker/toolkit.Dockerfile" \
+				"or pull it, or unset DTA_TOOLKIT_IMAGE to have the launcher build its own" ;;
+		*) refuse_daemon "$failure" ;;
+		esac
+	fi
+else
+	find_missing
+	if [ -n "$rebuild" ]; then
+		wanted_images="$image $runtime_image"
+	else
+		wanted_images=$missing
+	fi
+	plugin_root=
+	if [ -n "$wanted_images" ]; then
+		plugin_root=$(cd -P -- "$self_dir/.." 2>/dev/null && pwd -P) || plugin_root=
+		if [ -z "$plugin_root" ] || [ ! -f "$plugin_root/docker/toolkit.Dockerfile" ] ||
+			[ ! -f "$plugin_root/docker/runtime.Dockerfile" ]; then
+			[ -z "$rebuild" ] ||
+				refuse "$EX_UNAVAILABLE" "DTA_REBUILD is set, but the sources of the images are" \
+					"not beside the launcher (no docker/toolkit.Dockerfile and" \
+					"docker/runtime.Dockerfile in ${plugin_root:-the folder above $self_dir})"
+			case " $missing " in
+			*" $image "*)
+				refuse "$EX_UNAVAILABLE" "the image $image is not present, and its sources are not" \
+					"beside the launcher to build it from (no docker/toolkit.Dockerfile in" \
+					"${plugin_root:-the folder above $self_dir}): install the plugin whole, build" \
+					"the image from its docker/toolkit.Dockerfile or pull it, or set DTA_TOOLKIT_IMAGE" ;;
+			esac
+			# The toolkit runs; it names the runtime image itself when a command needs it.
+			wanted_images=
+		fi
+	fi
+	if [ -n "$wanted_images" ]; then
+		case ${XDG_STATE_HOME:-} in
+		/?*) state=$XDG_STATE_HOME/dta ;;
+		*)
+			case ${HOME:-} in
+			/?*) state=$HOME/.local/state/dta ;;
+			*) refuse "$EX_UNAVAILABLE" "the images cannot be built: neither XDG_STATE_HOME nor" \
+				"HOME is an absolute path, so the build's log and lock have no place" ;;
+			esac
+			;;
+		esac
+		mkdir -p -- "$state" 2>/dev/null ||
+			refuse "$EX_UNAVAILABLE" "the images cannot be built: the folder $state, for the" \
+				"build's log and lock, cannot be created"
+		log=$state/build.log
+		docker buildx version >/dev/null 2>&1 ||
+			refuse "$EX_UNAVAILABLE" "docker's buildx plugin, which builds the images, is not" \
+				"installed: install it (the docker-buildx-plugin package, or Docker Desktop)," \
+				"then run the command again"
+		acquire_lock
+		if [ -z "$rebuild" ]; then
+			# Whoever held the lock before may have built what was missing.
+			find_missing
+			wanted_images=$missing
+			[ -n "$wanted_images" ] || [ "$waited" -eq 0 ] ||
+				note "another dta call built the images meanwhile"
+		fi
+		if [ -n "$wanted_images" ]; then
+			# Only the lock's holder writes the log: one build's output per file.
+			true 2>/dev/null >"$log" ||
+				refuse "$EX_UNAVAILABLE" "the build's log $log cannot be written"
+			log_open=1
+			started=$(date +%s)
+			names=$(printf '%s\n' "$wanted_images" | sed 's/ / and /')
+			if [ -n "$rebuild" ]; then
+				note "DTA_REBUILD=1: building $names again from $plugin_root; a first build takes" \
+					"several minutes (log: $log)"
+			else
+				note "building $names from $plugin_root; the first time takes several minutes" \
+					"(log: $log)"
+			fi
+			for wanted in $wanted_images; do
+				case $wanted in
+				"$image") kind=toolkit ;;
+				*) kind=runtime ;;
+				esac
+				build_image "$wanted" "$kind" && continue
+				status=$?
+				printf 'dta: the last lines of %s:\n' "$log" >&2
+				tail -n 20 -- "$log" >&2
+				refuse "$EX_UNAVAILABLE" "building $wanted failed after" \
+					"$(($(date +%s) - started)) s (docker's exit status $status); its whole output" \
+					"is in $log"
+			done
+			note "built $names in $(($(date +%s) - started)) s"
+		fi
+		release_lock
+	fi
+fi
+
+if [ -n "$skills" ]; then
+	mkdir -p -- "$skills" 2>/dev/null ||
+		refuse "$EX_USAGE" "install-skill: the directory $skills cannot be created"
+	add_mount "$skills"
+fi
+
+# -- the container ----------------------------------------------------------------
+
+uid=$(id -u) || refuse "$EX_UNAVAILABLE" "the caller's uid cannot be read"
+gid=$(id -g) || refuse "$EX_UNAVAILABLE" "the caller's gid cannot be read"
+
+arguments=$#
+bind_value "$socket" /var/run/docker.sock
+# /tmp allows execution: a check installs the generated client into an environment
+# there, and compiled modules cannot be loaded from a mount that forbids it.
+set -- "$@" docker run --rm --pull never --init \
+	--network host \
+	--user "$uid:$gid" \
+	--read-only --tmpfs /tmp:exec \
+	--cap-drop ALL --security-opt no-new-privileges \
+	--log-driver none \
+	--mount "$bind"
+[ -z "$socket_group" ] || set -- "$@" --group-add "$socket_group"
+
+set -- "$@" --workdir "$cwd"
+IFS=$NL
+set -f
+for directory in $mounts; do
+	bind_value "$directory" "$directory"
+	set -- "$@" --mount "$bind"
+done
+
+# By name only: docker reads each value from this process's environment, so
+# none of them appears on a command line.
+for name in $(env | sed -n 's/^\(DTA_[A-Za-z0-9_]*\)=.*/\1/p'); do
+	set -- "$@" --env "$name"
+done
+set +f
+IFS=$DEFAULT_IFS
+[ -z "$skills" ] || set -- "$@" --env HOME
+
+# stdin is attached unless it is closed; a terminal only when there is one.
+if (exec 3<&0) 2>/dev/null; then
+	set -- "$@" --interactive
+fi
+if [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
+	set -- "$@" --tty
+fi
+set -- "$@" "$image"
+
+# The caller's arguments are still first: move them behind the image.
+while [ "$arguments" -gt 0 ]; do
+	set -- "$@" "$1"
+	shift
+	arguments=$((arguments - 1))
+done
+exec "$@"

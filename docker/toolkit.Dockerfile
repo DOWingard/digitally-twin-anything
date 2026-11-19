@@ -1,19 +1,24 @@
 # The command line tool `dta` and the docker client it drives.
 #
-# The plugin's launcher (plugin/bin/dta) runs this image on a workspace: the
+# The plugin's launcher (bin/dta) runs this image on a workspace: the
 # workspace mounted at its own path, the host's docker socket, the host's
 # network, the calling user's uid and gid. Compose files and build contexts
 # the toolkit hands to docker are therefore resolved by the host's daemon at
 # the paths the toolkit sees.
 #
-# Build with the repository root as context:
+# The launcher builds it the first time it needs it, from the plugin's root
+# (the repository's root) as context; by hand:
 #
 #   docker build -f docker/toolkit.Dockerfile -t dta-toolkit:0.1.0 .
 #
-# What the build may read is limited by docker/toolkit.Dockerfile.dockerignore.
-# The image holds no secret and no store or source driver: the toolkit reaches
-# a twin's store and sources only through the twin's own containers, and reads
-# a workspace's .env from the mounted workspace when it runs.
+# What the build may read is limited by docker/toolkit.Dockerfile.dockerignore;
+# it needs only committed files. What it pulls: the two base images, by
+# digest; the third-party packages, by the lock file's versions and hashes;
+# the installer, by version; the build backend of the project's own packages
+# (hatchling) at its newest version, the one thing not pinned. The image
+# holds no secret and no store or source driver: the toolkit reaches a twin's
+# store and sources only through the twin's own containers, and reads a
+# workspace's .env from the mounted workspace when it runs.
 
 # The docker client and its compose and buildx plugins are static binaries.
 FROM docker:29.9.3-cli@sha256:5a7af0dcb0e46c803efe9b45371dd21cb500e5b4453250394ac6f06d49b6e6f1 AS docker-cli

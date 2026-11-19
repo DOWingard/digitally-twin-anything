@@ -8,7 +8,7 @@ this module renders and fail when they differ.
 
 Run from the repository root to rewrite it:
 
-    uv run python plugin/tests/skill/manifest_reference.py
+    uv run python tests/plugin/skill/manifest_reference.py
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ from pydantic_core import PydanticUndefined
 log = Log("skill.manifest_reference")
 
 ROOT = Path(__file__).resolve().parents[3]
-TARGET = ROOT / "plugin" / "skills" / "build-twin" / "reference" / "manifest.md"
-REGENERATE = "uv run python plugin/tests/skill/manifest_reference.py"
+TARGET = ROOT / "skills" / "build-twin" / "reference" / "manifest.md"
+REGENERATE = "uv run python tests/plugin/skill/manifest_reference.py"
 
 # The placeholder that stands for a key of each map of sections, by the map's field name.
 KEY_NAMES = {

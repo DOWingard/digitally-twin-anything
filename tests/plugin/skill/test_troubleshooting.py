@@ -10,6 +10,7 @@ from dta_toolkit.commands.build import STEPS
 from skilldocs import (
     DOTTED,
     REFERENCE,
+    ROOT,
     SOURCES,
     code_exists,
     is_manifest_path,
@@ -63,6 +64,27 @@ def test_every_acceptance_check_is_routed() -> None:
     [table] = tables_headed(ACCEPTANCE, "Check")
     routed = [unquote(part.strip()) for row in table.rows for part in row[0].split(",")]
     assert sorted(routed) == sorted(checks)
+
+
+def _launcher_messages() -> str:
+    """The launcher's source with each message whole: a message continued in the next
+    quoted argument joined to it, and every shell expansion one NUL character."""
+    text = read(ROOT / "bin" / "dta")
+    text = re.sub(r'"\s*\\\n\s*"', " ", text)
+    return re.sub(r"\$\(\([^)]*\)\)|\$\{[^}]*\}|\$[A-Za-z_]\w*", "\x00", text)
+
+
+def test_every_launcher_refusal_listed_is_one_it_makes() -> None:
+    [table] = tables_headed(TROUBLE, "The last line says")
+    assert len(table.rows) > 10
+    messages = _launcher_messages()
+    missing = []
+    for row in table.rows:
+        # A placeholder in angle brackets stands for what the launcher fills in.
+        pattern = re.sub(r"<[^<>]+>", "\x00", re.escape(unquote(row[0])))
+        if not re.search(pattern, messages):
+            missing.append(row[0])
+    assert not missing, missing
 
 
 def test_every_code_the_skill_names_is_in_troubleshooting() -> None:
