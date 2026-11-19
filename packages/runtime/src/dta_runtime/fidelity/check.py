@@ -478,9 +478,11 @@ def _apply_step(
     if position.status == RESOLVED:
         updated["resolved_at"] = now
     updated["detail"] = detail
+    # Each step says the cycle it belongs to and when the next cycle is due, if it is.
+    ladder_fields = {"cycle": position.cycle, "next_cycle_at": iso(position.due)}
     updated["steps"] = [
         *(document.get("steps") or []),
-        *(_step_entry(item, now, check) for item in logged),
+        *(_step_entry({**ladder_fields, **item}, now, check) for item in logged),
     ]
     return updated
 
@@ -618,7 +620,15 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
             )
             incident["steps"] = [
                 _step_entry(
-                    {"action": "opened", "error": window["error"], "n": window["n"]}, now, check
+                    {
+                        "action": "opened",
+                        "error": window["error"],
+                        "n": window["n"],
+                        "cycle": 1,
+                        "next_cycle_at": None,
+                    },
+                    now,
+                    check,
                 )
             ]
             log.info(
@@ -638,7 +648,13 @@ def _decide(measurement: _Measurement, current: _Current) -> _Decision:
                 remodel.get("models") or {}, current.snapshot.get(question.spec, {})
             )
             step = ladder.next_step(
-                position, settings, found, now=now, tolerance=tolerance, remodelled=remodelled
+                position,
+                settings,
+                found,
+                now=now,
+                tolerance=tolerance,
+                remodelled=remodelled,
+                interval=setup.interval,
             )
             updated = _apply_step(
                 incident,

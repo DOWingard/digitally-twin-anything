@@ -167,7 +167,17 @@ _QUESTION_COLUMNS = [
     "breach",
     "reason",
 ]
-_INCIDENT_COLUMNS = ["uid", "kind", "subject", "status", "rung", "attempt", "cycle", "opened_at"]
+_INCIDENT_COLUMNS = [
+    "uid",
+    "kind",
+    "subject",
+    "status",
+    "rung",
+    "attempt",
+    "cycle",
+    "next_cycle_at",
+    "opened_at",
+]
 _SIGNAL_COLUMNS = [
     "uid",
     "property",
@@ -264,7 +274,13 @@ def fidelity_incidents(
     params = {key: value for key, value in (("status", status), ("kind", kind)) if value}
     with _api(ctx) as (_manifest, api, secrets):
         found = computeops.read_all(api, f"{FIDELITY}/incidents", params)
-    _say(ctx, {"incidents": found}, table(found, _INCIDENT_COLUMNS, _IDS), secrets)
+    rows = [{**incident, "next_cycle_at": _next_cycle_at(incident)} for incident in found]
+    _say(ctx, {"incidents": found}, table(rows, _INCIDENT_COLUMNS, _IDS), secrets)
+
+
+def _next_cycle_at(incident: Mapping[str, Any]) -> Any:
+    """When a breach incident's next correction cycle is due, if one is."""
+    return (incident.get("detail") or {}).get("next_cycle_at")
 
 
 @command
@@ -280,7 +296,8 @@ def fidelity_incident(
             "GET /fidelity/incidents/{id}",
         )
     data = found.get("data") or {}
-    lines = [f"{name:<16} {_brief(data.get(name))}" for name in _INCIDENT_COLUMNS[1:]]
+    shown = {**data, "next_cycle_at": _next_cycle_at(data)}
+    lines = [f"{name:<16} {_brief(shown.get(name))}" for name in _INCIDENT_COLUMNS[1:]]
     for name in ("resolved_at", "awaiting", "detail"):
         lines.append(f"{name:<16} {_brief(data.get(name))}")
     steps = data.get("steps") or []

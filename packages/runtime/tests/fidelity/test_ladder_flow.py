@@ -60,12 +60,14 @@ class Ladder:
 
 def test_the_whole_ladder_up_to_the_retry_budget_and_a_retry(make_plant):
     plant, model, oracle, opened = breaching(
-        make_plant, {"recalibrate_attempts": 1, "retry_budget": 2, "remodel_timeout": 3600}
+        make_plant, {"recalibrate_attempts": 1, "retry_budget": 3, "remodel_timeout": 36000}
     )
     ladder = Ladder(plant, oracle, opened)
     assert ladder.asked(opened) == [("recalibrate", 0, 1)]
     assert ladder.asked(ladder.step(11)) == [("reselect", 0, 1)]
 
+    # Cycle 1 has spent its rungs: the re-model is asked for, and cycle 2 is due one
+    # fidelity interval later.
     remodel = ladder.step(12)
     assert remodel.corrections == []
     assert kinds(remodel.events) == [(INCIDENT, "changed"), (REMODEL, None)]
@@ -75,9 +77,21 @@ def test_the_whole_ladder_up_to_the_retry_budget_and_a_retry(make_plant):
         "level",
         "level",
     )
-    assert event["timeout_s"] == 3600.0 and event["requested_at"] == "2026-01-05T03:00:00Z"
+    assert event["timeout_s"] == 36000.0 and event["requested_at"] == "2026-01-05T03:00:00Z"
+    assert remodel.events[0]["data"]["next_cycle_at"] == "2026-01-05T03:15:00Z"
+    record = ladder.record()
+    assert record["status"] == "remodel_requested"
+    assert record["detail"]["next_cycle_at"] == "2026-01-05T03:15:00Z"
+    assert [(s["action"], s["cycle"], s["next_cycle_at"]) for s in record["steps"][-2:]] == [
+        ("remodel_requested", 1, "2026-01-05T03:15:00Z"),
+        ("cycle_ended", 1, "2026-01-05T03:15:00Z"),
+    ]
+
+    # Cycle 2 runs on newer data with the request open.
+    second = ladder.step(13)
+    assert ladder.asked(second) == [("recalibrate", 0, 2)]
+    assert kinds(second.events) == [(INCIDENT, "changed")]
     assert ladder.record()["status"] == "remodel_requested"
-    assert ladder.step(13).events == []
 
     # The managing agent registers another candidate: rung 2 comes back.
     plant.register(
@@ -88,26 +102,38 @@ def test_the_whole_ladder_up_to_the_retry_budget_and_a_retry(make_plant):
         }
     )
     again = ladder.step(14)
-    assert ladder.asked(again) == [("reselect", 1, 1)]
+    assert ladder.asked(again) == [("reselect", 1, 2)]
     assert kinds(again.events) == [(INCIDENT, "changed")]
-    # That came to nothing too: the cycle ends and the next starts at rung 1.
-    assert ladder.asked(ladder.step(15)) == [("recalibrate", 0, 2)]
-    assert ladder.asked(ladder.step(16)) == [("reselect", 0, 2)]
-    assert kinds(ladder.step(17).events) == [(INCIDENT, "changed"), (REMODEL, None)]
+    assert ladder.record()["status"] == "open"
+    # That came to nothing too: cycle 3 is due two intervals after cycle 2 ended.
+    assert ladder.step(15).corrections == []
+    assert ladder.record()["detail"]["next_cycle_at"] == "2026-01-05T04:15:00Z"
+    assert ladder.step(16).events == []
+    assert ladder.asked(ladder.step(17)) == [("recalibrate", 0, 3)]
+    assert ladder.asked(ladder.step(18)) == [("reselect", 0, 3)]
+    # Cycle 3, the last, ends without a re-model: it is asked for again, and the
+    # incident waits on it rather than failing.
+    spent = ladder.step(19)
+    assert kinds(spent.events) == [(INCIDENT, "changed"), (REMODEL, None)]
+    record = ladder.record()
+    assert record["status"] == "remodel_requested"
+    assert record["steps"][-1]["action"] == "cycles_spent"
+    assert record["detail"]["next_cycle_at"] is None
+    assert ladder.step(20).events == []
     # A changed candidate is a re-model as well.
     seasonal = model_uid("level", "seasonal")
     plant.register({"TwinModel": [{"uid": seasonal, "params": json.dumps({"season_length": 8})}]})
-    assert ladder.asked(ladder.step(18)) == [("reselect", 1, 2)]
-    failed = ladder.step(19)
+    assert ladder.asked(ladder.step(21)) == [("reselect", 1, 3)]
+    failed = ladder.step(22)
     assert kinds(failed.events) == [(INCIDENT, "changed"), (STATE, "failed")]
     record = ladder.record()
     assert record["status"] == "failed"
     assert record["steps"][-1]["reason"] == "retry_budget"
-    assert len(set(ladder.keys)) == len(ladder.keys) == 6
+    assert len(set(ladder.keys)) == len(ladder.keys) == 7
     assert fidelity.state(plant.twin)["state"] == "failed"
 
     retried = fidelity.retry(
-        plant.twin, ladder.incident, by="operator", note="new data", now=at(19)
+        plant.twin, ladder.incident, by="operator", note="new data", now=at(22)
     )
     assert (retried["status"], retried["rung"], retried["attempt"], retried["cycle"]) == (
         "open",
@@ -117,11 +143,57 @@ def test_the_whole_ladder_up_to_the_retry_budget_and_a_retry(make_plant):
     )
     assert kinds(retried["events"]) == [(INCIDENT, "changed"), (STATE, "correcting")]
     assert retried["steps"][-1]["by"] == "operator"
-    after = ladder.step(20)
+    after = ladder.step(23)
     # Cycle 1 again, under a key no earlier correction had.
-    assert ladder.asked(after) == [("recalibrate", 0, 3)]
-    assert after.corrections[0].key == f"correction:{ladder.incident}:3:recalibrate:0"
+    assert ladder.asked(after) == [("recalibrate", 0, 4)]
+    assert after.corrections[0].key == f"correction:{ladder.incident}:4:recalibrate:0"
     assert len(set(ladder.keys)) == len(ladder.keys)
+
+
+def test_a_late_cycle_whose_model_holds_resolves_the_incident_its_request_open(make_plant):
+    plant, model, oracle, opened = breaching(
+        make_plant, {"recalibrate_attempts": 1, "retry_budget": 3, "remodel_timeout": 36000}
+    )
+    ladder = Ladder(plant, oracle, opened)
+    ladder.step(11)
+    assert kinds(ladder.step(12).events) == [(INCIDENT, "changed"), (REMODEL, None)]
+    # Cycle 2's recalibration, on data the first cycle did not have, is accepted.
+    plant.sync(13)
+    late = plant.check(13, oracle)
+    (request,) = late.corrections
+    assert (request.rung, request.cycle) == ("recalibrate", 2)
+    done = fidelity.corrected(
+        plant.twin,
+        request,
+        CorrectionResult(accepted=True, model=model, fitted_to=at(13), error=0.1),
+        now=at(13),
+    )
+    assert done["status"] == "remodel_requested" and done["awaiting"] == at(13)
+    assert done["steps"][-1]["cycle"] == 2
+    plant.refit(model, at(13))
+    oracle.offset = no_offset
+    outcomes = plant.run(range(14, 18), oracle)
+    held = outcomes[17]
+    assert kinds(held.events) == [(INCIDENT, "resolved"), (STATE, "healthy")]
+    record = ladder.record()
+    assert record["status"] == "resolved"
+    assert (record["steps"][-1]["action"], record["steps"][-1]["cycle"]) == ("held", 2)
+
+
+def test_spent_cycles_leave_the_request_open_until_its_timeout(make_plant):
+    plant, model, oracle, opened = breaching(
+        make_plant, {"recalibrate_attempts": 1, "retry_budget": 1, "remodel_timeout": 3600}
+    )
+    ladder = Ladder(plant, oracle, opened)
+    ladder.step(11)
+    asked = ladder.step(12)
+    assert kinds(asked.events) == [(INCIDENT, "changed"), (REMODEL, None)]
+    assert ladder.record()["steps"][-1]["action"] == "cycles_spent"
+    for i in (13, 14, 15):
+        assert ladder.step(i).events == []
+    failed = ladder.step(16)
+    assert kinds(failed.events) == [(INCIDENT, "changed"), (STATE, "failed")]
+    assert ladder.record()["steps"][-1]["reason"] == "remodel_timeout"
 
 
 def test_a_remodel_that_never_comes_fails_and_a_later_fit_resolves(make_plant):
@@ -180,10 +252,13 @@ def test_without_remodel_a_cycle_ends_after_reselect(make_plant):
     )
     ladder = Ladder(plant, oracle, opened)
     assert ladder.asked(ladder.step(11)) == [("reselect", 0, 1)]
-    nexts = ladder.step(12)
-    assert ladder.asked(nexts) == [("recalibrate", 0, 2)]
-    assert REMODEL not in [event["type"] for event in nexts.events]
-    assert ladder.asked(ladder.step(13)) == [("reselect", 0, 2)]
-    failed = ladder.step(14)
+    # Cycle 2 starts one fidelity interval after cycle 1 ended.
+    ended = ladder.step(12)
+    assert ended.corrections == []
+    assert REMODEL not in [event["type"] for event in ended.events]
+    assert ladder.record()["detail"]["next_cycle_at"] == at(13).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert ladder.asked(ladder.step(13)) == [("recalibrate", 0, 2)]
+    assert ladder.asked(ladder.step(14)) == [("reselect", 0, 2)]
+    failed = ladder.step(15)
     assert kinds(failed.events) == [(INCIDENT, "changed"), (STATE, "failed")]
     assert ladder.record()["steps"][-1]["reason"] == "retry_budget"

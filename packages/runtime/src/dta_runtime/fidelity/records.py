@@ -82,6 +82,10 @@ written with sorted keys and no spaces.
     after_remodel   rung 2 was brought back by a re-model in this cycle (breach)
     cycle_offset    cycles begun before the latest retry: the cycle of a correction's
                key is this plus `cycle`, so that no key is used twice (breach)
+    next_cycle_at   when the next cycle starts, once the current one has spent its
+               rungs; null while one runs or none is left (breach)
+    cycles_spent    no further cycle is left and the incident waits on its re-model
+               request (breach)
     last_result     the latest correction reported back: {"key", "accepted", "model",
                "fitted_to", "error", "detail"} (breach)
     remodel    {"requested_at", "models": {uid: identity}}: the candidates of the
@@ -93,9 +97,11 @@ written with sorted keys and no spaces.
 `TwinIncident.steps`: every step in order, each {"at", "action", ...}; the actions are
 opened, request {key, rung, attempt, cycle}, result {key, accepted, model, fitted_to,
 error}, held, not_held, recovered {n, error}, remodel_requested {timeout_s},
-remodelled, cycle {cycle}, failed {reason}, resolved, stale {count}, fresh {count},
-flagged, cleared, retry {by, note}, resolve {by, note}, closed. A step taken at a
-check carries its uid as `check`.
+remodelled, cycle {cycle}, cycle_ended {cycle, next_cycle}, cycles_spent {cycles},
+failed {reason}, resolved, stale {count}, fresh {count}, flagged, cleared, retry {by,
+note}, resolve {by, note}, closed. A step taken at a check carries its uid as `check`;
+a step of a breach incident's ladder carries the cycle it belongs to as `cycle` and
+when the next cycle is due as `next_cycle_at` (null when none is).
 
 `TwinSignal.value_at_flag` and `reading` hold the value as JSON. `TwinSignal.detail`:
 {"test": the numbers of the test that flagged it, "question": the question whose
@@ -411,6 +417,8 @@ def position_of(document: Mapping[str, Any]) -> Position:
         requested_at=utc(document.get("requested_at")),
         failed_at=parse_time(detail.get("failed_at")),
         offset=int(detail.get("cycle_offset") or 0),
+        due=parse_time(detail.get("next_cycle_at")),
+        spent=bool(detail.get("cycles_spent")),
     )
 
 
@@ -423,6 +431,8 @@ def with_position(document: dict[str, Any], position: Position) -> dict[str, Any
     detail["after_remodel"] = position.after_remodel
     detail["failed_at"] = iso(position.failed_at)
     detail["cycle_offset"] = position.offset
+    detail["next_cycle_at"] = iso(position.due)
+    detail["cycles_spent"] = position.spent
     return {
         **document,
         "status": position.status,

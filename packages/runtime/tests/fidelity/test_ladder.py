@@ -38,7 +38,9 @@ DEFAULT = Correction()
 
 
 def step(position: Position, found: Evidence = NONE, *, settings=DEFAULT, now=T0, remodel=False):
-    return next_step(position, settings, found, now=now, tolerance=TOL, remodelled=remodel)
+    return next_step(
+        position, settings, found, now=now, tolerance=TOL, remodelled=remodel, interval=D
+    )
 
 
 def actions(found: ladder.Step) -> list[str]:
@@ -88,7 +90,9 @@ def test_the_rungs_in_order_and_the_remodel_request():
     assert remodel.remodel_requested and remodel.request is None
     assert remodel.position.status == REMODEL_REQUESTED
     assert remodel.position.requested_at == T0 + D
-    assert actions(remodel) == ["remodel_requested"]
+    # While the request is open, cycle 2 is due one fidelity interval on.
+    assert actions(remodel) == ["remodel_requested", "cycle_ended"]
+    assert remodel.position.due == T0 + 2 * D
     # A model registered or changed: rung 2 again, its second attempt.
     again = step(remodel.position, now=T0 + 2 * D, remodel=True)
     assert again.request == (2, 1, 1)
@@ -107,10 +111,15 @@ def test_the_remodel_timeout_fails_the_incident():
 
 def test_a_cycle_ends_after_the_remodel_and_the_budget_fails_it():
     spent = Position(OPEN, 3, 3, 1, after_remodel=True)
-    found = step(spent)
+    ended = step(spent)
+    # The next cycle starts one fidelity interval later, on newer data.
+    assert actions(ended) == ["cycle_ended"] and ended.request is None
+    assert ended.position.due == T0 + D
+    assert step(ended.position, now=T0 + D - timedelta(seconds=1)).request is None
+    found = step(ended.position, now=T0 + D)
     assert actions(found) == ["cycle"]
     assert found.request == (1, 0, 2)
-    assert not found.position.after_remodel
+    assert not found.position.after_remodel and found.position.due is None
     last = replace(spent, cycle=DEFAULT.retry_budget)
     failed = step(last)
     assert failed.position.status == FAILED
@@ -123,11 +132,15 @@ def test_each_switch_of_the_correction_settings():
     no_reselect = Correction(reselect=False)
     assert step(replace(opened(), attempt=2), settings=no_reselect).remodel_requested
     nothing_but_recalibration = Correction(reselect=False, agent_remodel=False, retry_budget=2)
-    found = step(replace(opened(), attempt=2), settings=nothing_but_recalibration)
+    ended = step(replace(opened(), attempt=2), settings=nothing_but_recalibration)
+    assert ended.request is None and ended.position.due == T0 + D
+    found = step(ended.position, settings=nothing_but_recalibration, now=T0 + D)
     assert found.request == (1, 0, 2)
     no_remodel = Correction(agent_remodel=False)
     rung_three = Position(OPEN, 3, 2, 1)
-    assert step(rung_three, settings=no_remodel).request == (1, 0, 2)
+    ended = step(rung_three, settings=no_remodel)
+    assert ended.request is None and ended.position.due == T0 + D
+    assert step(ended.position, settings=no_remodel, now=T0 + D).request == (1, 0, 2)
 
 
 def test_a_failed_incident_resolves_only_on_a_model_fitted_after_the_failure():
@@ -189,3 +202,128 @@ def test_a_remodel_is_a_candidate_registered_or_changed():
     assert remodelled(before, {**before, "twin_model:a/y": "2"})
     assert remodelled(before, {"twin_model:a/x": "3"})
     assert not remodelled(before, {})
+
+
+# -- cycles over data time -------------------------------------------------------------
+
+
+def climb(settings: Correction, checks: int, *, accept_at: int | None = None):
+    """An incident opened at T0 and checked once per fidelity interval, every correction
+    refused as soon as it is asked for (the one asked for at check `accept_at` accepted).
+    The checks at which each cycle started and ended, and the position after each check."""
+    position = opened()
+    starts, ends, positions = {1: 0}, {}, []
+    for k in range(checks):
+        now = T0 + k * D
+        # The model the accepted correction put in place holds from the next check on.
+        found = GOOD if position.awaiting is not None else NONE
+        result = step(position, found, settings=settings, now=now)
+        for item in result.logged:
+            if item["action"] == "cycle":
+                starts[item["cycle"]] = k
+            elif item["action"] == "cycle_ended":
+                ends[item["cycle"]] = k
+        position = result.position
+        if result.request is not None:
+            position = answered(position, accepted=k == accept_at, fitted_to=now)
+        positions.append(position)
+        if position.status in (FAILED, RESOLVED):
+            break
+    return starts, ends, positions
+
+
+def test_each_further_cycle_waits_twice_as_long_as_the_one_before():
+    starts, ends, _ = climb(Correction(retry_budget=5), 200)
+    # Rung 1 twice and rung 2 make a cycle of three checks; it ends at the fourth.
+    assert starts == {1: 0, 2: 4, 3: 9, 4: 16, 5: 27}
+    assert ends == {1: 3, 2: 7, 3: 12, 4: 19}
+    for cycle in range(2, 6):
+        assert (starts[cycle] - ends[cycle - 1]) * D == D * 2 ** (cycle - 2)
+
+
+def test_retry_backoff_sets_the_first_wait():
+    starts, ends, _ = climb(Correction(retry_budget=3, retry_backoff=timedelta(hours=1)), 200)
+    assert (starts[2] - ends[1]) * D == timedelta(hours=1)
+    assert (starts[3] - ends[2]) * D == timedelta(hours=2)
+
+
+def test_with_a_remodel_request_open_the_budget_runs_its_cycles_and_only_the_timeout_fails():
+    for budget in (1, 3, 5):
+        settings = Correction(retry_budget=budget)
+        starts, _, positions = climb(settings, 200)
+        assert sorted(starts) == list(range(1, budget + 1))
+        last = positions[-1]
+        assert last.status == FAILED
+        # The request was made when cycle 1 ended and stayed open through every cycle.
+        requested_at = T0 + 3 * D
+        assert last.failed_at == requested_at + settings.remodel_timeout
+        while_open = [p for p in positions[:-1] if p.requested_at is not None]
+        assert {p.status for p in while_open} == {REMODEL_REQUESTED}
+        assert {p.requested_at for p in while_open} == {requested_at}
+
+
+def test_without_rung_three_the_budget_fails_the_incident_at_the_end_of_its_last_cycle():
+    for budget, end in ((1, 3), (3, 12), (5, 30)):
+        starts, _, positions = climb(Correction(retry_budget=budget, agent_remodel=False), 200)
+        assert sorted(starts) == list(range(1, budget + 1))
+        last = positions[-1]
+        assert last.status == FAILED and last.failed_at == T0 + end * D
+        assert all(p.requested_at is None for p in positions)
+
+
+def test_the_steps_of_a_spent_budget_with_the_request_open():
+    settings = Correction(retry_budget=2)
+    _, _, positions = climb(settings, 9)
+    # Cycle 2 ran from check 4 to 6 and ended at 7: nothing is left but the request.
+    spent = positions[7]
+    assert (spent.status, spent.rung, spent.cycle, spent.due) == (REMODEL_REQUESTED, 3, 2, None)
+    assert spent.spent and not positions[6].spent
+    found = step(positions[6], settings=settings, now=T0 + 7 * D)
+    assert found.logged == [{"action": "cycles_spent", "cycles": 2}]
+    # Later checks add nothing until the model or the timeout.
+    waiting = step(spent, settings=settings, now=T0 + 8 * D)
+    assert waiting.logged == [] and waiting.position == spent
+
+
+def test_a_late_cycle_whose_model_holds_resolves_the_incident():
+    _, _, positions = climb(Correction(retry_budget=5), 200, accept_at=16)
+    accepted = positions[16]
+    assert accepted.status == REMODEL_REQUESTED and accepted.awaiting == T0 + 16 * D
+    assert accepted.cycle == 4
+    assert len(positions) == 18
+    resolved = positions[-1]
+    assert resolved.status == RESOLVED and resolved.due is None
+
+
+def test_a_model_registered_while_further_cycles_run_brings_rung_two_back():
+    settings = Correction(retry_budget=5)
+    _, _, positions = climb(settings, 9)
+    # Check 5: cycle 2's first recalibration was refused; the agent's model is there.
+    found = step(positions[4], settings=settings, now=T0 + 5 * D, remodel=True)
+    assert actions(found) == ["remodelled"]
+    assert found.request == (2, 1, 2)
+    assert found.position.status == OPEN and found.position.after_remodel
+    # While waiting for the next cycle, the same.
+    waiting = positions[7]
+    assert waiting.due == T0 + 9 * D
+    found = step(waiting, settings=settings, now=T0 + 8 * D, remodel=True)
+    assert found.request == (2, 1, 2) and found.position.due is None
+
+
+def test_the_timeout_fails_an_incident_with_a_correction_of_a_further_cycle_running():
+    settings = Correction(retry_budget=5, remodel_timeout=timedelta(hours=1))
+    position = replace(
+        Position(REMODEL_REQUESTED, 1, 0, 2, requested_at=T0),
+        pending=Pending("k", 1, 0, 2, T0 + 3 * D),
+    )
+    failed = step(position, settings=settings, now=T0 + 4 * D)
+    assert failed.position.status == FAILED and failed.position.pending is None
+    assert failed.logged[-1]["reason"] == "remodel_timeout"
+
+
+def test_cycles_without_a_rung_to_run_are_not_waited_for():
+    remodel_only = Correction(recalibrate_attempts=0, reselect=False)
+    asked = step(opened(), settings=remodel_only)
+    assert asked.remodel_requested and asked.position.due is None
+    assert actions(asked) == ["remodel_requested"]
+    assert step(asked.position, settings=remodel_only, now=T0 + D).logged == []

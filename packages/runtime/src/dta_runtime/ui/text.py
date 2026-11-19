@@ -539,13 +539,23 @@ INCIDENT_COLUMNS = {
     "rung": "rung",
     "attempt": "attempt",
     "cycle": "cycle",
+    "next_cycle_at": "next cycle",
     "opened_at": "opened",
     "resolved_at": "resolved",
 }
 # Told by a word and a sign; an unresolved incident is coloured as well.
 INCIDENT_SIGNS = {"open": "●", "remodel_requested": "…", "failed": "✗", "resolved": "✓"}
 CHOOSE_INCIDENT = "Choose an incident in the grid to see its steps."
-STEP_COLUMNS = ("when", "step", "what was tried", "outcome", "error before", "error after")
+STEP_COLUMNS = (
+    "when",
+    "step",
+    "what was tried",
+    "outcome",
+    "error before",
+    "error after",
+    "cycle",
+    "next cycle",
+)
 SIGNALS_HEADING = "Signals found suspect"
 SIGNAL_COLUMNS = {
     "object": "object",
@@ -714,6 +724,15 @@ def step_outcome(step: dict[str, Any]) -> str:
         return f"failed: {step.get('reason') or 'no reason given'}"
     if action == "cycle":
         return f"cycle {step.get('cycle')} begins"
+    if action == "cycle_ended":
+        due = step.get("next_cycle_at")
+        later = f" at {time_text(due)}" if due else ""
+        return f"cycle {step.get('cycle')} ended; cycle {step.get('next_cycle')} begins{later}"
+    if action == "cycles_spent":
+        return (
+            f"every cycle of the budget has run ({plural(int(step.get('cycles') or 0), 'cycle')}); "
+            "waits for the re-model"
+        )
     if action == "stale":
         return f"stale at {plural(int(step.get('count') or 0), 'check')} in a row"
     if action == "fresh":

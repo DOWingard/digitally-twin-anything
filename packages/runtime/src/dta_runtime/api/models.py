@@ -1059,8 +1059,14 @@ class IncidentOut(BaseModel):
         description="End of the data of the model a correction put in place, while it is judged"
     )
     requested_at: datetime | None = Field(description="When a re-model was asked for")
-    detail: dict[str, Any] = Field(description="Question, specification, pending correction")
-    steps: list[dict[str, Any]] = Field(description="Every step, oldest first")
+    detail: dict[str, Any] = Field(
+        description="Question, specification, pending correction; for a breach, "
+        "`next_cycle_at`: when its next correction cycle is due, if one is"
+    )
+    steps: list[dict[str, Any]] = Field(
+        description="Every step, oldest first; a step of a breach's ladder carries the "
+        "`cycle` it belongs to and `next_cycle_at`, when the next cycle is due (null: none)"
+    )
     resolved_version: str | None = Field(
         default=None, description="On one incident: the version that resolved it"
     )
