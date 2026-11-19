@@ -329,14 +329,6 @@ interfaces:
   ui_port_env: DTA_UI_PORT
   ui: true
 env:
-  DTA_MCP_PORT:
-    description: Host port of the twin's MCP adapter
-    secret: false
-  DTA_SQL_PORT:
-    description: Host port of read-only SQL over the twin's store
-    secret: false
-  DTA_SQL_READER_PASSWORD:
-    description: Password of the store user twin_reader
   DTA_BASE_URL:
     description: Address of the twin's API
     secret: false
