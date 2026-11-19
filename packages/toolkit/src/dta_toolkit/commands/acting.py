@@ -306,7 +306,31 @@ def fidelity_incident(
     steps = data.get("steps") or []
     if steps:
         lines += ["", "Steps", table(steps)]
+    refusals = [_refusal_text(step) for step in steps if isinstance(step.get("reason"), Mapping)]
+    if refusals:
+        lines += ["", "Why corrections were not accepted", *refusals]
     _say(ctx, found, "\n".join([f"Incident {data.get('uid')}", *lines]), secrets)
+
+
+def _refusal_text(step: Mapping[str, Any]) -> str:
+    """A correction that was not accepted, in full: the evaluation's code and words, the
+    acceptance rule and each candidate's numbers."""
+    reason = step["reason"]
+    lines = [
+        f"{step.get('at')} {step.get('rung') or ''}: {reason.get('code') or 'no code'}: "
+        f"{reason.get('message') or ''}"
+    ]
+    numbers = reason.get("numbers") if isinstance(reason.get("numbers"), Mapping) else {}
+    if numbers.get("metric") is not None:
+        lines.append(f"  accepted at {numbers['metric']} <= {numbers.get('threshold')}")
+    for item in numbers.get("candidates") or []:
+        lines.append(
+            f"  {item.get('uid')}: error {item.get('error')}, baseline "
+            f"{item.get('baseline_error')}, skill {item.get('skill')}, "
+            f"{'accepted' if item.get('accepted') else 'refused'}: "
+            f"{'; '.join(str(found) for found in item.get('reasons') or [])}"
+        )
+    return "\n".join(lines)
 
 
 def _stepped_text(found: Mapping[str, Any]) -> str:

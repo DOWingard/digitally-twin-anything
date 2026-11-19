@@ -155,6 +155,7 @@ STATUS_BY_CODE: dict[str, int] = {
     "fidelity.not_found": 404,
     "fidelity.bad_request": 400,
     "fidelity.conflict": 409,
+    "fidelity.input_unknown": 409,
     "action.not_found": 404,
     "action.rejected": 422,
     "action.key_reused": 409,

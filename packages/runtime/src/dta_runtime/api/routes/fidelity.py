@@ -15,7 +15,7 @@ from starlette.responses import Response
 
 from ... import fidelity
 from ...fidelity.measures import in_window
-from ...fidelity.records import CHECK_SCOPE
+from ...fidelity.records import CHECK_SCOPE, unknown_of
 from ...filters import repair_plus
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, errors, tabular, versioned
@@ -137,8 +137,25 @@ def _brief_incident(document: dict[str, Any]) -> dict[str, Any]:
     return {name: document.get(name) for name in ("uid", "kind", "subject", "status", "rung")}
 
 
+def _signal_value(document: dict[str, Any]) -> str | None:
+    """What stands for a suspect signal's value: `unknown`, `inferred`, or None once it is
+    ok."""
+    if document.get("status") != "suspect":
+        return None
+    return "unknown" if unknown_of(document) is not None else "inferred"
+
+
+def _signal_out(document: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **document,
+        "value": _signal_value(document),
+        "unknown": unknown_of(document),
+    }
+
+
 def _brief_signal(document: dict[str, Any]) -> dict[str, Any]:
-    return {name: document.get(name) for name in ("uid", "property", "object", "reason", "since")}
+    brief = {name: document.get(name) for name in ("uid", "property", "object", "reason", "since")}
+    return {**brief, "value": _signal_value(document)}
 
 
 def _question_entry(qid: str, entry: dict[str, Any]) -> dict[str, Any]:
@@ -562,8 +579,8 @@ def resolve_incident(
     "/signals",
     summary="The observed signals ever found suspect",
     description="By property, then object: `suspect` (stuck or biased; sync leaves its value "
-    "out and keeps the raw reading here, and the twin's inferred value is in force) or `ok` "
-    "(cleared).",
+    "out and keeps the raw reading here; `value` says what is in force: `inferred`, the "
+    "forecast made when it was flagged, or `unknown`, no value) or `ok` (cleared).",
     response_model=SignalList,
     responses=versioned(400, 404),
 )
@@ -573,7 +590,10 @@ def list_signals(
     at: At = "head",
 ) -> Response:
     version = _live(services, at)
-    found = fidelity.signals(services.twin, at=version, status=status)
+    found = [
+        _signal_out(document)
+        for document in fidelity.signals(services.twin, at=version, status=status)
+    ]
     return json_response({"data": found, "version": version_json(version)}, version)
 
 

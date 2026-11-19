@@ -26,6 +26,7 @@ from .records import (
     INCIDENT_COLUMNS,
     INCIDENT_TYPE,
     KINDS,
+    SIGNAL,
     SIGNAL_COLUMNS,
     SIGNAL_TYPE,
     STATE_UID,
@@ -62,7 +63,9 @@ def state(twin: Twin, at: At = None) -> dict[str, Any]:
 def standing(twin: Twin, at: At = None) -> dict[str, Any]:
     """What the interlock judges by, both read at one version: the twin's `state` (with
     `since` and `check`, as `state` gives them) and `incidents`, every incident not
-    resolved as `{"uid", "kind", "status"}`, oldest first; `version` is the id read."""
+    resolved as `{"uid", "kind", "status"}`, oldest first; `version` is the id read. A
+    signal incident whose value is unknown also has `withheld`: `{signal, property,
+    object}`."""
     started = time.perf_counter()
     version = at if isinstance(at, VersionRef) else twin.store.resolve(_at(at))[0]
     document = state(twin, version)
@@ -70,16 +73,28 @@ def standing(twin: Twin, at: At = None) -> dict[str, Any]:
     if _has(twin, INCIDENT_TYPE):
         rows = twin.store.table(
             INCIDENT_TYPE,
-            columns=["kind", "status", "opened_at"],
+            columns=["kind", "status", "opened_at", "subject"],
             filter=[("status", "!=", RESOLVED)],
             at=version,
         ).to_pylist()
     rows.sort(key=lambda row: (records.utc(row.get("opened_at")) or EPOCH, row["uid"]))
-    incidents = [{"uid": row["uid"], "kind": row["kind"], "status": row["status"]} for row in rows]
+    cells = (
+        {found["uid"]: cell for cell, found in unknown(twin, version).items()}
+        if any(row["kind"] == SIGNAL for row in rows)
+        else {}
+    )
+    incidents = []
+    for row in rows:
+        found = {"uid": row["uid"], "kind": row["kind"], "status": row["status"]}
+        cell = cells.get(row.get("subject")) if row["kind"] == SIGNAL else None
+        if cell is not None:
+            found["withheld"] = {"signal": row["subject"], "property": cell[0], "object": cell[1]}
+        incidents.append(found)
     log.debug(
         "fidelity standing read",
         state=document["state"],
         incidents=[found["kind"] for found in incidents],
+        withheld=sorted(cells),
         seq=version.seq,
         elapsed_ms=round((time.perf_counter() - started) * 1000.0, 1),
     )
@@ -130,6 +145,71 @@ def suspects(twin: Twin, at: At = None) -> set[Cell]:
     return set(
         zip(table.column("property").to_pylist(), table.column("object").to_pylist(), strict=True)
     )
+
+
+def unknown(twin: Twin, at: At = None) -> dict[Cell, dict[str, Any]]:
+    """(`Type.property`, object uid) of every suspect signal whose value in force is
+    unknown, with the signal's document: what nothing may compute from."""
+    if not _has(twin, SIGNAL_TYPE):
+        return {}
+    rows = twin.store.table(
+        SIGNAL_TYPE, columns=SIGNAL_COLUMNS, filter=[("status", "=", SUSPECT)], at=_at(at)
+    ).to_pylist()
+    found: dict[Cell, dict[str, Any]] = {}
+    for row in rows:
+        document = records.signal_document(row)
+        if records.unknown_of(document) is not None:
+            found[(document["property"], document["object"])] = document
+    return found
+
+
+def model_properties(model: Mapping[str, Any]) -> list[str]:
+    """What a model record computes from, as `Type.property`: its target and the
+    property of each feature (a bare `Type.property`, or the JSON of a feature naming
+    one)."""
+    found = [str(model["target"])] if model.get("target") else []
+    for text in model.get("features") or []:
+        text = str(text)
+        if text.lstrip().startswith("{"):
+            text = str((records.loads(text, {}) or {}).get("property") or "")
+        if text:
+            found.append(text)
+    return found
+
+
+def withheld(
+    cells: Mapping[Cell, Mapping[str, Any]],
+    properties: Iterable[str],
+    *,
+    uids: Iterable[str] | None = None,
+    concrete: Mapping[str, Iterable[str]] | None = None,
+) -> list[dict[str, Any]]:
+    """The unknown signals among `cells` (as `unknown` gives them) on any of `properties`
+    (`Type.property`; an abstract type stands for its concrete types in `concrete`), of
+    the objects `uids` when given: what a computation reading those properties may not
+    compute from, as `{signal, property, object, since, why}`."""
+    names: set[str] = set()
+    for text in properties:
+        type_name, _, name = str(text).partition(".")
+        names.add(text)
+        for found in (concrete or {}).get(type_name, ()):
+            names.add(f"{found}.{name}")
+    only = None if uids is None else set(uids)
+    hits = []
+    for (property_text, uid), document in sorted(cells.items()):
+        if property_text not in names or (only is not None and uid not in only):
+            continue
+        state = records.unknown_of(document) or {}
+        hits.append(
+            {
+                "signal": document["uid"],
+                "property": property_text,
+                "object": uid,
+                "since": state.get("since"),
+                "why": state.get("why"),
+            }
+        )
+    return hits
 
 
 def observed_reading(property_name: str, uid: str, value: Any, *, t: datetime) -> dict[str, Any]:

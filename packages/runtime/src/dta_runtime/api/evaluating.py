@@ -676,7 +676,8 @@ def recent_evaluation(
 
     Returns `accepted`, `model` (the one now active), `fitted_to`, `error` (its error in
     this evaluation), `reason` and `reason_code` when nothing was accepted, `version` (what
-    was written, None when nothing was), `frame` and the evaluation's `summary`. A worker
+    was written, None when nothing was), `frame`, the specification's `acceptance`
+    (`metric`, `threshold`) and the evaluation's `summary`. A worker
     that cannot be asked raises; the caller reports that as not accepted."""
     if rung not in (RECALIBRATE, RESELECT):
         raise ValueError(f"a recent evaluation runs for recalibrate or reselect, not {rung!r}")
@@ -716,6 +717,12 @@ def recent_evaluation(
         return refuse(NOTHING_TO_EVALUATE, "the specification states no backtest settings")
     if question is None or question.horizon is None:
         return refuse(NOTHING_TO_EVALUATE, "the question of the specification states no horizon")
+    acceptance = declared.acceptance
+    if acceptance is not None and acceptance.metric is not None:
+        result["acceptance"] = {
+            "metric": acceptance.metric.value,
+            "threshold": acceptance.threshold,
+        }
     models = [
         model
         for model in registry.rows(services, registry.MODEL_TYPE, head)

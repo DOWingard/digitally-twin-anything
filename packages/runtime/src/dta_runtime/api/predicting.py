@@ -19,8 +19,9 @@ import pyarrow as pa
 from dta_core.log import Log, current_trace_id, new_trace_id
 from dta_core.store import VersionRef
 
+from .. import fidelity
 from ..protocol import FrameRef, InterventionRef, PredictRequest
-from . import registry
+from . import registry, withheld
 from .problems import ApiError
 
 if TYPE_CHECKING:
@@ -87,6 +88,7 @@ def predict(
     budget_s: float = PREDICT_BUDGET_S,
     wait_until: float | None = None,
     known: VersionRef | None = None,
+    guard: bool = True,
 ) -> tuple[dict[str, Any], pa.Table]:
     """What a model predicts for `horizon` steps after a version of a branch: the worker's
     result and the table (`unique_id`, `ds`, `mean`, and `lo_*`, `hi_*` per level).
@@ -95,8 +97,20 @@ def predict(
     in it. Intervals a family does not give come from the residuals of the model's
     latest backtest as of `known` (the version the model's record was read at; the
     predicted-from version when absent), when it has one.
+
+    Refused (`fidelity.input_unknown`) when the value of its target or of a feature, of
+    the objects predicted, is unknown at `version`; `guard` false leaves that to a caller
+    that judges it itself (the fidelity check does, per origin).
     """
     uid = model["uid"]
+    if guard:
+        withheld.refuse_unknown(
+            services,
+            version,
+            fidelity.model_properties(model),
+            uids=uids,
+            subject={"model": uid},
+        )
     if not model.get("fitted"):
         log.info("prediction refused: the model has no fitted state", model=uid)
         raise ApiError(

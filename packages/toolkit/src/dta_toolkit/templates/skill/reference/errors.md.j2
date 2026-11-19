@@ -83,6 +83,7 @@ Branch on `code`, not on the text. Quote `trace_id` when you report a failure to
 | 404 | `fidelity.not_found` | no such check, incident, signal or question | list them with `/fidelity/checks`, `/fidelity/incidents`, `/fidelity/signals` |
 | 409 | `fidelity.not_live`, `fidelity.unsupported` | the twin is static, sets no fidelity interval and window, or its store holds no fidelity records | there is nothing to check |
 | 409 | `fidelity.conflict`, `fidelity.out_of_order` | the step does not fit the present state, or a check is older than the newest | read the incident or signal again |
+| 409 | `fidelity.input_unknown` | a forecast, function run or answer would read a value that is unknown: a suspect signal with no inferred value left; the problem's `signals` names each (`signal`, `property`, `object`, `since`, `why`) | do not work around it; tell the user which sensor is suspect; it clears once its readings are sound again, or by `POST /fidelity/signals/{uid}/clear` on the user's word |
 | 404 | `action.not_found` | no action type of that id | list them with `GET /actions` |
 | 404 | `action.record_not_found` | no record of a proposal with that uid | take uids from `GET /actions/records`; a uid is written whole, `twin_action_record:…` |
 | 404 | `action.loop_not_found` | no control loop of that id | list them with `GET /control/loops` |

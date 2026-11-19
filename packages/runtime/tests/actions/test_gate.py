@@ -107,3 +107,42 @@ def test_a_blocked_approval_names_the_failed_state():
 def test_only_stale_and_reconcile_incidents_block():
     assert gate.blocking([BREACH, STALE, SIGNAL, RECONCILE]) == [STALE, RECONCILE]
     assert gate.blocking([BREACH, SIGNAL]) == []
+
+
+WITHHELD = {
+    **SIGNAL,
+    "withheld": {
+        "signal": "twin_signal:0a1b2c3d4e5f60718293",
+        "property": "CentrifugalPump.speed",
+        "object": "pump:P1",
+    },
+}
+ON_SPEED = {**ACTIONS["autonomous"], "target": "Pump.speed"}
+
+
+def on(action: dict[str, Any], incident: dict[str, Any], object_uid: str) -> str:
+    return gate.on_proposal(
+        action, has_executor=True, state="correcting", incidents=[incident], object_uid=object_uid
+    )
+
+
+def test_an_autonomous_action_on_an_unknown_target_is_blocked():
+    # The target names the abstract type, the signal the concrete one: the object decides.
+    assert on(ON_SPEED, WITHHELD, "pump:P1") == gate.BLOCK
+    # Another object, another property, or a signal whose value is still inferred.
+    assert on(ON_SPEED, WITHHELD, "pump:P2") == gate.EXECUTE
+    assert on({**ON_SPEED, "target": "Pump.valve"}, WITHHELD, "pump:P1") == gate.EXECUTE
+    assert on(ON_SPEED, SIGNAL, "pump:P1") == gate.EXECUTE
+    # Supervised: proposed, as in every cell.
+    assert on({**ON_SPEED, "autonomy": "supervised"}, WITHHELD, "pump:P1") == gate.PROPOSE
+    (reason,) = gate.blocked_reasons(
+        "correcting", approval=False, incidents=[WITHHELD], action=ON_SPEED, object_uid="pump:P1"
+    )
+    assert reason == {
+        "member": "fidelity",
+        "message": f"the twin is correcting and its signal incident {SIGNAL['uid']} is not "
+        "resolved: the value of CentrifugalPump.speed of pump:P1, the control's target, is "
+        "unknown (signal twin_signal:0a1b2c3d4e5f60718293)",
+    }
+    assert gate.blocking([WITHHELD, STALE], ON_SPEED, "pump:P1") == [WITHHELD, STALE]
+    assert gate.blocking([WITHHELD, STALE]) == [STALE]

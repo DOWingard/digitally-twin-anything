@@ -4,8 +4,9 @@ The events are worked out from the records before and after the version that wro
 them, so a check that is asked for again gives back the same events as when it was
 made. Order: one `twin.fidelity.incident` per incident that was opened, changed or
 resolved (breach, then stale, signal and reconcile, each by subject), each followed by
-`twin.fidelity.remodel_requested` when it asked for a re-model; then
-`twin.fidelity.state` when the twin's state moved.
+`twin.fidelity.remodel_requested` when it asked for a re-model; then one
+`twin.fidelity.signal_unknown` per suspect signal whose value became unknown (by signal
+uid); then `twin.fidelity.state` when the twin's state moved.
 
 Data of the events:
 
@@ -15,6 +16,11 @@ Data of the events:
                                        "at", "check"}
     twin.fidelity.remodel_requested   {"incident", "question", "spec", "requested_at",
                                        "timeout_s", "check"}
+    twin.fidelity.signal_unknown      {"signal", "property", "object", "reason", "since",
+                                       "why", "message", "questions", "check"}: nothing is
+                                       inferred for the signal any more and nothing that
+                                       reads it computes; `questions` are those left
+                                       without an answer
     twin.fidelity.state               {"from", "to", "since", "check"}
 
 An incident counts as changed when its status, rung, cycle, awaited fit, re-model
@@ -31,12 +37,13 @@ from datetime import datetime
 from typing import Any
 
 from .ladder import REMODEL_REQUESTED, RESOLVED, RUNG_NAMES
-from .records import BREACH, KINDS, iso
+from .records import BREACH, KINDS, iso, unknown_of
 from .values import CorrectionRequest
 
 STATE_EVENT = "twin.fidelity.state"
 INCIDENT_EVENT = "twin.fidelity.incident"
 REMODEL_EVENT = "twin.fidelity.remodel_requested"
+UNKNOWN_EVENT = "twin.fidelity.signal_unknown"
 OPENED, CHANGED, RESOLVED_ACTION = "opened", "changed", "resolved"
 
 Pair = tuple[Mapping[str, Any] | None, Mapping[str, Any]]
@@ -134,6 +141,34 @@ def incident_events(
                 }
             )
     return events, grouped
+
+
+def unknown_events(pairs: Sequence[Pair], *, check: str | None) -> list[dict[str, Any]]:
+    """One event per signal whose value became unknown, by signal uid: said once, when
+    it does, however long it stays so."""
+    events = []
+    for before, after in sorted(pairs, key=lambda pair: pair[1]["uid"]):
+        state = unknown_of(after)
+        if state is None or (before is not None and unknown_of(before) is not None):
+            continue
+        events.append(
+            {
+                "type": UNKNOWN_EVENT,
+                "subject": after["uid"],
+                "data": {
+                    "signal": after["uid"],
+                    "property": after.get("property"),
+                    "object": after.get("object"),
+                    "reason": after.get("reason"),
+                    "since": state.get("since"),
+                    "why": state.get("why"),
+                    "message": state.get("message"),
+                    "questions": list(state.get("questions") or []),
+                    "check": check,
+                },
+            }
+        )
+    return events
 
 
 def state_event(

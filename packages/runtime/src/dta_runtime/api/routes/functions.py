@@ -10,7 +10,7 @@ from dta_core.store import LIVE_BRANCH
 from fastapi import APIRouter, Path, Request
 from starlette.responses import Response
 
-from .. import registry, running, triggers
+from .. import registry, running, triggers, withheld
 from ..deps import ServicesDep
 from ..docs import API_PREFIX, VERSION_HEADERS, errors, versioned
 from ..formats import json_response
@@ -216,6 +216,19 @@ def run_and_answer(
                 f"the question {asked['question']!r} names no function", code="function.not_found"
             )
         function_id = asked["function"]
+        # What a question is about is an input of its answer, whatever its function reads.
+        manifest = services.twin.manifest(at=known, branch=known.branch)
+        declared = ((manifest.contract.questions if manifest.contract else None) or {}).get(
+            asked["question"]
+        )
+        uids = {**body, **given}.get("uids")
+        withheld.refuse_unknown(
+            services,
+            version,
+            list((declared.targets or []) if declared is not None else []),
+            uids=[str(uid) for uid in uids] if isinstance(uids, list) else None,
+            subject={"question": asked["question"], "function": function_id},
+        )
     record = registry.function_or_404(services, function_id, known)
     if given and record["kind"] != "builtin":
         raise ApiError(

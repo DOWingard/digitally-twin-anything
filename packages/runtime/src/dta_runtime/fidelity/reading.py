@@ -32,7 +32,7 @@ from ..twin import Twin
 from . import records
 from .errors import NOT_LIVE, UNSUPPORTED, refused
 from .ladder import RESOLVED
-from .quality import changes_per_interval
+from .quality import steps_per_interval
 from .records import (
     ACTION_RECORD_TYPE,
     ACTION_TYPE,
@@ -627,6 +627,35 @@ class Lookback:
     changed: list[bool]
     # The value in force at the end of the lookback.
     value: Any
+    # How far the value moved in each interval; None where it did not change.
+    steps: list[float | None] = field(default_factory=list)
+
+
+# While a signal is suspect the property holds what the check wrote (an inferred value,
+# or none) and its readings go to the signal's record: per (property name, uid), the
+# times it was suspect, as (since, until), and its raw readings as (time, value).
+Withheld = Mapping[tuple[str, str], tuple[Sequence[tuple], Sequence[tuple[datetime, Any]]]]
+
+
+def _in_spans(moment: datetime, spans: Sequence[tuple]) -> bool:
+    return any(span[0] <= moment and (span[1] is None or moment < span[1]) for span in spans)
+
+
+def _readings_of(
+    series: list[tuple[datetime, Any]], withheld: tuple[Sequence[tuple], Sequence[tuple]] | None
+) -> list[tuple[datetime, Any]]:
+    """The values of a property as its source read them: inside a suspect span, the raw
+    readings the signal's record kept in place of what the check wrote."""
+    if withheld is None:
+        return series
+    spans, raw = withheld
+    kept = [(moment, value) for moment, value in series if not _in_spans(moment, spans)]
+    inside = [
+        (moment, value)
+        for moment, value in raw
+        if _in_spans(moment, spans) and not any(moment == span[0] for span in spans)
+    ]
+    return sorted([*kept, *inside], key=lambda pair: pair[0])
 
 
 def lookback(
@@ -638,9 +667,12 @@ def lookback(
     start: datetime,
     step: timedelta,
     count: int,
+    withheld: Withheld | None = None,
 ) -> dict[tuple[str, str], Lookback]:
     """Per (property, uid) of a type: in which of `count` intervals after `start` the value
-    changed, and the value at the end. One read of the type for all its properties."""
+    changed and by how much, and the value at the end. One read of the type
+    for all its properties. Inside a signal's suspect spans the raw readings of
+    `withheld` stand for what the property held."""
     started = time.perf_counter()
     events = inforce.events(
         twin.store, twin.ontology, type_name, first, head, properties=list(names)
@@ -667,24 +699,26 @@ def lookback(
             continue
         for name in names:
             values = columns[name]
-            before = None
-            series: list[tuple[datetime, Any]] = []
+            stored: list[tuple[datetime, Any]] = []
             for row in range(first_row, stop):
                 moment = times[row]
                 if moment > end:
                     break
-                value = None if removed[row] else values[row]
+                stored.append((moment, None if removed[row] else values[row]))
+            before = None
+            series: list[tuple[datetime, Any]] = []
+            for moment, value in _readings_of(stored, (withheld or {}).get((name, uid))):
                 if moment <= start:
                     before = value
                 else:
                     series.append((moment, value))
             if before is None and not series:
                 continue
-            changed = changes_per_interval(start, step, count, before, series)
+            steps = steps_per_interval(start, step, count, before, series)
             current = series[-1][1] if series else before
             if current is None:
                 continue
-            result[(name, uid)] = Lookback(changed, current)
+            result[(name, uid)] = Lookback([found is not None for found in steps], current, steps)
     log.debug(
         "lookback read",
         type=type_name,

@@ -1,11 +1,13 @@
 """Stuck and biased signals over a real store: when they are flagged, what is written
 in their place, how they are cleared.
 
-Stuck: the level of G1 and the flow of G2 read the value of step 21 at steps 22 to 25.
-At check c the lookback holds the 24 intervals ending at c, interval m holding step
-c - 23 + m. At check 24 both changed in each of the 21 intervals up to step 21
-(k = 21, u = 0, p0 = 1/23) and their source delivered in the 3 since:
-p0^3 = 8.2e-5 < 1e-4. At check 23 only 2 had passed.
+Stuck: the level of G1 and the flow of G2 read the value of step 21 at steps 22 to 29.
+The lookback is 96 intervals, longer than the plant's history: at check c it holds every
+step from 1. Both changed in each of the 21 intervals up to step 21 (k = 21, u = 0,
+p0 = 1/23); their changes do not keep their sign (the level steps up three times and
+down once), so they are not smooth, and with no two intervals without a change in a row
+the intervals are independent draws: after n intervals without a change P = p0^n. At
+check 26 (n = 5) P = 1.5e-7, not below 1e-7; at check 27 (n = 6) P = 6.7e-9.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from fidelity_testkit import (
 
 INCIDENT = "twin.fidelity.incident"
 STATE = "twin.fidelity.state"
+UNKNOWN = "twin.fidelity.signal_unknown"
 G1, G2, G3 = gauge("G1"), gauge("G2"), gauge("G3")
 LEVEL_G1 = signal_uid("Gauge.level", G1)
 FLOW_G2 = signal_uid("Gauge.flow", G2)
@@ -51,7 +54,7 @@ def far_off(model, uid, origin):
     return 0.01 if model["uid"] == "twin_model:level_far/naive" else 0.0
 
 
-def test_stuck_signals_are_flagged_estimated_and_cleared(make_plant):
+def test_stuck_signals_are_flagged_inferred_then_unknown_and_cleared(make_plant):
     plant = make_plant(
         questions={
             "level": question("Gauge.level", 2, "level"),
@@ -59,7 +62,7 @@ def test_stuck_signals_are_flagged_estimated_and_cleared(make_plant):
         },
         models={**LEVEL_MODELS, "level_far": spec("level_far", "Gauge.level")},
     )
-    stuck_steps = range(22, 26)
+    stuck_steps = range(22, 30)
     plant.readings[("level", G1)] = lambda i: level(G1, 21) if i in stuck_steps else level(G1, i)
     plant.readings[("flow", G2)] = lambda i: flow(G2, 21) if i in stuck_steps else flow(G2, i)
     for i in range(1, 20):
@@ -68,10 +71,11 @@ def test_stuck_signals_are_flagged_estimated_and_cleared(make_plant):
     plant.activate("level_far", "Gauge.level", fitted_to=at(18))
     oracle = Oracle(plant, far_off)
     plant.check(19, oracle)
-    early = plant.run(range(20, 24), oracle)
+    early = plant.run(range(20, 27), oracle)
     assert all(outcome.flagged == [] for outcome in early.values())
+    assert early[26].check["signals"]["tested"]["stuck"] > 0
 
-    flagged = plant.step(24, oracle)
+    flagged = plant.step(27, oracle)
     assert sorted(found["uid"] for found in flagged.flagged) == sorted([LEVEL_G1, FLOW_G2])
     assert {found["reason"] for found in flagged.flagged} == {"stuck"}
     signal = fidelity.signal(plant.twin, LEVEL_G1)
@@ -80,66 +84,133 @@ def test_stuck_signals_are_flagged_estimated_and_cleared(make_plant):
         G1,
         "suspect",
     )
-    assert signal["value_at_flag"] == level(G1, 21) and signal["since"] == at(24)
+    assert signal["value_at_flag"] == level(G1, 21) and signal["since"] == at(27)
     test = signal["detail"]["test"]
-    assert (test["k"], test["u"], test["n"]) == (21, 0, 3)
+    assert (test["k"], test["u"], test["n"], test["model"]) == (21, 0, 6, "independent")
     assert test["p0"] == pytest.approx(1 / 23)
+    assert test["p"] == pytest.approx((1 / 23) ** 6)
+    assert test["needed"] == 6 and test["alpha"] == 1e-7
     subjects = sorted([LEVEL_G1, FLOW_G2])
     assert [found["subject"] for found in flagged.opened] == subjects
+    # No question predicts the flow: nothing stands in for it, and its value is unknown
+    # from the check that flagged it.
     assert kinds(flagged.events) == [
         (INCIDENT, "opened"),
         (INCIDENT, "opened"),
+        (UNKNOWN, None),
         (STATE, "correcting"),
     ]
     assert [event["data"]["kind"] for event in flagged.events[:2]] == ["signal", "signal"]
+    assert flagged.events[2]["data"]["signal"] == FLOW_G2
+    assert flagged.events[2]["data"]["why"] == "no_inference"
     assert fidelity.suspects(plant.twin) == {("Gauge.level", G1), ("Gauge.flow", G2)}
 
-    # The level is estimated by the question with the shortest horizon; the flow, which
-    # no question predicts, keeps its last value.
+    # The level is inferred from the forecast the question with the shortest horizon
+    # made from the version of step 26, the reading before the flagged one: lead 1.
+    inference = signal["detail"]["inference"]
+    assert (inference["question"], inference["origin"], inference["horizon_steps"]) == (
+        "level",
+        "2026-01-05T06:30:00Z",
+        2,
+    )
+    assert oracle.calls[-1]["origin"] == at(26) and oracle.calls[-1]["horizon"] == 2
     value, provenance = stored(plant, "Gauge", "level", G1, at=flagged.version)
-    assert value == level(G1, 24)
+    assert value == level(G1, 27)
     assert (provenance["k"], provenance["s"]) == ("inferred", model)
-    assert provenance["t"].startswith("2026-01-05T06:00:00")
+    assert provenance["t"].startswith("2026-01-05T06:45:00")
     inferred = flagged.check["signals"]["inferred"]
-    assert [(entry["signal"], entry["question"]) for entry in inferred] == [(LEVEL_G1, "level")]
-    assert stored(plant, "Gauge", "flow", G2)[0] == flow(G2, 21)
+    assert [(entry["signal"], entry["question"], entry["lead_steps"]) for entry in inferred] == [
+        (LEVEL_G1, "level", 1)
+    ]
+    value, provenance = stored(plant, "Gauge", "flow", G2, at=flagged.version)
+    assert value is None
+    assert (provenance["k"], provenance["s"], provenance["c"]) == ("inferred", FLOW_G2, 0.0)
 
-    later = plant.step(25, oracle)
+    later = plant.step(28, oracle)
     entries = later.check["questions"]
     assert entries["level"]["left_out"] == [G1] and entries["level_far"]["left_out"] == [G1]
     assert G1 not in entries["level"]["series"]
     signal = fidelity.signal(plant.twin, LEVEL_G1)
     # What the source read is kept on the signal, not written to the gauge.
-    assert (signal["reading"], signal["reading_at"]) == (level(G1, 21), at(25))
-    assert signal["clear_checks"] == 0
+    assert (signal["reading"], signal["reading_at"]) == (level(G1, 21), at(28))
+    # Lead 2, the question's horizon: the forecast made at the flag, not a new one.
+    assert stored(plant, "Gauge", "level", G1, at=later.version)[0] == level(G1, 28)
+    assert later.check["signals"]["inferred"][0]["lead_steps"] == 2
+    assert later.events == []
 
-    sound = plant.step(26, oracle)
-    assert sound.cleared == []
-    assert fidelity.signal(plant.twin, LEVEL_G1)["clear_checks"] == 1
+    # Lead 3 is past the horizon the question was validated for: the value is unknown.
+    passed = plant.step(29, oracle)
+    assert kinds(passed.events) == [(UNKNOWN, None)]
+    data = passed.events[0]["data"]
+    assert (data["signal"], data["why"], data["questions"]) == (
+        LEVEL_G1,
+        "horizon_passed",
+        ["level", "level_far"],
+    )
+    value, provenance = stored(plant, "Gauge", "level", G1, at=passed.version)
+    assert value is None and provenance["s"] == LEVEL_G1
+    incident = next(
+        found for found in fidelity.incidents(plant.twin) if found["subject"] == LEVEL_G1
+    )
+    assert incident["status"] == "open"
+    assert incident["detail"]["unanswered"] == ["level", "level_far"]
+    assert incident["steps"][-1]["action"] == "unknown"
+    assert incident["steps"][-1]["why"] == "horizon_passed"
+    assert fidelity.state(plant.twin)["state"] == "correcting"
+    # What the interlock and the readers of values are handed: G2's flow has been unknown
+    # since its flag, no question inferring it.
+    standing = fidelity.standing(plant.twin)
+    withheld = [found["withheld"] for found in standing["incidents"] if "withheld" in found]
+    assert sorted(withheld, key=lambda cell: cell["property"]) == [
+        {"signal": FLOW_G2, "property": "Gauge.flow", "object": G2},
+        {"signal": LEVEL_G1, "property": "Gauge.level", "object": G1},
+    ]
+    unknown = fidelity.unknown(plant.twin)
+    assert sorted(unknown) == [("Gauge.flow", G2), ("Gauge.level", G1)]
+    assert fidelity.withheld(unknown, ["Gauge.level"], uids=[G1])[0]["why"] == "horizon_passed"
+    assert fidelity.withheld(unknown, ["Gauge.flow"])[0]["why"] == "no_inference"
+    assert fidelity.withheld(unknown, ["Gauge.level"], uids=[G2]) == []
     cleared_by_hand = fidelity.clear_signal(
-        plant.twin, FLOW_G2, by="operator", note="sensor cleaned", now=at(26)
+        plant.twin, FLOW_G2, by="operator", note="sensor cleaned", now=at(29)
     )
     assert cleared_by_hand["status"] == "ok"
     assert kinds(cleared_by_hand["events"]) == [(INCIDENT, "resolved")]
     with pytest.raises(FidelityError) as refused:
-        fidelity.clear_signal(plant.twin, FLOW_G2, by="operator", note=None, now=at(26))
+        fidelity.clear_signal(plant.twin, FLOW_G2, by="operator", note=None, now=at(29))
     assert refused.value.code == "fidelity.conflict"
 
-    assert plant.step(27, oracle).cleared == []
-    cleared = plant.step(28, oracle)
+    # Unknown it stays, said once; its series is not scored. The raw readings move
+    # again from step 30: changes in 3 intervals since the flag by step 32.
+    still = plant.run(range(30, 32), oracle)
+    assert all(outcome.cleared == [] and outcome.events == [] for outcome in still.values())
+    # The level's other series are scored; G1's, suspect, is left out.
+    assert still[31].check["questions"]["level"]["scored"] is True
+    assert "withheld" not in still[31].check["questions"]["level"]
+    assert G1 in still[31].check["questions"]["level"]["left_out"]
+    assert stored(plant, "Gauge", "level", G1, at=still[31].version)[0] is None
+    cleared = plant.step(32, oracle)
     assert [found["uid"] for found in cleared.cleared] == [LEVEL_G1]
     assert kinds(cleared.events) == [(INCIDENT, "resolved"), (STATE, "healthy")]
     assert fidelity.suspects(plant.twin) == set()
     episodes = fidelity.signal(plant.twin, LEVEL_G1)["detail"]["episodes"]
     assert episodes == [
         {
-            "since": "2026-01-05T06:00:00Z",
-            "until": "2026-01-05T07:00:00Z",
+            "since": "2026-01-05T06:45:00Z",
+            "until": "2026-01-05T08:00:00Z",
             "reason": "stuck",
             "cleared_by": "check",
+            "unknown_since": "2026-01-05T07:15:00Z",
         }
     ]
+    steps = fidelity.incident(plant.twin, incident["uid"])["steps"]
+    assert steps[-1]["action"] == "cleared"
+    assert (steps[-1]["changes"], steps[-1]["run"]) == (3, 0)
     assert fidelity.signal(plant.twin, FLOW_G2)["detail"]["episodes"][0]["cleared_by"] == "operator"
+    # Synced again once cleared, and not flagged again: the test reads the raw readings
+    # in place of what the check wrote while it was suspect.
+    after = plant.run(range(33, 40), oracle)
+    assert all(outcome.flagged == [] for outcome in after.values())
+    assert stored(plant, "Gauge", "level", G1)[0] == level(G1, 39)
     # The pump's status seldom changes and is never called stuck.
     assert {found["property"] for found in fidelity.signals(plant.twin)} == {
         "Gauge.level",

@@ -5,8 +5,9 @@ moment of each request: the twin's fidelity state and, for a proposal or a loop'
 the incidents it has not resolved, both as one version (the head) holds them; the
 twin's clock for `now`, the executor built at start and, for a control loop, its policy
 run in the worker exactly as a function run is, reading the head and writing nothing.
-An autonomous action is executed while the twin is healthy or correcting and no
-unresolved incident is `stale` or `reconcile`. What its
+An autonomous action is executed while the twin is healthy or correcting, no
+unresolved incident is `stale` or `reconcile` and its target's value is not unknown;
+a policy whose inputs are unknown is refused like any function run. What its
 decisions mean for others is told to the notifier: a supervised proposal waiting for an
 approval, an action the interlock blocked, an executed action whose effect was not
 observed. A mismatch is also an incident of kind `reconcile` on its record, kept by the
@@ -82,11 +83,15 @@ def state_at(services: Services, head: VersionRef) -> str:
     return str(fidelity.state(services.twin, head)["state"])
 
 
-def standing_at(services: Services, head: VersionRef) -> tuple[str, list[dict[str, str]]]:
+def standing_at(services: Services, head: VersionRef) -> tuple[str, list[dict[str, Any]]]:
     """The twin's fidelity state and the `kind` and `uid` of every incident it has not
-    resolved, as the head holds them: what the interlock judges a proposal by."""
+    resolved, with the `withheld` cell of a signal incident whose value is unknown, as
+    the head holds them: what the interlock judges a proposal by."""
     found = fidelity.standing(services.twin, head)
-    incidents = [{"kind": item["kind"], "uid": item["uid"]} for item in found["incidents"]]
+    incidents = [
+        {key: item[key] for key in ("kind", "uid", "withheld") if key in item}
+        for item in found["incidents"]
+    ]
     return str(found["state"]), incidents
 
 
